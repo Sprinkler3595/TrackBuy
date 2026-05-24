@@ -85,6 +85,7 @@ export function ScanReviewPage() {
   // Set when this wizard was launched from a pending invoice — the row is
   // dropped from the queue once createItem(s) succeed.
   const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null)
+  const [pendingInvoiceName, setPendingInvoiceName] = useState<string | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [quickCreate, setQuickCreate] = useState<QuickCreateEntity | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -140,6 +141,7 @@ export function ScanReviewPage() {
           : null,
       )
       setPendingInvoiceId(payload.pending_invoice_id ?? null)
+      setPendingInvoiceName(payload.pending_invoice_name ?? null)
     } catch (err) {
       console.error("Failed to hydrate scan-review:", err)
       toast("Données du scan invalides.", "error")
@@ -168,12 +170,13 @@ export function ScanReviewPage() {
         attachFile: originalAttach?.path ?? "",
         attachName: originalAttach?.name ?? "",
         pending_invoice_id: pendingInvoiceId ?? undefined,
+        pending_invoice_name: pendingInvoiceName ?? undefined,
       }
       sessionStorage.setItem(PENDING_RECEIPT_KEY, JSON.stringify(payload))
     } catch {
       /* quota or serialization error — silently ignore, persistence is best-effort */
     }
-  }, [hydrated, shared, drafts, originalAttach, pendingInvoiceId])
+  }, [hydrated, shared, drafts, originalAttach, pendingInvoiceId, pendingInvoiceName])
 
   // ------------------ Patches helpers ------------------
   const patchShared = useCallback((p: Partial<SharedState>) => {
@@ -375,7 +378,30 @@ export function ScanReviewPage() {
     // draft as the context source (merchant + date are shared anyway, and
     // the per-item product_reference / description disambiguate the file).
     const sharedCtx = drafts.length > 0 ? ctxFor(drafts[0]) : ctxFor(emptyDraft(shared.currency))
-    if (createdIds.length > 0 && shared.invoiceFile) {
+
+    // Two distinct invoice attach paths:
+    //   (a) Resumed pending invoice → the encrypted file already lives in the
+    //       vault; promote it via attach_pending_invoice_to_item (no decrypt /
+    //       reencrypt). This branch also drops the pending_invoices row
+    //       atomically, so we skip the cleanup deletePendingInvoice call below.
+    //   (b) Regular scan with a local file path → existing addAttachment flow.
+    let pendingPromoted = false
+    if (createdIds.length > 0 && pendingInvoiceId) {
+      try {
+        const fallbackName = pendingInvoiceName ?? originalAttach?.name ?? "facture.pdf"
+        const invoiceName = await harmonize("invoice", sharedCtx, fallbackName)
+        await api.attachPendingInvoiceToItem(
+          pendingInvoiceId,
+          createdIds[0],
+          "invoice",
+          invoiceName,
+          createdIds.length >= 2,
+        )
+        pendingPromoted = true
+      } catch (err) {
+        failures.push(`Facture (en attente): ${err}`)
+      }
+    } else if (createdIds.length > 0 && shared.invoiceFile) {
       try {
         const invoiceName = await harmonize("invoice", sharedCtx, shared.invoiceFile.name)
         await api.addAttachment(
@@ -404,10 +430,10 @@ export function ScanReviewPage() {
       }
     }
 
-    // Drop the pending invoice from the queue once at least one item was
-    // created from it. Best-effort: a failure here just leaves the row in the
-    // queue, which the user can delete manually.
-    if (pendingInvoiceId && createdIds.length > 0) {
+    // Drop the pending invoice from the queue when no items were created
+    // from it (so the file isn't orphaned). When pendingPromoted=true the
+    // attach_pending_invoice_to_item call already deleted the row.
+    if (pendingInvoiceId && !pendingPromoted && createdIds.length > 0) {
       try {
         await api.deletePendingInvoice(pendingInvoiceId)
       } catch (err) {

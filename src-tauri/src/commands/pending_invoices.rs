@@ -3,7 +3,7 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::commands::auth::AppState;
-use crate::db::models::PendingInvoice;
+use crate::db::models::{Attachment, PendingInvoice};
 use crate::storage;
 use crate::util::path::validate_read_source;
 
@@ -249,4 +249,100 @@ pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Resul
         mime_type,
         general_purpose::STANDARD.encode(&data)
     ))
+}
+
+/// Promotes a pending invoice into a real `attachments` row pointed at the
+/// given item (and optionally shared at the order level). The encrypted
+/// ciphertext on disk is left untouched — only the metadata row moves — so
+/// nothing has to be decrypted/reencrypted. Atomic via a SQL transaction:
+/// either both the INSERT and the DELETE succeed, or neither does.
+#[tauri::command]
+pub fn attach_pending_invoice_to_item(
+    state: State<'_, AppState>,
+    pending_invoice_id: String,
+    item_id: String,
+    attachment_type: Option<String>,
+    display_name: Option<String>,
+    share_with_order: Option<bool>,
+) -> Result<Attachment, String> {
+    let mut db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_mut().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Read the pending row's metadata (label/notes are dropped — they were
+    // workflow helpers and don't survive the move).
+    let (pending_label, pending_original_name, pending_mime_type, pending_file_path, pending_size_bytes):
+        (Option<String>, String, String, String, i64) = conn
+        .query_row(
+            "SELECT label, original_name, mime_type, file_path, size_bytes
+             FROM pending_invoices WHERE id = ?1",
+            [&pending_invoice_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|e| format!("Facture en attente introuvable: {}", e))?;
+
+    // Resolve order_id when caller wants the attachment shared across the
+    // whole order (mirror of add_attachment's share_with_order branch).
+    let (db_item_id, db_order_id): (Option<String>, Option<String>) =
+        if share_with_order.unwrap_or(false) {
+            let order_id: Option<String> = conn
+                .query_row(
+                    "SELECT order_id FROM items WHERE id = ?1",
+                    [&item_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Article introuvable: {}", e))?;
+            match order_id {
+                Some(oid) => (None, Some(oid)),
+                None => return Err("Cet article ne fait pas partie d'un achat groupé".to_string()),
+            }
+        } else {
+            (Some(item_id.clone()), None)
+        };
+
+    let new_id = Uuid::new_v4().to_string();
+    let att_type = attachment_type.unwrap_or_else(|| "invoice".to_string());
+    let display = display_name
+        .filter(|s| !s.trim().is_empty())
+        .or(pending_label.filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| pending_original_name.clone());
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "INSERT INTO attachments (id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            new_id, db_item_id, db_order_id,
+            pending_original_name, display, pending_mime_type,
+            pending_file_path, pending_size_bytes, att_type,
+        ],
+    ).map_err(|e| format!("Insertion attachment échouée: {}", e))?;
+
+    tx.execute(
+        "DELETE FROM pending_invoices WHERE id = ?1",
+        [&pending_invoice_id],
+    ).map_err(|e| format!("Suppression facture en attente échouée: {}", e))?;
+
+    tx.commit().map_err(|e| format!("Commit échoué: {}", e))?;
+
+    // Read back the freshly-inserted row to return a complete Attachment.
+    conn.query_row(
+        "SELECT id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at
+         FROM attachments WHERE id = ?1",
+        [&new_id],
+        |row| Ok(Attachment {
+            id: row.get(0)?,
+            item_id: row.get(1)?,
+            order_id: row.get(2)?,
+            subscription_id: row.get(3)?,
+            original_name: row.get(4)?,
+            display_name: row.get(5)?,
+            mime_type: row.get(6)?,
+            file_path: row.get(7)?,
+            size_bytes: row.get(8)?,
+            attachment_type: row.get(9)?,
+            created_at: row.get(10)?,
+        }),
+    ).map_err(|e| e.to_string())
 }

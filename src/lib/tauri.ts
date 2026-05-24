@@ -376,6 +376,23 @@ export const deletePendingInvoice = (id: string) =>
   invoke<void>("delete_pending_invoice", { id })
 export const getPendingInvoiceData = (id: string) =>
   invoke<string>("get_pending_invoice_data", { id })
+// Transfer a pending invoice into the attachments table for the given item
+// (optionally shared at the order level). The encrypted file on disk is
+// reused as-is — no decrypt/reencrypt round-trip.
+export const attachPendingInvoiceToItem = (
+  pendingInvoiceId: string,
+  itemId: string,
+  attachmentType?: string,
+  displayName?: string,
+  shareWithOrder?: boolean,
+) =>
+  invoke<Attachment>("attach_pending_invoice_to_item", {
+    pendingInvoiceId,
+    itemId,
+    attachmentType,
+    displayName,
+    shareWithOrder,
+  })
 
 // Filename templates: user overrides for the harmonized display_name of
 // attachments. Defaults live in src/lib/filename-template.ts.

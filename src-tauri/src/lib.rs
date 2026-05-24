@@ -69,6 +69,7 @@ pub fn run() {
             commands::pending_invoices::update_pending_invoice,
             commands::pending_invoices::delete_pending_invoice,
             commands::pending_invoices::get_pending_invoice_data,
+            commands::pending_invoices::attach_pending_invoice_to_item,
             commands::filename_templates::list_filename_templates,
             commands::filename_templates::set_filename_template,
             commands::filename_templates::reset_filename_template,

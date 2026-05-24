@@ -742,6 +742,10 @@ export function ScanPage() {
       attachFile: attachToItem && filePath ? filePath : "",
       attachName: attachToItem && filePath ? fileName : "",
       pending_invoice_id: pendingInvoiceId ?? undefined,
+      // When resuming a pending invoice we don't have a local FS path, but we
+      // do know the original filename — pass it through so the harmonized
+      // display_name has a sensible fallback.
+      pending_invoice_name: pendingInvoiceId ? fileName : undefined,
     }
 
     sessionStorage.setItem(PENDING_RECEIPT_KEY, JSON.stringify(payload))
