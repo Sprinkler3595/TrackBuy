@@ -14,6 +14,9 @@ import { CardsPage } from "@/pages/cards"
 import { VaultsPage } from "@/pages/vaults"
 import { SubscriptionsPage } from "@/pages/subscriptions"
 import { SubscriptionDetailPage } from "@/pages/subscription-detail"
+import { EngagementsPage } from "@/pages/engagements"
+import { EngagementDetailPage } from "@/pages/engagement-detail"
+import { CreditorsPage } from "@/pages/creditors"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
@@ -72,6 +75,7 @@ function AppContent() {
       // Catch up any missed renewal cycles before the dashboard renders, so
       // the user sees a current view from the first paint.
       try { await api.rollForwardDueSubscriptions() } catch { /* non-fatal */ }
+      try { await api.rollForwardDueEngagements() } catch { /* non-fatal */ }
       setVaultName(name)
       setUnlocked(true)
       localStorage.setItem(LAST_VAULT_KEY, name)
@@ -140,10 +144,13 @@ function AppContent() {
           <Route path="/tickets" element={<TicketsPage />} />
           <Route path="/subscriptions" element={<SubscriptionsPage />} />
           <Route path="/subscriptions/:id" element={<SubscriptionDetailPage />} />
+          <Route path="/engagements" element={<EngagementsPage />} />
+          <Route path="/engagements/:id" element={<EngagementDetailPage />} />
           <Route path="/warranties" element={<WarrantiesPage />} />
           <Route path="/settings" element={<SettingsPage />}>
             <Route index element={<GeneralSettings />} />
             <Route path="marchands" element={<MerchantsPage />} />
+            <Route path="creanciers" element={<CreditorsPage />} />
             <Route path="lieux" element={<LocationsPage />} />
             <Route path="cartes" element={<CardsPage />} />
             <Route path="coffres" element={<VaultsPage onSwitchVault={handleSwitchVault} />} />

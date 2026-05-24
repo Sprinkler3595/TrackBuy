@@ -2,7 +2,7 @@ import { createContext, useContext } from "react"
 
 export type Locale = "fr" | "en"
 
-type TranslationKeys = {
+export type TranslationKeys = {
   // Navigation
   "nav.dashboard": string
   "nav.items": string
@@ -265,6 +265,152 @@ type TranslationKeys = {
   "subscriptions.deleted": string
   "subscriptions.inTrial": string
   "subscriptions.renewsIn": string
+
+  // Engagements (recurring real-world charges)
+  "nav.engagements": string
+  "nav.creditors": string
+  "engagements.title": string
+  "engagements.subtitle": string
+  "engagements.new": string
+  "engagements.edit": string
+  "engagements.name": string
+  "engagements.type": string
+  "engagements.creditor": string
+  "engagements.card": string
+  "engagements.parent": string
+  "engagements.contractRef": string
+  "engagements.contractStart": string
+  "engagements.contractEnd": string
+  "engagements.noticePeriod": string
+  "engagements.billingCycle": string
+  "engagements.cycleInterval": string
+  "engagements.nextDue": string
+  "engagements.currentAmount": string
+  "engagements.currency": string
+  "engagements.paymentMethod": string
+  "engagements.autoPay": string
+  "engagements.status": string
+  "engagements.notes": string
+  "engagements.clauses": string
+  "engagements.monthlyEquivalent": string
+  "engagements.totalMonthlyCost": string
+  "engagements.noEngagements": string
+  "engagements.deleteConfirm": string
+  "engagements.created": string
+  "engagements.updated": string
+  "engagements.deleted": string
+  "engagements.dueIn": string
+  "engagements.statusActive": string
+  "engagements.statusSuspended": string
+  "engagements.statusEnded": string
+  "engagements.cycleMonthly": string
+  "engagements.cycleQuarterly": string
+  "engagements.cycleSemiannual": string
+  "engagements.cycleYearly": string
+  "engagements.cycleOneShot": string
+  "engagements.cycleCustom": string
+  "engagements.methodDirectDebit": string
+  "engagements.methodQrBill": string
+  "engagements.methodBvr": string
+  "engagements.methodManualTransfer": string
+  "engagements.methodStandingOrder": string
+  "engagements.methodCash": string
+  "engagements.methodCardAuto": string
+  "engagements.methodOther": string
+  "engagements.children": string
+  "engagements.addChild": string
+  "engagements.revisions": string
+  "engagements.addRevision": string
+  "engagements.charges": string
+  "engagements.addCharge": string
+  "engagements.markPaid": string
+  "engagements.tabOverview": string
+  "engagements.tabCharges": string
+  "engagements.tabRevisions": string
+  "engagements.tabAttachments": string
+  "engagements.tabChildren": string
+  "engagements.allCategories": string
+  "engagements.catInsurance": string
+  "engagements.catHousing": string
+  "engagements.catVehicle": string
+  "engagements.catUtilities": string
+  "engagements.catTelecom": string
+  "engagements.catTaxes": string
+  "engagements.catOther": string
+
+  // Engagement type labels (canonical 27 values)
+  "engagements.type.insurance_health": string
+  "engagements.type.insurance_household": string
+  "engagements.type.insurance_car": string
+  "engagements.type.insurance_life": string
+  "engagements.type.insurance_legal": string
+  "engagements.type.insurance_other": string
+  "engagements.type.rent": string
+  "engagements.type.parking": string
+  "engagements.type.leasing": string
+  "engagements.type.mortgage": string
+  "engagements.type.electricity": string
+  "engagements.type.gas": string
+  "engagements.type.water": string
+  "engagements.type.fuel": string
+  "engagements.type.heating": string
+  "engagements.type.phone": string
+  "engagements.type.internet": string
+  "engagements.type.tv_radio": string
+  "engagements.type.tax_federal": string
+  "engagements.type.tax_cantonal": string
+  "engagements.type.tax_communal": string
+  "engagements.type.tax_other": string
+  "engagements.type.fine": string
+  "engagements.type.fee": string
+  "engagements.type.membership": string
+  "engagements.type.other": string
+
+  // Charges
+  "charges.dueDate": string
+  "charges.amount": string
+  "charges.periodStart": string
+  "charges.periodEnd": string
+  "charges.quantity": string
+  "charges.unit": string
+  "charges.unitPrice": string
+  "charges.reference": string
+  "charges.invoiceNumber": string
+  "charges.paidOn": string
+  "charges.statusScheduled": string
+  "charges.statusPaid": string
+  "charges.statusLate": string
+  "charges.statusDisputed": string
+  "charges.statusWaived": string
+  "charges.noCharges": string
+
+  // Revisions
+  "revisions.effectiveDate": string
+  "revisions.amount": string
+  "revisions.changeReason": string
+  "revisions.noRevisions": string
+
+  // Creditors
+  "creditors.title": string
+  "creditors.subtitle": string
+  "creditors.new": string
+  "creditors.name": string
+  "creditors.type": string
+  "creditors.iban": string
+  "creditors.referencePrefix": string
+  "creditors.contactEmail": string
+  "creditors.contactPhone": string
+  "creditors.address": string
+  "creditors.notes": string
+  "creditors.typeInsurer": string
+  "creditors.typeLandlord": string
+  "creditors.typeUtility": string
+  "creditors.typeTelco": string
+  "creditors.typeTaxOffice": string
+  "creditors.typeLeasingCompany": string
+  "creditors.typeEmployer": string
+  "creditors.typeBank": string
+  "creditors.typeOther": string
 }
 
 const translations: Record<Locale, TranslationKeys> = {
@@ -514,6 +660,147 @@ const translations: Record<Locale, TranslationKeys> = {
     "subscriptions.deleted": "Abonnement supprimé",
     "subscriptions.inTrial": "Période d'essai",
     "subscriptions.renewsIn": "Renouvelle dans",
+
+    "nav.engagements": "Engagements",
+    "nav.creditors": "Créanciers",
+    "engagements.title": "Engagements",
+    "engagements.subtitle": "Charges récurrentes : assurances, loyer, fluides, télécom, fiscalité",
+    "engagements.new": "Nouvel engagement",
+    "engagements.edit": "Modifier l'engagement",
+    "engagements.name": "Nom",
+    "engagements.type": "Catégorie",
+    "engagements.creditor": "Créancier",
+    "engagements.card": "Moyen de paiement",
+    "engagements.parent": "Engagement parent",
+    "engagements.contractRef": "N° de contrat / police",
+    "engagements.contractStart": "Début de contrat",
+    "engagements.contractEnd": "Fin de contrat",
+    "engagements.noticePeriod": "Préavis (jours)",
+    "engagements.billingCycle": "Périodicité",
+    "engagements.cycleInterval": "Intervalle",
+    "engagements.nextDue": "Prochaine échéance",
+    "engagements.currentAmount": "Montant courant",
+    "engagements.currency": "Devise",
+    "engagements.paymentMethod": "Mode de paiement",
+    "engagements.autoPay": "Paiement automatique",
+    "engagements.status": "Statut",
+    "engagements.notes": "Notes",
+    "engagements.clauses": "Clauses (JSON libre)",
+    "engagements.monthlyEquivalent": "Équivalent mensuel",
+    "engagements.totalMonthlyCost": "Coût mensuel total",
+    "engagements.noEngagements": "Aucun engagement enregistré.",
+    "engagements.deleteConfirm": "Cet engagement, ses échéances, ses révisions et ses pièces jointes seront supprimés définitivement.",
+    "engagements.created": "Engagement créé",
+    "engagements.updated": "Engagement modifié",
+    "engagements.deleted": "Engagement supprimé",
+    "engagements.dueIn": "Échéance dans",
+    "engagements.statusActive": "Actif",
+    "engagements.statusSuspended": "Suspendu",
+    "engagements.statusEnded": "Terminé",
+    "engagements.cycleMonthly": "Mensuel",
+    "engagements.cycleQuarterly": "Trimestriel",
+    "engagements.cycleSemiannual": "Semestriel",
+    "engagements.cycleYearly": "Annuel",
+    "engagements.cycleOneShot": "Ponctuel",
+    "engagements.cycleCustom": "Personnalisé (jours)",
+    "engagements.methodDirectDebit": "Prélèvement (LSV/SEPA)",
+    "engagements.methodQrBill": "QR-facture",
+    "engagements.methodBvr": "BVR",
+    "engagements.methodManualTransfer": "Virement manuel",
+    "engagements.methodStandingOrder": "Ordre permanent",
+    "engagements.methodCash": "Espèces",
+    "engagements.methodCardAuto": "Carte (auto)",
+    "engagements.methodOther": "Autre",
+    "engagements.children": "Sous-engagements",
+    "engagements.addChild": "Ajouter un sous-engagement",
+    "engagements.revisions": "Révisions de contrat",
+    "engagements.addRevision": "Ajouter une révision",
+    "engagements.charges": "Échéances",
+    "engagements.addCharge": "Ajouter une échéance",
+    "engagements.markPaid": "Marquer payée",
+    "engagements.tabOverview": "Aperçu",
+    "engagements.tabCharges": "Échéances",
+    "engagements.tabRevisions": "Révisions",
+    "engagements.tabAttachments": "Pièces jointes",
+    "engagements.tabChildren": "Sous-engagements",
+    "engagements.allCategories": "Toutes",
+    "engagements.catInsurance": "Assurances",
+    "engagements.catHousing": "Logement",
+    "engagements.catVehicle": "Véhicule",
+    "engagements.catUtilities": "Fluides",
+    "engagements.catTelecom": "Télécom",
+    "engagements.catTaxes": "Fiscalité",
+    "engagements.catOther": "Autres",
+
+    "engagements.type.insurance_health": "Assurance maladie",
+    "engagements.type.insurance_household": "Assurance RC ménage",
+    "engagements.type.insurance_car": "Assurance auto",
+    "engagements.type.insurance_life": "Assurance vie",
+    "engagements.type.insurance_legal": "Protection juridique",
+    "engagements.type.insurance_other": "Autre assurance",
+    "engagements.type.rent": "Loyer",
+    "engagements.type.parking": "Place de parc",
+    "engagements.type.leasing": "Leasing",
+    "engagements.type.mortgage": "Hypothèque",
+    "engagements.type.electricity": "Électricité",
+    "engagements.type.gas": "Gaz",
+    "engagements.type.water": "Eau",
+    "engagements.type.fuel": "Carburant / recharge",
+    "engagements.type.heating": "Chauffage",
+    "engagements.type.phone": "Téléphone",
+    "engagements.type.internet": "Internet",
+    "engagements.type.tv_radio": "Redevance TV/radio",
+    "engagements.type.tax_federal": "Impôt fédéral",
+    "engagements.type.tax_cantonal": "Impôt cantonal",
+    "engagements.type.tax_communal": "Impôt communal",
+    "engagements.type.tax_other": "Autre taxe",
+    "engagements.type.fine": "Amende",
+    "engagements.type.fee": "Frais administratifs",
+    "engagements.type.membership": "Cotisation",
+    "engagements.type.other": "Autre",
+
+    "charges.dueDate": "Échéance",
+    "charges.amount": "Montant",
+    "charges.periodStart": "Début période",
+    "charges.periodEnd": "Fin période",
+    "charges.quantity": "Quantité",
+    "charges.unit": "Unité",
+    "charges.unitPrice": "Prix unitaire",
+    "charges.reference": "Référence BVR / QR",
+    "charges.invoiceNumber": "N° de facture",
+    "charges.paidOn": "Payée le",
+    "charges.statusScheduled": "Prévue",
+    "charges.statusPaid": "Payée",
+    "charges.statusLate": "En retard",
+    "charges.statusDisputed": "Contestée",
+    "charges.statusWaived": "Annulée",
+    "charges.noCharges": "Aucune échéance pour le moment.",
+
+    "revisions.effectiveDate": "Date d'effet",
+    "revisions.amount": "Nouveau montant",
+    "revisions.changeReason": "Motif",
+    "revisions.noRevisions": "Aucune révision enregistrée.",
+
+    "creditors.title": "Créanciers",
+    "creditors.subtitle": "Assureurs, bailleurs, fournisseurs, administrations",
+    "creditors.new": "Nouveau créancier",
+    "creditors.name": "Nom",
+    "creditors.type": "Type",
+    "creditors.iban": "IBAN",
+    "creditors.referencePrefix": "Préfixe de référence BVR",
+    "creditors.contactEmail": "E-mail",
+    "creditors.contactPhone": "Téléphone",
+    "creditors.address": "Adresse",
+    "creditors.notes": "Notes",
+    "creditors.typeInsurer": "Assureur",
+    "creditors.typeLandlord": "Bailleur",
+    "creditors.typeUtility": "Fournisseur d'énergie",
+    "creditors.typeTelco": "Opérateur télécom",
+    "creditors.typeTaxOffice": "Administration fiscale",
+    "creditors.typeLeasingCompany": "Société de leasing",
+    "creditors.typeEmployer": "Employeur",
+    "creditors.typeBank": "Banque",
+    "creditors.typeOther": "Autre",
   },
 
   en: {
@@ -762,6 +1049,147 @@ const translations: Record<Locale, TranslationKeys> = {
     "subscriptions.deleted": "Subscription deleted",
     "subscriptions.inTrial": "Trial period",
     "subscriptions.renewsIn": "Renews in",
+
+    "nav.engagements": "Engagements",
+    "nav.creditors": "Creditors",
+    "engagements.title": "Engagements",
+    "engagements.subtitle": "Recurring real-world charges: insurance, rent, utilities, telecom, taxes",
+    "engagements.new": "New engagement",
+    "engagements.edit": "Edit engagement",
+    "engagements.name": "Name",
+    "engagements.type": "Category",
+    "engagements.creditor": "Creditor",
+    "engagements.card": "Payment method",
+    "engagements.parent": "Parent engagement",
+    "engagements.contractRef": "Contract / policy number",
+    "engagements.contractStart": "Contract start",
+    "engagements.contractEnd": "Contract end",
+    "engagements.noticePeriod": "Notice period (days)",
+    "engagements.billingCycle": "Billing cycle",
+    "engagements.cycleInterval": "Interval",
+    "engagements.nextDue": "Next due",
+    "engagements.currentAmount": "Current amount",
+    "engagements.currency": "Currency",
+    "engagements.paymentMethod": "Payment method",
+    "engagements.autoPay": "Auto-pay",
+    "engagements.status": "Status",
+    "engagements.notes": "Notes",
+    "engagements.clauses": "Clauses (free JSON)",
+    "engagements.monthlyEquivalent": "Monthly equivalent",
+    "engagements.totalMonthlyCost": "Total monthly cost",
+    "engagements.noEngagements": "No engagements recorded yet.",
+    "engagements.deleteConfirm": "This engagement, its charges, revisions and attachments will be permanently deleted.",
+    "engagements.created": "Engagement created",
+    "engagements.updated": "Engagement updated",
+    "engagements.deleted": "Engagement deleted",
+    "engagements.dueIn": "Due in",
+    "engagements.statusActive": "Active",
+    "engagements.statusSuspended": "Suspended",
+    "engagements.statusEnded": "Ended",
+    "engagements.cycleMonthly": "Monthly",
+    "engagements.cycleQuarterly": "Quarterly",
+    "engagements.cycleSemiannual": "Semiannual",
+    "engagements.cycleYearly": "Yearly",
+    "engagements.cycleOneShot": "One-shot",
+    "engagements.cycleCustom": "Custom (days)",
+    "engagements.methodDirectDebit": "Direct debit (LSV/SEPA)",
+    "engagements.methodQrBill": "QR-bill",
+    "engagements.methodBvr": "BVR",
+    "engagements.methodManualTransfer": "Manual transfer",
+    "engagements.methodStandingOrder": "Standing order",
+    "engagements.methodCash": "Cash",
+    "engagements.methodCardAuto": "Card (auto)",
+    "engagements.methodOther": "Other",
+    "engagements.children": "Sub-engagements",
+    "engagements.addChild": "Add a sub-engagement",
+    "engagements.revisions": "Contract revisions",
+    "engagements.addRevision": "Add a revision",
+    "engagements.charges": "Charges",
+    "engagements.addCharge": "Add a charge",
+    "engagements.markPaid": "Mark paid",
+    "engagements.tabOverview": "Overview",
+    "engagements.tabCharges": "Charges",
+    "engagements.tabRevisions": "Revisions",
+    "engagements.tabAttachments": "Attachments",
+    "engagements.tabChildren": "Sub-engagements",
+    "engagements.allCategories": "All",
+    "engagements.catInsurance": "Insurance",
+    "engagements.catHousing": "Housing",
+    "engagements.catVehicle": "Vehicle",
+    "engagements.catUtilities": "Utilities",
+    "engagements.catTelecom": "Telecom",
+    "engagements.catTaxes": "Taxes",
+    "engagements.catOther": "Other",
+
+    "engagements.type.insurance_health": "Health insurance",
+    "engagements.type.insurance_household": "Household liability insurance",
+    "engagements.type.insurance_car": "Car insurance",
+    "engagements.type.insurance_life": "Life insurance",
+    "engagements.type.insurance_legal": "Legal protection",
+    "engagements.type.insurance_other": "Other insurance",
+    "engagements.type.rent": "Rent",
+    "engagements.type.parking": "Parking spot",
+    "engagements.type.leasing": "Leasing",
+    "engagements.type.mortgage": "Mortgage",
+    "engagements.type.electricity": "Electricity",
+    "engagements.type.gas": "Gas",
+    "engagements.type.water": "Water",
+    "engagements.type.fuel": "Fuel / charging",
+    "engagements.type.heating": "Heating",
+    "engagements.type.phone": "Phone",
+    "engagements.type.internet": "Internet",
+    "engagements.type.tv_radio": "TV / radio licence",
+    "engagements.type.tax_federal": "Federal tax",
+    "engagements.type.tax_cantonal": "Cantonal tax",
+    "engagements.type.tax_communal": "Communal tax",
+    "engagements.type.tax_other": "Other tax",
+    "engagements.type.fine": "Fine",
+    "engagements.type.fee": "Administrative fee",
+    "engagements.type.membership": "Membership",
+    "engagements.type.other": "Other",
+
+    "charges.dueDate": "Due date",
+    "charges.amount": "Amount",
+    "charges.periodStart": "Period start",
+    "charges.periodEnd": "Period end",
+    "charges.quantity": "Quantity",
+    "charges.unit": "Unit",
+    "charges.unitPrice": "Unit price",
+    "charges.reference": "BVR / QR reference",
+    "charges.invoiceNumber": "Invoice number",
+    "charges.paidOn": "Paid on",
+    "charges.statusScheduled": "Scheduled",
+    "charges.statusPaid": "Paid",
+    "charges.statusLate": "Late",
+    "charges.statusDisputed": "Disputed",
+    "charges.statusWaived": "Waived",
+    "charges.noCharges": "No charges yet.",
+
+    "revisions.effectiveDate": "Effective date",
+    "revisions.amount": "New amount",
+    "revisions.changeReason": "Reason",
+    "revisions.noRevisions": "No revisions recorded.",
+
+    "creditors.title": "Creditors",
+    "creditors.subtitle": "Insurers, landlords, utilities, tax offices",
+    "creditors.new": "New creditor",
+    "creditors.name": "Name",
+    "creditors.type": "Type",
+    "creditors.iban": "IBAN",
+    "creditors.referencePrefix": "BVR reference prefix",
+    "creditors.contactEmail": "Email",
+    "creditors.contactPhone": "Phone",
+    "creditors.address": "Address",
+    "creditors.notes": "Notes",
+    "creditors.typeInsurer": "Insurer",
+    "creditors.typeLandlord": "Landlord",
+    "creditors.typeUtility": "Utility",
+    "creditors.typeTelco": "Telco",
+    "creditors.typeTaxOffice": "Tax office",
+    "creditors.typeLeasingCompany": "Leasing company",
+    "creditors.typeEmployer": "Employer",
+    "creditors.typeBank": "Bank",
+    "creditors.typeOther": "Other",
   },
 }
 

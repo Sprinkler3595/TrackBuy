@@ -3,6 +3,8 @@ pub mod attachments;
 pub mod auth;
 pub mod backup;
 pub mod cards;
+pub mod creditors;
+pub mod engagements;
 pub mod filename_templates;
 pub mod files;
 pub mod items;

@@ -328,7 +328,9 @@ pub fn attach_pending_invoice_to_item(
 
     // Read back the freshly-inserted row to return a complete Attachment.
     conn.query_row(
-        "SELECT id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at
+        "SELECT id, item_id, order_id, subscription_id, engagement_id, engagement_charge_id,
+                engagement_revision_id, original_name, display_name, mime_type, file_path,
+                size_bytes, attachment_type, created_at
          FROM attachments WHERE id = ?1",
         [&new_id],
         |row| Ok(Attachment {
@@ -336,13 +338,16 @@ pub fn attach_pending_invoice_to_item(
             item_id: row.get(1)?,
             order_id: row.get(2)?,
             subscription_id: row.get(3)?,
-            original_name: row.get(4)?,
-            display_name: row.get(5)?,
-            mime_type: row.get(6)?,
-            file_path: row.get(7)?,
-            size_bytes: row.get(8)?,
-            attachment_type: row.get(9)?,
-            created_at: row.get(10)?,
+            engagement_id: row.get(4)?,
+            engagement_charge_id: row.get(5)?,
+            engagement_revision_id: row.get(6)?,
+            original_name: row.get(7)?,
+            display_name: row.get(8)?,
+            mime_type: row.get(9)?,
+            file_path: row.get(10)?,
+            size_bytes: row.get(11)?,
+            attachment_type: row.get(12)?,
+            created_at: row.get(13)?,
         }),
     ).map_err(|e| e.to_string())
 }

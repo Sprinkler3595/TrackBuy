@@ -68,12 +68,19 @@ export interface Location {
   updated_at: string
 }
 
+export type AccountKind = "card" | "bank_account" | "cash" | "qr_bill" | "other"
+
 export interface PaymentCard {
   id: string
   name: string
   is_credit_card: boolean
   extended_warranty_months: number
   extended_warranty_description: string | null
+  account_kind: AccountKind
+  iban: string | null
+  bic: string | null
+  account_holder: string | null
+  institution: string | null
   created_at: string
   updated_at: string
 }
@@ -95,6 +102,9 @@ export interface Attachment {
   item_id: string | null
   order_id: string | null
   subscription_id: string | null
+  engagement_id: string | null
+  engagement_charge_id: string | null
+  engagement_revision_id: string | null
   original_name: string
   display_name: string
   mime_type: string
@@ -561,3 +571,272 @@ export const updateSubscriptionMember = (member: SubscriptionMember) =>
 
 export const deleteSubscriptionMember = (id: string) =>
   invoke<void>("delete_subscription_member", { id })
+
+// ============================================================================
+// Engagements & creditors (recurring real-world charges)
+// ============================================================================
+
+export type CreditorType =
+  | "insurer" | "landlord" | "utility" | "telco" | "tax_office"
+  | "leasing_company" | "employer" | "bank" | "other"
+
+export interface Creditor {
+  id: string
+  name: string
+  creditor_type: CreditorType
+  contact_email: string | null
+  contact_phone: string | null
+  address: string | null
+  iban: string | null
+  reference_prefix: string | null
+  notes: string | null
+  logo_path: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type EngagementType =
+  | "insurance_health" | "insurance_household" | "insurance_car"
+  | "insurance_life" | "insurance_legal" | "insurance_other"
+  | "rent" | "parking" | "leasing" | "mortgage"
+  | "electricity" | "gas" | "water" | "fuel" | "heating"
+  | "phone" | "internet" | "tv_radio"
+  | "tax_federal" | "tax_cantonal" | "tax_communal" | "tax_other"
+  | "fine" | "fee" | "membership" | "other"
+
+export type EngagementBillingCycle =
+  | "monthly" | "quarterly" | "semiannual" | "yearly" | "one_shot" | "custom"
+
+export type EngagementStatus = "active" | "suspended" | "ended"
+
+export type EngagementPaymentMethod =
+  | "direct_debit" | "qr_bill" | "bvr" | "manual_transfer"
+  | "standing_order" | "cash" | "card_auto" | "other"
+
+export type ChargeStatus = "scheduled" | "paid" | "late" | "disputed" | "waived"
+
+export interface Engagement {
+  id: string
+  name: string
+  engagement_type: EngagementType
+  parent_engagement_id: string | null
+  creditor_id: string | null
+  payment_card_id: string | null
+  contract_reference: string | null
+  contract_start_date: string | null
+  contract_end_date: string | null
+  notice_period_days: number | null
+  billing_cycle: EngagementBillingCycle
+  cycle_interval: number
+  next_due_date: string | null
+  current_amount: number | null
+  currency: string
+  payment_method: EngagementPaymentMethod | null
+  auto_pay: boolean
+  status: EngagementStatus
+  ended_on: string | null
+  notes: string | null
+  clauses_json: string | null
+  created_at: string
+  updated_at: string
+  creditor_name?: string | null
+  card_name?: string | null
+  parent_name?: string | null
+}
+
+export interface EngagementCharge {
+  id: string
+  engagement_id: string
+  period_start: string | null
+  period_end: string | null
+  due_date: string
+  amount: number
+  currency: string
+  quantity: number | null
+  unit: string | null
+  unit_price: number | null
+  paid_on: string | null
+  status: ChargeStatus
+  payment_card_id: string | null
+  reference_number: string | null
+  invoice_number: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface EngagementRevision {
+  id: string
+  engagement_id: string
+  effective_date: string
+  amount: number
+  currency: string
+  change_reason: string | null
+  notes: string | null
+  created_at: string
+}
+
+// Creditors CRUD
+export const getCreditors = (params?: { creditor_type?: string }) =>
+  invoke<Creditor[]>("get_creditors", params ?? {})
+
+export const createCreditor = (creditor: {
+  name: string
+  creditor_type?: CreditorType
+  contact_email?: string | null
+  contact_phone?: string | null
+  address?: string | null
+  iban?: string | null
+  reference_prefix?: string | null
+  notes?: string | null
+}) => invoke<Creditor>("create_creditor", { creditor })
+
+export const updateCreditor = (creditor: Creditor) =>
+  invoke<void>("update_creditor", { creditor })
+
+export const deleteCreditor = (id: string) =>
+  invoke<void>("delete_creditor", { id })
+
+// Engagements CRUD
+export const getEngagements = (params?: {
+  status?: string
+  engagement_type?: string
+  parent_id?: string
+}) => invoke<Engagement[]>("get_engagements", params ?? {})
+
+export const getEngagement = (id: string) =>
+  invoke<Engagement>("get_engagement", { id })
+
+export const getEngagementChildren = (parentId: string) =>
+  invoke<Engagement[]>("get_engagement_children", { parentId })
+
+export const createEngagement = (engagement: {
+  name: string
+  engagement_type: EngagementType
+  parent_engagement_id?: string | null
+  creditor_id?: string | null
+  payment_card_id?: string | null
+  contract_reference?: string | null
+  contract_start_date?: string | null
+  contract_end_date?: string | null
+  notice_period_days?: number | null
+  billing_cycle: EngagementBillingCycle
+  cycle_interval?: number
+  next_due_date?: string | null
+  current_amount?: number | null
+  currency?: string
+  payment_method?: EngagementPaymentMethod | null
+  auto_pay?: boolean
+  status?: EngagementStatus
+  notes?: string | null
+  clauses_json?: string | null
+}) => invoke<Engagement>("create_engagement", { engagement })
+
+export const updateEngagement = (engagement: Engagement) =>
+  invoke<void>("update_engagement", { engagement })
+
+export const deleteEngagement = (id: string) =>
+  invoke<void>("delete_engagement", { id })
+
+export const rollForwardDueEngagements = () =>
+  invoke<number>("roll_forward_due_engagements")
+
+export const getUpcomingEngagementCharges = (days?: number) =>
+  invoke<EngagementCharge[]>("get_upcoming_engagement_charges", { days })
+
+// Engagement charges (occurrences/factures)
+export const getEngagementCharges = (engagementId: string) =>
+  invoke<EngagementCharge[]>("get_engagement_charges", { engagementId })
+
+export const addEngagementCharge = (charge: {
+  engagement_id: string
+  period_start?: string | null
+  period_end?: string | null
+  due_date: string
+  amount: number
+  currency?: string
+  quantity?: number | null
+  unit?: string | null
+  unit_price?: number | null
+  paid_on?: string | null
+  status?: ChargeStatus
+  payment_card_id?: string | null
+  reference_number?: string | null
+  invoice_number?: string | null
+  notes?: string | null
+}) => invoke<EngagementCharge>("add_engagement_charge", { charge })
+
+export const updateEngagementCharge = (charge: EngagementCharge) =>
+  invoke<void>("update_engagement_charge", { charge })
+
+export const markChargePaid = (
+  id: string,
+  paidOn: string,
+  paymentCardId?: string | null
+) => invoke<EngagementCharge>("mark_charge_paid", { id, paidOn, paymentCardId })
+
+export const deleteEngagementCharge = (id: string) =>
+  invoke<void>("delete_engagement_charge", { id })
+
+// Engagement revisions (contract amendments)
+export const getEngagementRevisions = (engagementId: string) =>
+  invoke<EngagementRevision[]>("get_engagement_revisions", { engagementId })
+
+export const addEngagementRevision = (revision: {
+  engagement_id: string
+  effective_date: string
+  amount: number
+  currency?: string
+  change_reason?: string | null
+  notes?: string | null
+}) => invoke<EngagementRevision>("add_engagement_revision", { revision })
+
+export const deleteEngagementRevision = (id: string) =>
+  invoke<void>("delete_engagement_revision", { id })
+
+// Polymorphic attachments
+export const getEngagementAttachments = (engagementId: string) =>
+  invoke<Attachment[]>("get_engagement_attachments", { engagementId })
+
+export const getEngagementChargeAttachments = (chargeId: string) =>
+  invoke<Attachment[]>("get_engagement_charge_attachments", { chargeId })
+
+export const addEngagementAttachment = (
+  engagementId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_attachment", {
+    engagementId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addEngagementChargeAttachment = (
+  chargeId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_charge_attachment", {
+    chargeId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addEngagementRevisionAttachment = (
+  revisionId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_revision_attachment", {
+    revisionId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })

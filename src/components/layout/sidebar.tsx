@@ -11,19 +11,41 @@ import {
   ScanLine,
   Ticket,
   Repeat,
+  FileText,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
 import { Button } from "@/components/ui/button"
 
-const navItems = [
-  { to: "/dashboard", icon: LayoutDashboard, label: "Tableau de bord" },
-  { to: "/scan", icon: ScanLine, label: "Scanner un reçu" },
-  { to: "/items", icon: ShoppingBag, label: "Achats" },
-  { to: "/tickets", icon: Ticket, label: "Billets & Codes" },
-  { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
-  { to: "/warranties", icon: Shield, label: "Garanties" },
-  { to: "/settings", icon: Settings, label: "Paramètres" },
+type NavSection = { label?: string; items: { to: string; icon: typeof LayoutDashboard; label: string }[] }
+
+const navSections: NavSection[] = [
+  {
+    items: [
+      { to: "/dashboard", icon: LayoutDashboard, label: "Tableau de bord" },
+      { to: "/scan", icon: ScanLine, label: "Scanner un reçu" },
+    ],
+  },
+  {
+    label: "Achats",
+    items: [
+      { to: "/items", icon: ShoppingBag, label: "Achats" },
+      { to: "/tickets", icon: Ticket, label: "Billets & Codes" },
+      { to: "/warranties", icon: Shield, label: "Garanties" },
+    ],
+  },
+  {
+    label: "Finances",
+    items: [
+      { to: "/engagements", icon: FileText, label: "Engagements" },
+      { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
+    ],
+  },
+  {
+    items: [
+      { to: "/settings", icon: Settings, label: "Paramètres" },
+    ],
+  },
 ]
 
 interface SidebarProps {
@@ -56,23 +78,32 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-3">
-        {navItems.map(({ to, icon: Icon, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              )
-            }
-          >
-            <Icon className="h-4 w-4" />
-            {label}
-          </NavLink>
+      <nav className="flex-1 space-y-4 overflow-y-auto p-3">
+        {navSections.map((section, idx) => (
+          <div key={idx} className="space-y-1">
+            {section.label && (
+              <p className="px-3 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                {section.label}
+              </p>
+            )}
+            {section.items.map(({ to, icon: Icon, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )
+                }
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </NavLink>
+            ))}
+          </div>
         ))}
       </nav>
 

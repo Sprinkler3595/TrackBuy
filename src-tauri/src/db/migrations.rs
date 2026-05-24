@@ -41,6 +41,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 8 {
         migrate_v8(conn)?;
     }
+    if current_version < 9 {
+        migrate_v9(conn)?;
+    }
 
     Ok(())
 }
@@ -437,6 +440,216 @@ fn migrate_v8(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (8);
         "
     ).map_err(|e| format!("Migration v8 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Engagements & recurring real-world charges (insurances, rent, leasing,
+/// utilities, fuel, telecom, taxes, fines…). This is the sibling domain of
+/// `subscriptions` (which now covers only online services) and uses the same
+/// roll-forward / payments-history pattern.
+///
+/// Companion tables introduced here:
+/// - `creditors`: payees with Swiss-specific fields (IBAN, BVR reference
+///   prefix). Kept separate from `merchants` so item vendor dropdowns stay
+///   clean and creditors can be typed (insurer, landlord, utility, …).
+/// - `engagement_revisions`: explicit contract amendments (annual premium
+///   adjustments, rent indexation). Complements `engagement_charges` snapshots
+///   for "official" price changes that haven't yet triggered a charge.
+/// - `engagement_charges`: each due/paid occurrence with snapshot amount,
+///   plus optional `quantity` / `unit` / `unit_price` for utilities (kWh, m³,
+///   litres) so price-per-unit can be tracked independently of consumption.
+///
+/// `payment_cards` is extended with IBAN / account holder so a single table
+/// can model both cards and bank accounts (LSV / standing orders / QR-bills).
+///
+/// The `attachments` table CHECK constraint is rebuilt (same pattern as
+/// migrate_v3 / migrate_v5) to allow polymorphic linking to engagements,
+/// engagement charges, and engagement revisions — contracts, conditions,
+/// BVR slips and invoices can now be attached at the right granularity.
+fn migrate_v9(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Extend payment_cards to cover bank accounts (LSV/SEPA/QR-bill).
+        ALTER TABLE payment_cards ADD COLUMN account_kind TEXT NOT NULL DEFAULT 'card';
+        ALTER TABLE payment_cards ADD COLUMN iban TEXT;
+        ALTER TABLE payment_cards ADD COLUMN bic TEXT;
+        ALTER TABLE payment_cards ADD COLUMN account_holder TEXT;
+        ALTER TABLE payment_cards ADD COLUMN institution TEXT;
+        CREATE INDEX idx_payment_cards_kind ON payment_cards(account_kind);
+
+        -- Creditors / payees (separate from merchants).
+        CREATE TABLE creditors (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            creditor_type TEXT NOT NULL DEFAULT 'other',
+            contact_email TEXT,
+            contact_phone TEXT,
+            address TEXT,
+            iban TEXT,
+            reference_prefix TEXT,
+            notes TEXT,
+            logo_path TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_creditors_type ON creditors(creditor_type);
+
+        -- Engagements header (one row per contract / recurring commitment).
+        CREATE TABLE engagements (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            engagement_type TEXT NOT NULL,
+            parent_engagement_id TEXT,
+            creditor_id TEXT,
+            payment_card_id TEXT,
+            contract_reference TEXT,
+            contract_start_date TEXT,
+            contract_end_date TEXT,
+            notice_period_days INTEGER,
+            billing_cycle TEXT NOT NULL,
+            cycle_interval INTEGER NOT NULL DEFAULT 1,
+            next_due_date TEXT,
+            current_amount REAL,
+            currency TEXT NOT NULL DEFAULT 'CHF',
+            payment_method TEXT,
+            auto_pay INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            ended_on TEXT,
+            notes TEXT,
+            clauses_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (parent_engagement_id) REFERENCES engagements(id) ON DELETE SET NULL,
+            FOREIGN KEY (creditor_id) REFERENCES creditors(id),
+            FOREIGN KEY (payment_card_id) REFERENCES payment_cards(id)
+        );
+        CREATE INDEX idx_engagements_type ON engagements(engagement_type);
+        CREATE INDEX idx_engagements_status ON engagements(status);
+        CREATE INDEX idx_engagements_creditor ON engagements(creditor_id);
+        CREATE INDEX idx_engagements_parent ON engagements(parent_engagement_id);
+        CREATE INDEX idx_engagements_due ON engagements(next_due_date);
+        CREATE INDEX idx_engagements_end ON engagements(contract_end_date);
+
+        -- Explicit contract revisions / amendments (annual premium changes,
+        -- rent indexation), independent of payment events.
+        CREATE TABLE engagement_revisions (
+            id TEXT PRIMARY KEY,
+            engagement_id TEXT NOT NULL,
+            effective_date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            change_reason TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_engagement_revisions_eng ON engagement_revisions(engagement_id);
+        CREATE INDEX idx_engagement_revisions_eff ON engagement_revisions(effective_date);
+
+        -- One row per scheduled / paid occurrence. The snapshot amount tracks
+        -- price evolution independently of contract revisions; utility-style
+        -- columns let us follow unit prices (kWh, m³, litres, GB, minutes).
+        CREATE TABLE engagement_charges (
+            id TEXT PRIMARY KEY,
+            engagement_id TEXT NOT NULL,
+            period_start TEXT,
+            period_end TEXT,
+            due_date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            quantity REAL,
+            unit TEXT,
+            unit_price REAL,
+            paid_on TEXT,
+            status TEXT NOT NULL DEFAULT 'scheduled',
+            payment_card_id TEXT,
+            reference_number TEXT,
+            invoice_number TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (payment_card_id) REFERENCES payment_cards(id)
+        );
+        CREATE INDEX idx_charges_engagement ON engagement_charges(engagement_id);
+        CREATE INDEX idx_charges_due ON engagement_charges(due_date);
+        CREATE INDEX idx_charges_paid ON engagement_charges(paid_on);
+        CREATE INDEX idx_charges_status ON engagement_charges(status);
+
+        -- Widen attachments to allow polymorphic linking against engagements,
+        -- their charges and revisions. SQLite cannot ALTER a CHECK in place,
+        -- so we rebuild the table (same pattern as v3 / v5).
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            subscription_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL OR subscription_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, subscription_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, subscription_id, NULL, NULL, NULL,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_subscription ON attachments(subscription_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+
+        -- FTS5 mirror for engagements (calque subscriptions_fts).
+        CREATE VIRTUAL TABLE engagements_fts USING fts5(
+            name, contract_reference, notes, content='engagements', content_rowid='rowid'
+        );
+
+        CREATE TRIGGER engagements_ai AFTER INSERT ON engagements BEGIN
+            INSERT INTO engagements_fts(rowid, name, contract_reference, notes)
+            VALUES (new.rowid, new.name, new.contract_reference, new.notes);
+        END;
+
+        CREATE TRIGGER engagements_ad AFTER DELETE ON engagements BEGIN
+            INSERT INTO engagements_fts(engagements_fts, rowid, name, contract_reference, notes)
+            VALUES ('delete', old.rowid, old.name, old.contract_reference, old.notes);
+        END;
+
+        CREATE TRIGGER engagements_au AFTER UPDATE ON engagements BEGIN
+            INSERT INTO engagements_fts(engagements_fts, rowid, name, contract_reference, notes)
+            VALUES ('delete', old.rowid, old.name, old.contract_reference, old.notes);
+            INSERT INTO engagements_fts(rowid, name, contract_reference, notes)
+            VALUES (new.rowid, new.name, new.contract_reference, new.notes);
+        END;
+
+        INSERT INTO schema_version (version) VALUES (9);
+        "
+    ).map_err(|e| format!("Migration v9 failed: {}", e))?;
 
     Ok(())
 }
