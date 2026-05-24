@@ -387,6 +387,11 @@ export function ScanReviewPage() {
     //       encrypted file via attach_pending_invoice_to_item (no decrypt /
     //       reencrypt). The command also drops the pending row atomically.
     //   (c) No invoice → nothing to do.
+    // share_with_order=true is only valid when the items were linked to an
+    // order above (requires >= 2 items). For single-item scans the invoice
+    // attaches directly to the lone item; otherwise the backend rejects with
+    // "Cet article ne fait pas partie d'un achat groupé".
+    const shareInvoice = createdIds.length >= 2
     let pendingPromoted = false
     if (createdIds.length > 0 && shared.invoiceFile) {
       try {
@@ -396,7 +401,7 @@ export function ScanReviewPage() {
           shared.invoiceFile.path,
           invoiceName,
           "invoice",
-          true,
+          shareInvoice,
         )
       } catch (err) {
         failures.push(`Facture: ${err}`)
@@ -410,7 +415,7 @@ export function ScanReviewPage() {
           createdIds[0],
           "invoice",
           invoiceName,
-          createdIds.length >= 2,
+          shareInvoice,
         )
         pendingPromoted = true
       } catch (err) {
@@ -425,7 +430,7 @@ export function ScanReviewPage() {
           shared.purchaseOrderFile.path,
           poName,
           "purchase_order",
-          true,
+          shareInvoice,
         )
       } catch (err) {
         failures.push(`Bon de commande: ${err}`)
