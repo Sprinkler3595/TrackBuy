@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    trackbuyv2_lib::run()
+    trackbuy_lib::run()
 }

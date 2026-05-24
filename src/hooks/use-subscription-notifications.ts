@@ -26,12 +26,12 @@ export function useSubscriptionNotifications() {
       const upcoming = await api.getUpcomingRenewals(7)
       if (upcoming.length === 1) {
         await notify(
-          "TrackBuyV2 — Abonnements",
+          "TrackBuy — Abonnements",
           `L'abonnement "${upcoming[0].name}" se renouvelle bientôt!`,
         )
       } else if (upcoming.length > 1) {
         await notify(
-          "TrackBuyV2 — Abonnements",
+          "TrackBuy — Abonnements",
           `${upcoming.length} abonnements se renouvellent dans 7 jours!`,
         )
       }

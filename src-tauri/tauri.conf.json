@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "TrackBuyV2",
+  "productName": "TrackBuy",
   "version": "0.1.0",
   "identifier": "com.trackbuy.v2",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "TrackBuyV2",
+        "title": "TrackBuy",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

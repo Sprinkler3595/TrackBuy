@@ -1,12 +1,12 @@
 [package]
-name = "trackbuyv2"
+name = "trackbuy"
 version = "0.1.0"
 edition = "2024"
-description = "TrackBuyV2 - Encrypted purchase tracker"
+description = "TrackBuy - Encrypted purchase tracker"
 authors = ["TrackBuy"]
 
 [lib]
-name = "trackbuyv2_lib"
+name = "trackbuy_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

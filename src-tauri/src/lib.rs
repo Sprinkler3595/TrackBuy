@@ -91,5 +91,5 @@ pub fn run() {
             commands::ai::ai_test_connection,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running TrackBuyV2");
+        .expect("error while running TrackBuy");
 }

@@ -1,10 +1,10 @@
-# TrackBuyV2
+# TrackBuy
 
 > Suivi d'achats personnel desktop, chiffré de bout en bout, 100 % local-first.
 
 **Version** : `0.1.0` (alpha) — **Identifier** : `com.trackbuy.v2` — **Plateformes** : macOS, Linux, Windows (via Tauri v2)
 
-TrackBuyV2 est une application desktop qui centralise tes achats, factures, garanties, abonnements et pièces jointes. Toutes les données restent sur ta machine, chiffrées via une clé dérivée d'un mot de passe maître. Aucune donnée ne quitte l'appareil, sauf si tu actives explicitement l'extraction de reçus par IA (qui appelle un LLM distant configurable).
+TrackBuy est une application desktop qui centralise tes achats, factures, garanties, abonnements et pièces jointes. Toutes les données restent sur ta machine, chiffrées via une clé dérivée d'un mot de passe maître. Aucune donnée ne quitte l'appareil, sauf si tu actives explicitement l'extraction de reçus par IA (qui appelle un LLM distant configurable).
 
 ---
 
@@ -123,7 +123,7 @@ Trois principes :
 ## Arborescence du projet
 
 ```
-trackbuyv2/
+trackbuy/
 ├── src/                          # Frontend React
 │   ├── App.tsx                   # Router (react-router v7) + I18n provider
 │   ├── main.tsx                  # Entrypoint React

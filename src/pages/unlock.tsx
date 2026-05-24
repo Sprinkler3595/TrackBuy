@@ -87,7 +87,7 @@ export function UnlockPage({ onUnlock, onCreate, vaultExists, defaultVault, avai
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg">
             <ShieldCheck className="h-8 w-8" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">TrackBuyV2</h1>
+          <h1 className="text-3xl font-bold tracking-tight">TrackBuy</h1>
           <p className="text-muted-foreground">
             Suivi d'achats chiffré de bout en bout
           </p>

@@ -409,7 +409,7 @@ export function GeneralSettings() {
           <CardTitle className="text-lg">{t("settings.about")}</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          <p>TrackBuyV2 v0.1.0</p>
+          <p>TrackBuy v0.1.0</p>
           <p>Tauri v2 + React 19 + SQLCipher</p>
         </CardContent>
       </Card>
