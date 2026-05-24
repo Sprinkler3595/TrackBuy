@@ -35,6 +35,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 6 {
         migrate_v6(conn)?;
     }
+    if current_version < 7 {
+        migrate_v7(conn)?;
+    }
 
     Ok(())
 }
@@ -390,6 +393,26 @@ fn migrate_v6(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (6);
         "
     ).map_err(|e| format!("Migration v6 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// User-overrides for attachment display name templates. One row per
+/// `attachment_type` when the user has customized the pattern. Absence of a
+/// row means "fall back to the bundled default" (defaults live in TS so they
+/// can evolve with the app without a migration).
+fn migrate_v7(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE filename_templates (
+            attachment_type TEXT PRIMARY KEY,
+            template TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO schema_version (version) VALUES (7);
+        "
+    ).map_err(|e| format!("Migration v7 failed: {}", e))?;
 
     Ok(())
 }

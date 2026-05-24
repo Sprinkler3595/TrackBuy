@@ -377,6 +377,20 @@ export const deletePendingInvoice = (id: string) =>
 export const getPendingInvoiceData = (id: string) =>
   invoke<string>("get_pending_invoice_data", { id })
 
+// Filename templates: user overrides for the harmonized display_name of
+// attachments. Defaults live in src/lib/filename-template.ts.
+export interface FilenameTemplate {
+  attachment_type: string
+  template: string
+  updated_at: string
+}
+export const listFilenameTemplates = () =>
+  invoke<FilenameTemplate[]>("list_filename_templates")
+export const setFilenameTemplate = (attachmentType: string, template: string) =>
+  invoke<FilenameTemplate>("set_filename_template", { attachmentType, template })
+export const resetFilenameTemplate = (attachmentType: string) =>
+  invoke<void>("reset_filename_template", { attachmentType })
+
 // Backup & stats commands
 export const backupVault = (destination: string) => invoke<string>("backup_vault", { destination })
 

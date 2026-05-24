@@ -16,6 +16,7 @@ import { SubscriptionsPage } from "@/pages/subscriptions"
 import { SubscriptionDetailPage } from "@/pages/subscription-detail"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
+import { NamingSettings } from "@/pages/settings-naming"
 import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
@@ -146,6 +147,7 @@ function AppContent() {
             <Route path="lieux" element={<LocationsPage />} />
             <Route path="cartes" element={<CardsPage />} />
             <Route path="coffres" element={<VaultsPage onSwitchVault={handleSwitchVault} />} />
+            <Route path="nommage" element={<NamingSettings />} />
           </Route>
           <Route path="/merchants" element={<Navigate to="/settings/marchands" replace />} />
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />

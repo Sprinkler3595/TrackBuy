@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom"
-import { Settings as SettingsIcon, Store, MapPin, CreditCard, Vault } from "lucide-react"
+import { Settings as SettingsIcon, Store, MapPin, CreditCard, Vault, FileSignature } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
 
@@ -17,6 +17,7 @@ export function SettingsPage() {
     { to: "/settings/lieux", end: false, icon: MapPin, label: locale === "fr" ? "Lieux" : "Locations" },
     { to: "/settings/cartes", end: false, icon: CreditCard, label: locale === "fr" ? "Cartes" : "Cards" },
     { to: "/settings/coffres", end: false, icon: Vault, label: locale === "fr" ? "Coffres" : "Vaults" },
+    { to: "/settings/nommage", end: false, icon: FileSignature, label: locale === "fr" ? "Nommage" : "Naming" },
   ]
 
   return (

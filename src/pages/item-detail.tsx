@@ -335,7 +335,21 @@ export function ItemDetailPage() {
       />
 
       {/* Pièces jointes */}
-      <AttachmentsPanel itemId={item.id} itemDescription={item.description} orderId={item.order_id} />
+      <AttachmentsPanel
+        itemId={item.id}
+        itemDescription={item.description}
+        orderId={item.order_id}
+        templateContext={{
+          merchant: item.merchant_name ?? undefined,
+          date: item.purchase_date,
+          invoice_number: item.invoice_number ?? undefined,
+          product_reference: item.product_reference ?? undefined,
+          item_kind: item.item_kind,
+          event_datetime: item.event_datetime ?? undefined,
+          event_location: item.event_location ?? undefined,
+          currency: item.currency,
+        }}
+      />
 
       <AttachmentViewer
         attachment={viewerTarget}

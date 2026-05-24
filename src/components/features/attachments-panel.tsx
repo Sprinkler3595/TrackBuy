@@ -7,6 +7,12 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { invalidateThumbnail } from "@/components/features/item-thumbnail"
 import { AttachmentViewer } from "@/components/features/attachment-viewer"
+import {
+  harmonizedName,
+  shortIdHint,
+  type AttachmentTypeKey,
+  type TemplateContext,
+} from "@/lib/filename-template"
 import * as api from "@/lib/tauri"
 
 interface AttachmentsPanelProps {
@@ -15,6 +21,10 @@ interface AttachmentsPanelProps {
   subscriptionId?: string
   itemDescription: string
   orderId?: string | null
+  /// Optional richer context (merchant, purchase_date, invoice_number…) used
+  /// when harmonizing the display name of newly-attached files. Falls back to
+  /// description + today's date if not provided.
+  templateContext?: Partial<TemplateContext>
 }
 
 const ATTACHMENT_TYPES = [
@@ -108,7 +118,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orderId }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -164,15 +174,29 @@ export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orde
     const paths = pending.paths
     setPending(null)
     let hasImage = false
+    const baseCtx: TemplateContext = {
+      description: itemDescription,
+      date: new Date().toISOString().slice(0, 10),
+      ...(templateContext ?? {}),
+    }
+    const harmonize = async (type: AttachmentTypeKey, originalName: string): Promise<string> => {
+      try {
+        return await harmonizedName(type, baseCtx, originalName, shortIdHint())
+      } catch {
+        return originalName
+      }
+    }
     for (const filePath of paths) {
       const name = filePath.split("/").pop() || filePath.split("\\").pop() || "fichier"
       try {
+        const type = (typeSlug as AttachmentTypeKey)
+        const harmonized = await harmonize(type, name)
         if (subscriptionId) {
-          await api.addSubscriptionAttachment(subscriptionId, filePath, name, typeSlug)
+          await api.addSubscriptionAttachment(subscriptionId, filePath, harmonized, typeSlug)
         } else if (itemId) {
-          await api.addAttachment(itemId, filePath, name, typeSlug, shareWithOrder)
+          await api.addAttachment(itemId, filePath, harmonized, typeSlug, shareWithOrder)
         }
-        toast(`"${name}" ajouté`, "success")
+        toast(`"${harmonized}" ajouté`, "success")
         if (/\.(jpe?g|png|gif|webp|svg)$/i.test(name)) hasImage = true
       } catch (e) {
         toast(`Erreur: ${e}`, "error")

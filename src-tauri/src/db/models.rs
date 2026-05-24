@@ -113,6 +113,13 @@ pub struct PendingInvoice {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FilenameTemplate {
+    pub attachment_type: String,
+    pub template: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VaultInfo {
     pub name: String,

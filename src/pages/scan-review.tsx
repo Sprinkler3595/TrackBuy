@@ -31,6 +31,12 @@ import {
   PENDING_RECEIPT_KEY,
   KIND_CODE_TYPE,
 } from "@/components/features/scan-review/types"
+import {
+  harmonizedName,
+  shortIdHint,
+  type AttachmentTypeKey,
+  type TemplateContext,
+} from "@/lib/filename-template"
 
 /**
  * Scan-review wizard. Walks the user through a freshly OCR'd receipt one item
@@ -241,6 +247,36 @@ export function ScanReviewPage() {
     const createdIds: string[] = []
     const failures: string[] = []
 
+    // Per-draft template context used to harmonize the display_name of any
+    // attachment created from this scan. Reused for the shared invoice and
+    // purchase_order below by picking the first draft's context.
+    const merchantName = merchants.find((m) => m.id === shared.merchant_id)?.name ?? shared.merchantHint
+
+    const ctxFor = (d: ItemDraft): TemplateContext => ({
+      merchant: merchantName,
+      date: shared.purchase_date,
+      invoice_number: shared.invoice_number || undefined,
+      product_reference: d.product_reference || undefined,
+      quantity: d.quantity ? parseInt(d.quantity) || undefined : undefined,
+      description: d.description || undefined,
+      item_kind: d.item_kind,
+      event_datetime: d.event_datetime || undefined,
+      event_location: d.event_location || undefined,
+      currency: shared.currency || undefined,
+    })
+
+    const harmonize = async (
+      type: AttachmentTypeKey,
+      ctx: TemplateContext,
+      originalName: string,
+    ): Promise<string> => {
+      try {
+        return await harmonizedName(type, ctx, originalName, shortIdHint())
+      } catch {
+        return originalName
+      }
+    }
+
     for (let i = 0; i < drafts.length; i++) {
       const d = drafts[i]
       try {
@@ -281,7 +317,8 @@ export function ScanReviewPage() {
         // the item creation, we just surface it in the recap toast.
         if (d.item_kind === "physical" && d.photo) {
           try {
-            await api.addAttachment(created.id, d.photo.path, d.photo.name, "photo")
+            const photoName = await harmonize("photo", ctxFor(d), d.photo.name)
+            await api.addAttachment(created.id, d.photo.path, photoName, "photo")
             invalidateThumbnail(created.id)
           } catch (err) {
             failures.push(`Photo "${d.description}": ${err}`)
@@ -289,11 +326,13 @@ export function ScanReviewPage() {
         }
         if (d.item_kind !== "physical" && d.code.trim()) {
           try {
+            const codeType = KIND_CODE_TYPE[d.item_kind] as AttachmentTypeKey
+            const codeName = await harmonize(codeType, ctxFor(d), `${d.description || "code"}.txt`)
             await api.addTextAttachment(
               created.id,
               d.code.trim(),
-              undefined,
-              KIND_CODE_TYPE[d.item_kind],
+              codeName,
+              codeType,
             )
           } catch (err) {
             failures.push(`Code "${d.description}": ${err}`)
@@ -332,13 +371,17 @@ export function ScanReviewPage() {
     }
 
     // Shared invoice + purchase order: attach to the first item with
-    // shareWithOrder=true so they show up at order level too.
+    // shareWithOrder=true so they show up at order level too. Use the first
+    // draft as the context source (merchant + date are shared anyway, and
+    // the per-item product_reference / description disambiguate the file).
+    const sharedCtx = drafts.length > 0 ? ctxFor(drafts[0]) : ctxFor(emptyDraft(shared.currency))
     if (createdIds.length > 0 && shared.invoiceFile) {
       try {
+        const invoiceName = await harmonize("invoice", sharedCtx, shared.invoiceFile.name)
         await api.addAttachment(
           createdIds[0],
           shared.invoiceFile.path,
-          shared.invoiceFile.name,
+          invoiceName,
           "invoice",
           true,
         )
@@ -348,10 +391,11 @@ export function ScanReviewPage() {
     }
     if (createdIds.length > 0 && shared.purchaseOrderFile) {
       try {
+        const poName = await harmonize("purchase_order", sharedCtx, shared.purchaseOrderFile.name)
         await api.addAttachment(
           createdIds[0],
           shared.purchaseOrderFile.path,
-          shared.purchaseOrderFile.name,
+          poName,
           "purchase_order",
           true,
         )
