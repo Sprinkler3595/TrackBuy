@@ -82,6 +82,13 @@ export interface PendingReceipt {
   /** Original receipt file (attached as the invoice if no override). */
   attachFile: string
   attachName: string
+  /** When set, the user resumed a pending invoice. The encrypted file is
+   *  promoted from `pending_invoices` to `attachments` once items are
+   *  created — the row is then dropped from the queue atomically. */
+  pending_invoice_id?: string
+  /** Original filename of the pending invoice (used as the harmonization
+   *  fallback). Only meaningful when `pending_invoice_id` is set. */
+  pending_invoice_name?: string
 }
 
 export const PENDING_RECEIPT_KEY = "trackbuy.pendingReceipt"

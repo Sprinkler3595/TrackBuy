@@ -100,6 +100,26 @@ pub struct Attachment {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingInvoice {
+    pub id: String,
+    pub label: Option<String>,
+    pub notes: Option<String>,
+    pub original_name: String,
+    pub mime_type: String,
+    pub file_path: String,
+    pub size_bytes: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FilenameTemplate {
+    pub attachment_type: String,
+    pub template: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VaultInfo {
     pub name: String,

@@ -104,6 +104,18 @@ export interface Attachment {
   created_at: string
 }
 
+export interface PendingInvoice {
+  id: string
+  label: string | null
+  notes: string | null
+  original_name: string
+  mime_type: string
+  file_path: string
+  size_bytes: number
+  created_at: string
+  updated_at: string
+}
+
 export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
 export type SubscriptionStatus = "active" | "paused" | "cancelled"
 
@@ -342,6 +354,59 @@ export const addTextAttachment = (
 export const deleteAttachment = (id: string) => invoke<void>("delete_attachment", { id })
 export const exportAttachment = (id: string, destination: string) => invoke<void>("export_attachment", { id, destination })
 export const getAttachmentData = (id: string) => invoke<string>("get_attachment_data", { id })
+
+// Pending invoices: receipt files stored encrypted, awaiting OCR + creation.
+export const listPendingInvoices = () =>
+  invoke<PendingInvoice[]>("list_pending_invoices")
+export const addPendingInvoice = (
+  sourcePath: string,
+  label?: string | null,
+  notes?: string | null,
+) =>
+  invoke<PendingInvoice>("add_pending_invoice", { sourcePath, label, notes })
+export const addPendingInvoicesBatch = (sourcePaths: string[]) =>
+  invoke<PendingInvoice[]>("add_pending_invoices_batch", { sourcePaths })
+export const updatePendingInvoice = (
+  id: string,
+  label: string | null,
+  notes: string | null,
+) =>
+  invoke<PendingInvoice>("update_pending_invoice", { id, label, notes })
+export const deletePendingInvoice = (id: string) =>
+  invoke<void>("delete_pending_invoice", { id })
+export const getPendingInvoiceData = (id: string) =>
+  invoke<string>("get_pending_invoice_data", { id })
+// Transfer a pending invoice into the attachments table for the given item
+// (optionally shared at the order level). The encrypted file on disk is
+// reused as-is — no decrypt/reencrypt round-trip.
+export const attachPendingInvoiceToItem = (
+  pendingInvoiceId: string,
+  itemId: string,
+  attachmentType?: string,
+  displayName?: string,
+  shareWithOrder?: boolean,
+) =>
+  invoke<Attachment>("attach_pending_invoice_to_item", {
+    pendingInvoiceId,
+    itemId,
+    attachmentType,
+    displayName,
+    shareWithOrder,
+  })
+
+// Filename templates: user overrides for the harmonized display_name of
+// attachments. Defaults live in src/lib/filename-template.ts.
+export interface FilenameTemplate {
+  attachment_type: string
+  template: string
+  updated_at: string
+}
+export const listFilenameTemplates = () =>
+  invoke<FilenameTemplate[]>("list_filename_templates")
+export const setFilenameTemplate = (attachmentType: string, template: string) =>
+  invoke<FilenameTemplate>("set_filename_template", { attachmentType, template })
+export const resetFilenameTemplate = (attachmentType: string) =>
+  invoke<void>("reset_filename_template", { attachmentType })
 
 // Backup & stats commands
 export const backupVault = (destination: string) => invoke<string>("backup_vault", { destination })

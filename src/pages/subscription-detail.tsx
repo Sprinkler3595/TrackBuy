@@ -343,7 +343,15 @@ export function SubscriptionDetailPage() {
       </Card>
 
       {/* Attachments */}
-      <AttachmentsPanel subscriptionId={sub.id} itemDescription={sub.name} />
+      <AttachmentsPanel
+        subscriptionId={sub.id}
+        itemDescription={sub.name}
+        templateContext={{
+          merchant: sub.merchant_name ?? undefined,
+          date: sub.start_date,
+          currency: sub.currency,
+        }}
+      />
 
       <ConfirmDialog
         open={deleteSubOpen}

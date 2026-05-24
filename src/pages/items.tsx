@@ -15,6 +15,12 @@ import { formatPrice, formatDate } from "@/lib/utils"
 import { findMerchantByName } from "@/lib/fuzzy-match"
 import { itemsToCsv, itemsToJson, downloadExport } from "@/lib/export"
 import { useI18n } from "@/lib/i18n"
+import {
+  harmonizedName,
+  shortIdHint,
+  type AttachmentTypeKey,
+  type TemplateContext,
+} from "@/lib/filename-template"
 import * as api from "@/lib/tauri"
 
 /**
@@ -337,12 +343,41 @@ export function ItemsPage() {
         toast("Lieu requis", "error")
         return
       }
+      // Shared helper: builds a template context from the current form state
+      // and runs the harmonization. Falls back to the original name on error.
+      const merchantName = merchants.find((m) => m.id === merchantId)?.name ?? merchantHint
+      const harmonize = async (
+        type: AttachmentTypeKey,
+        originalName: string,
+        extra?: Partial<TemplateContext>,
+      ): Promise<string> => {
+        try {
+          const ctx: TemplateContext = {
+            merchant: merchantName,
+            date: form.purchase_date,
+            invoice_number: form.invoice_number || undefined,
+            product_reference: form.product_reference || undefined,
+            description: form.description || undefined,
+            currency: form.currency || undefined,
+            ...extra,
+          }
+          return await harmonizedName(type, ctx, originalName, shortIdHint())
+        } catch {
+          return originalName
+        }
+      }
+
       if (!editingItem && isGroup) {
         const validLines = lines.filter((l) => l.description.trim() && l.price.trim())
         if (validLines.length === 0) {
           toast("Au moins une ligne avec description et prix", "error")
           return
         }
+        // Harmonize the invoice display name passed to the order command.
+        const invoiceDisplayName = sharedDocs.invoice
+          ? await harmonize("invoice", sharedDocs.invoice.name)
+          : undefined
+
         const result = await api.createOrderWithItems({
           purchase_date: form.purchase_date,
           currency: form.currency || undefined,
@@ -371,7 +406,7 @@ export function ItemsPage() {
             }
           }),
           invoice_source_path: sharedDocs.invoice?.path,
-          invoice_display_name: sharedDocs.invoice?.name,
+          invoice_display_name: invoiceDisplayName,
         })
 
         // Attach extras (purchase order shared with the order, per-line photos)
@@ -379,10 +414,11 @@ export function ItemsPage() {
         // since the user can re-add them manually from the detail page.
         if (sharedDocs.purchase_order && result.items.length > 0) {
           try {
+            const poName = await harmonize("purchase_order", sharedDocs.purchase_order.name)
             await api.addAttachment(
               result.items[0].id,
               sharedDocs.purchase_order.path,
-              sharedDocs.purchase_order.name,
+              poName,
               "purchase_order",
               true,
             )
@@ -394,7 +430,10 @@ export function ItemsPage() {
           const photo = validLines[i].photo
           if (photo) {
             try {
-              await api.addAttachment(result.items[i].id, photo.path, photo.name, "photo")
+              const photoName = await harmonize("photo", photo.name, {
+                description: validLines[i].description || undefined,
+              })
+              await api.addAttachment(result.items[i].id, photo.path, photoName, "photo")
               invalidateThumbnail(result.items[i].id)
             } catch (err) {
               toast(`Photo de "${validLines[i].description}" : ${err}`, "error")
@@ -444,9 +483,12 @@ export function ItemsPage() {
         // Auto-attach scanned file if pending
         if (pendingAttachment && newItem) {
           try {
-            const attachType = pendingAttachment.name.toLowerCase().endsWith(".pdf") ? "invoice" : "photo"
-            await api.addAttachment(newItem.id, pendingAttachment.path, pendingAttachment.name, attachType)
-            toast(`"${pendingAttachment.name}" ajouté en pièce jointe`, "success")
+            const attachType: AttachmentTypeKey = pendingAttachment.name.toLowerCase().endsWith(".pdf")
+              ? "invoice"
+              : "photo"
+            const harmonized = await harmonize(attachType, pendingAttachment.name)
+            await api.addAttachment(newItem.id, pendingAttachment.path, harmonized, attachType)
+            toast(`"${harmonized}" ajouté en pièce jointe`, "success")
           } catch (attachErr) {
             toast(`Pièce jointe: ${attachErr}`, "error")
           }
@@ -454,7 +496,7 @@ export function ItemsPage() {
         }
         // Attach user-picked files (photo / invoice / purchase order)
         if (newItem) {
-          const extras: Array<{ key: keyof typeof singleFiles; type: string; label: string }> = [
+          const extras: Array<{ key: keyof typeof singleFiles; type: AttachmentTypeKey; label: string }> = [
             { key: "photo", type: "photo", label: "Photo" },
             { key: "invoice", type: "invoice", label: "Facture" },
             { key: "purchase_order", type: "purchase_order", label: "Bon de commande" },
@@ -463,7 +505,8 @@ export function ItemsPage() {
             const f = singleFiles[key]
             if (!f) continue
             try {
-              await api.addAttachment(newItem.id, f.path, f.name, type)
+              const harmonized = await harmonize(type, f.name)
+              await api.addAttachment(newItem.id, f.path, harmonized, type)
               if (type === "photo") invalidateThumbnail(newItem.id)
             } catch (attachErr) {
               toast(`${label} : ${attachErr}`, "error")

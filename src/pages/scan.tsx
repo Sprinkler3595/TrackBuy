@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import Tesseract from "tesseract.js"
 import * as pdfjsLib from "pdfjs-dist"
@@ -19,7 +19,18 @@ import {
   Truck,
   TicketPercent,
   HelpCircle,
+  Inbox,
+  Image as ImageIcon,
+  Clock,
+  Play,
+  Pencil,
+  Trash2,
+  Save,
+  FilePlus,
+  FolderInput,
 } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import type { LineCategory, ItemKind } from "@/lib/tauri"
 import {
   PENDING_RECEIPT_KEY,
@@ -437,10 +448,45 @@ export function ScanPage() {
   const [showRawText, setShowRawText] = useState(false)
   const [attachToItem, setAttachToItem] = useState(true)
   const [error, setError] = useState("")
+  // Set when the current scan was resumed from a pending invoice — the row
+  // (and its encrypted file) is deleted once createItem(s) succeed.
+  const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null)
+
+  // Pending invoices queue (files awaiting OCR).
+  const [pendingInvoices, setPendingInvoices] = useState<api.PendingInvoice[]>([])
+  const [pendingLoading, setPendingLoading] = useState(false)
+  const [showSavePendingForm, setShowSavePendingForm] = useState(false)
+  const [savePendingLabel, setSavePendingLabel] = useState("")
+  const [savePendingNotes, setSavePendingNotes] = useState("")
+  const [savingPending, setSavingPending] = useState(false)
+  const [editingPending, setEditingPending] = useState<api.PendingInvoice | null>(null)
+  const [editLabel, setEditLabel] = useState("")
+  const [editNotes, setEditNotes] = useState("")
+  const [confirmDeletePending, setConfirmDeletePending] = useState<api.PendingInvoice | null>(null)
+  const [resumingId, setResumingId] = useState<string | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { toast } = useToast()
   const { t } = useI18n()
   const navigate = useNavigate()
+
+  // Initial + post-action reload of the pending queue. Best-effort: in
+  // browser mode (no Tauri) the invoke fails and we just show an empty list.
+  const reloadPending = useCallback(async () => {
+    setPendingLoading(true)
+    try {
+      const list = await api.listPendingInvoices()
+      setPendingInvoices(list)
+    } catch {
+      setPendingInvoices([])
+    } finally {
+      setPendingLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    reloadPending()
+  }, [reloadPending])
 
   const resetFile = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -455,6 +501,10 @@ export function ScanPage() {
     setStatus("idle")
     setProgress(0)
     setError("")
+    setPendingInvoiceId(null)
+    setShowSavePendingForm(false)
+    setSavePendingLabel("")
+    setSavePendingNotes("")
   }
 
   const loadFile = useCallback(async (file: File) => {
@@ -691,6 +741,11 @@ export function ScanPage() {
       drafts,
       attachFile: attachToItem && filePath ? filePath : "",
       attachName: attachToItem && filePath ? fileName : "",
+      pending_invoice_id: pendingInvoiceId ?? undefined,
+      // When resuming a pending invoice we don't have a local FS path, but we
+      // do know the original filename — pass it through so the harmonized
+      // display_name has a sensible fallback.
+      pending_invoice_name: pendingInvoiceId ? fileName : undefined,
     }
 
     sessionStorage.setItem(PENDING_RECEIPT_KEY, JSON.stringify(payload))
@@ -721,12 +776,277 @@ export function ScanPage() {
     if (file) loadFile(file)
   }
 
+  // ---------------- Pending invoices ----------------
+
+  /** Save the currently-loaded file as a pending invoice (no OCR run). */
+  const handleSaveAsPending = async () => {
+    if (!filePath) return
+    setSavingPending(true)
+    try {
+      await api.addPendingInvoice(
+        filePath,
+        savePendingLabel.trim() || null,
+        savePendingNotes.trim() || null,
+      )
+      toast("Facture mise en attente", "success")
+      resetFile()
+      await reloadPending()
+    } catch (err) {
+      toast(`Échec de la mise en attente: ${err}`, "error")
+    } finally {
+      setSavingPending(false)
+    }
+  }
+
+  /** Batch import: open multi-select dialog, save each as pending. */
+  const handleImportBatch = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog")
+      const selected = await open({
+        multiple: true,
+        title: "Importer des factures en attente",
+        filters: [
+          { name: t("scan.filterImagesAndPdf"), extensions: ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "pdf"] },
+        ],
+      })
+      if (!selected) return
+      const paths = Array.isArray(selected) ? selected : [selected]
+      if (paths.length === 0) return
+
+      const created = await api.addPendingInvoicesBatch(paths)
+      const failed = paths.length - created.length
+      if (failed === 0) {
+        toast(`${created.length} facture${created.length > 1 ? "s" : ""} en attente`, "success")
+      } else {
+        toast(`${created.length}/${paths.length} importée(s) — ${failed} échec(s)`, "error")
+      }
+      await reloadPending()
+    } catch (err) {
+      toast(`Import impossible: ${err}`, "error")
+    }
+  }
+
+  /** Resume a pending invoice: decrypt, load into preview, kick OCR. */
+  const handleResumePending = async (inv: api.PendingInvoice) => {
+    setResumingId(inv.id)
+    try {
+      const dataUrl = await api.getPendingInvoiceData(inv.id)
+      const commaIdx = dataUrl.indexOf(",")
+      const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl
+      const bytes = base64ToBytes(b64)
+      const isFilePdf = inv.mime_type === "application/pdf"
+        || inv.original_name.toLowerCase().endsWith(".pdf")
+
+      // Reset transient state without touching the queue list.
+      if (previewUrl) URL.revokeObjectURL(previewUrl)
+      pdfPageImages.forEach((u) => { if (u.startsWith("blob:")) URL.revokeObjectURL(u) })
+      setResult(null)
+      setSelectedItems(new Set())
+      setStatus("idle")
+      setProgress(0)
+      setError("")
+      setShowSavePendingForm(false)
+
+      setFileName(inv.original_name)
+      // No local FS path — the file lives encrypted in the vault. Auto-attach
+      // is disabled because addAttachment needs a source path on disk.
+      setFilePath(null)
+      setAttachToItem(false)
+      setPendingInvoiceId(inv.id)
+
+      if (isFilePdf) {
+        setIsPdf(true)
+        setPreviewUrl(null)
+        try {
+          // .slice() forces a plain ArrayBuffer (not SharedArrayBuffer),
+          // which is the only thing pdfToImages accepts.
+          const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+          const images = await pdfToImages(buf)
+          setPdfPageImages(images)
+          setPreviewUrl(images[0] || null)
+        } catch (err) {
+          setError(String(err))
+          toast(t("scan.pdfError"), "error")
+          setResumingId(null)
+          return
+        }
+      } else {
+        setIsPdf(false)
+        setPdfPageImages([])
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+        const blob = new Blob([buf], { type: inv.mime_type })
+        setPreviewUrl(URL.createObjectURL(blob))
+      }
+    } catch (err) {
+      toast(`Reprise impossible: ${err}`, "error")
+    } finally {
+      setResumingId(null)
+    }
+  }
+
+  const openEditPending = (inv: api.PendingInvoice) => {
+    setEditingPending(inv)
+    setEditLabel(inv.label ?? "")
+    setEditNotes(inv.notes ?? "")
+  }
+
+  const handleSaveEditPending = async () => {
+    if (!editingPending) return
+    try {
+      await api.updatePendingInvoice(
+        editingPending.id,
+        editLabel.trim() || null,
+        editNotes.trim() || null,
+      )
+      setEditingPending(null)
+      await reloadPending()
+      toast("Facture mise à jour", "success")
+    } catch (err) {
+      toast(`Mise à jour impossible: ${err}`, "error")
+    }
+  }
+
+  const handleConfirmDeletePending = async () => {
+    if (!confirmDeletePending) return
+    try {
+      await api.deletePendingInvoice(confirmDeletePending.id)
+      // If we were resuming this one, drop the link.
+      if (pendingInvoiceId === confirmDeletePending.id) {
+        setPendingInvoiceId(null)
+      }
+      setConfirmDeletePending(null)
+      await reloadPending()
+      toast("Facture supprimée", "success")
+    } catch (err) {
+      toast(`Suppression impossible: ${err}`, "error")
+    }
+  }
+
+  const formatBytes = (n: number) => {
+    if (n < 1024) return `${n} o`
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} Ko`
+    return `${(n / 1024 / 1024).toFixed(1)} Mo`
+  }
+
+  const formatPendingDate = (iso: string) => {
+    try {
+      return new Date(iso.replace(" ", "T") + "Z").toLocaleString("fr-CH", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      })
+    } catch {
+      return iso
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight">{t("scan.title")}</h2>
-        <p className="text-muted-foreground">{t("scan.subtitle")}</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight">{t("scan.title")}</h2>
+          <p className="text-muted-foreground">{t("scan.subtitle")}</p>
+        </div>
+        <Button variant="outline" onClick={handleImportBatch} className="shrink-0">
+          <FolderInput className="h-4 w-4" />
+          Importer plusieurs factures
+        </Button>
       </div>
+
+      {/* Pending invoices: files awaiting OCR + creation. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Inbox className="h-4 w-4 text-muted-foreground" />
+              Factures en attente
+              {pendingInvoices.length > 0 && (
+                <Badge variant="secondary">{pendingInvoices.length}</Badge>
+              )}
+            </CardTitle>
+            {pendingLoading && (
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            )}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {pendingInvoices.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              Aucune facture en attente. Utilise « Importer plusieurs factures » ou « Mettre en attente » après avoir chargé un fichier.
+            </p>
+          ) : (
+            <ul className="divide-y">
+              {pendingInvoices.map((inv) => {
+                const isImage = inv.mime_type.startsWith("image/")
+                const Icon = isImage ? ImageIcon : FileText
+                const displayName = inv.label || inv.original_name
+                const isResuming = resumingId === inv.id
+                return (
+                  <li key={inv.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
+                      <Icon className={`h-5 w-5 ${isImage ? "text-blue-500" : "text-red-500"}`} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate" title={inv.original_name}>
+                        {displayName}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatPendingDate(inv.created_at)}
+                        </span>
+                        <span>•</span>
+                        <span>{formatBytes(inv.size_bytes)}</span>
+                        {inv.label && (
+                          <>
+                            <span>•</span>
+                            <span className="truncate" title={inv.original_name}>{inv.original_name}</span>
+                          </>
+                        )}
+                      </div>
+                      {inv.notes && (
+                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2 italic">
+                          {inv.notes}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <Button
+                        size="sm"
+                        onClick={() => handleResumePending(inv)}
+                        disabled={isResuming || status === "scanning"}
+                      >
+                        {isResuming ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Play className="h-3.5 w-3.5" />
+                        )}
+                        Scanner
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => openEditPending(inv)}
+                        title="Éditer"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => setConfirmDeletePending(inv)}
+                        title="Supprimer"
+                        className="hover:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Left: File upload & preview */}
@@ -792,12 +1112,12 @@ export function ScanPage() {
                   ) : null}
                 </div>
 
-                {/* Scan button */}
-                <div className="flex gap-2">
+                {/* Scan + "save as pending" actions */}
+                <div className="flex gap-2 flex-wrap">
                   <Button
                     onClick={runOcr}
-                    disabled={status === "scanning"}
-                    className="flex-1"
+                    disabled={status === "scanning" || showSavePendingForm}
+                    className="flex-1 min-w-[180px]"
                   >
                     {status === "scanning" ? (
                       <>
@@ -816,7 +1136,87 @@ export function ScanPage() {
                       <RotateCcw className="h-4 w-4" />
                     </Button>
                   )}
+                  {/* "Save as pending" is only useful when a real file path
+                      is available (Tauri mode) AND we're not already resuming
+                      a pending invoice (would duplicate the row). */}
+                  {filePath && !pendingInvoiceId && status !== "scanning" && (
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowSavePendingForm((v) => !v)}
+                      title="Stocker la facture sans la scanner"
+                    >
+                      <FilePlus className="h-4 w-4" />
+                      Mettre en attente
+                    </Button>
+                  )}
                 </div>
+
+                {/* Inline form to capture optional label + notes before
+                    sending the current file to the pending queue. */}
+                {showSavePendingForm && filePath && (
+                  <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Libellé (optionnel)
+                      </label>
+                      <Input
+                        value={savePendingLabel}
+                        onChange={(e) => setSavePendingLabel(e.target.value)}
+                        placeholder={`ex: ${fileName}`}
+                        disabled={savingPending}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Note (optionnelle)
+                      </label>
+                      <textarea
+                        value={savePendingNotes}
+                        onChange={(e) => setSavePendingNotes(e.target.value)}
+                        placeholder="Mémo libre pour retrouver cette facture plus tard"
+                        rows={2}
+                        disabled={savingPending}
+                        className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setShowSavePendingForm(false)
+                          setSavePendingLabel("")
+                          setSavePendingNotes("")
+                        }}
+                        disabled={savingPending}
+                      >
+                        Annuler
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={handleSaveAsPending}
+                        disabled={savingPending}
+                      >
+                        {savingPending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Save className="h-3.5 w-3.5" />
+                        )}
+                        Enregistrer
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Banner when scanning a resumed pending invoice. */}
+                {pendingInvoiceId && (
+                  <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+                    <Clock className="h-4 w-4 shrink-0 mt-0.5" />
+                    <span>
+                      Reprise d'une facture en attente : elle sera retirée de la file une fois les articles créés.
+                    </span>
+                  </div>
+                )}
 
                 {/* Progress bar */}
                 {status === "scanning" && (
@@ -1148,6 +1548,61 @@ export function ScanPage() {
           )}
         </div>
       </div>
+
+      {/* Edit dialog for a pending invoice (label + notes). */}
+      {editingPending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setEditingPending(null)}
+          />
+          <div className="relative z-50 w-full max-w-md rounded-xl border bg-card p-6 shadow-2xl animate-in zoom-in-95 fade-in space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-lg font-semibold">Éditer la facture en attente</h3>
+              <p className="text-xs text-muted-foreground truncate" title={editingPending.original_name}>
+                {editingPending.original_name}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Libellé</label>
+              <Input
+                value={editLabel}
+                onChange={(e) => setEditLabel(e.target.value)}
+                placeholder="Vide = nom du fichier"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Note</label>
+              <textarea
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+                rows={3}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditingPending(null)}>
+                Annuler
+              </Button>
+              <Button onClick={handleSaveEditPending}>Enregistrer</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={!!confirmDeletePending}
+        title="Supprimer la facture en attente ?"
+        message={
+          confirmDeletePending
+            ? `"${confirmDeletePending.label || confirmDeletePending.original_name}" sera supprimée définitivement. Cette action est irréversible.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        variant="destructive"
+        onConfirm={handleConfirmDeletePending}
+        onCancel={() => setConfirmDeletePending(null)}
+      />
     </div>
   )
 }
