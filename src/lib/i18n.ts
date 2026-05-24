@@ -355,7 +355,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "vaults.switchTo": "Basculer vers",
     "vaults.password": "Mot de passe",
 
-    "unlock.title": "TrackBuyV2",
+    "unlock.title": "TrackBuy",
     "unlock.subtitle": "Suivi d'achats chiffré de bout en bout",
     "unlock.create": "Créer un coffre",
     "unlock.unlock": "Déverrouiller",
@@ -603,7 +603,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "vaults.switchTo": "Switch to",
     "vaults.password": "Password",
 
-    "unlock.title": "TrackBuyV2",
+    "unlock.title": "TrackBuy",
     "unlock.subtitle": "End-to-end encrypted purchase tracker",
     "unlock.create": "Create a vault",
     "unlock.unlock": "Unlock",

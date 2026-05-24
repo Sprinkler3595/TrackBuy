@@ -4593,7 +4593,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "trackbuyv2"
+name = "trackbuy"
 version = "0.1.0"
 dependencies = [
  "argon2",

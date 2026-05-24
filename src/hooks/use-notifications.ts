@@ -32,12 +32,12 @@ export function useWarrantyNotifications() {
       const expiring = await api.getExpiringWarranties(7)
       if (expiring.length === 1) {
         await notify(
-          "TrackBuyV2 — Garanties",
+          "TrackBuy — Garanties",
           `La garantie de "${expiring[0].item_description}" expire bientôt!`,
         )
       } else if (expiring.length > 1) {
         await notify(
-          "TrackBuyV2 — Garanties",
+          "TrackBuy — Garanties",
           `${expiring.length} garanties expirent dans les 7 prochains jours!`,
         )
       }
@@ -53,12 +53,12 @@ export function useWarrantyNotifications() {
         const r = reminders[0]
         const verb = r.reminder_type === "event" ? "Événement" : "Expiration"
         await notify(
-          `TrackBuyV2 — ${verb}`,
+          `TrackBuy — ${verb}`,
           `${r.description} — dans ${r.days_until} jour(s)`,
         )
       } else {
         await notify(
-          "TrackBuyV2 — Rappels",
+          "TrackBuy — Rappels",
           `${reminders.length} rappels dans les 7 prochains jours!`,
         )
       }
