@@ -43,7 +43,7 @@ const emptyForm = (): FormState => ({
   billing_cycle: "monthly",
   cycle_interval: "1",
   price: "",
-  currency: "CAD",
+  currency: "CHF",
   auto_renewal: true,
   trial_end_date: "",
   cancel_by_date: "",
@@ -304,7 +304,7 @@ export function SubscriptionsPage() {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("subscriptions.category")}</label>
-                <Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="streaming, cloud, gym…" />
+                <Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="streaming, cloud, SaaS…" />
               </div>
 
               <div className="space-y-2">

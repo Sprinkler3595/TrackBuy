@@ -264,6 +264,10 @@ pub struct Subscription {
     /// 'active' | 'paused' | 'cancelled'
     pub status: String,
     pub notes: Option<String>,
+    /// Discriminator for the subscription scope. 'online' covers streaming,
+    /// SaaS, cloud, hosting, gaming. Real-world recurring charges (insurance,
+    /// rent, utilities…) belong in the separate `engagements` domain.
+    pub kind: String,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -291,6 +295,7 @@ pub struct CreateSubscriptionRequest {
     pub cancellation_url: Option<String>,
     pub status: Option<String>,
     pub notes: Option<String>,
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

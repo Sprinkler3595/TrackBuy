@@ -38,6 +38,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 7 {
         migrate_v7(conn)?;
     }
+    if current_version < 8 {
+        migrate_v8(conn)?;
+    }
 
     Ok(())
 }
@@ -413,6 +416,27 @@ fn migrate_v7(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (7);
         "
     ).map_err(|e| format!("Migration v7 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Refocus `subscriptions` on online services (streaming, SaaS, cloud, gaming)
+/// by adding a `kind` discriminator. Existing rows default to 'online' so the
+/// new filter on `get_subscriptions` keeps showing them unchanged. Future kinds
+/// (e.g. 'gym') stay open without breaking the current contract.
+///
+/// Real-world recurring charges (insurance, rent, utilities, taxes, fines…)
+/// will live in their own `engagements` table introduced by a later migration,
+/// rather than overloading this one further.
+fn migrate_v8(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE subscriptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'online';
+        CREATE INDEX idx_subscriptions_kind ON subscriptions(kind);
+
+        INSERT INTO schema_version (version) VALUES (8);
+        "
+    ).map_err(|e| format!("Migration v8 failed: {}", e))?;
 
     Ok(())
 }

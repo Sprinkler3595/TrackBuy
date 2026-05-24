@@ -36,7 +36,7 @@ FORMAT DE RÉPONSE (JSON strict, sans markdown) :
   "description": string,
   "purchase_date": "YYYY-MM-DD",
   "purchase_price": number,
-  "currency": "EUR"|"CAD"|"CHF"|"USD"|"GBP",
+  "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
   "merchant": string,
   "invoice_number": string|null,
   "product_reference": string|null,

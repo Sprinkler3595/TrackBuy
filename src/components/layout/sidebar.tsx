@@ -21,7 +21,7 @@ const navItems = [
   { to: "/scan", icon: ScanLine, label: "Scanner un reçu" },
   { to: "/items", icon: ShoppingBag, label: "Achats" },
   { to: "/tickets", icon: Ticket, label: "Billets & Codes" },
-  { to: "/subscriptions", icon: Repeat, label: "Abonnements" },
+  { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
   { to: "/warranties", icon: Shield, label: "Garanties" },
   { to: "/settings", icon: Settings, label: "Paramètres" },
 ]

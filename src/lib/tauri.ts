@@ -118,6 +118,7 @@ export interface PendingInvoice {
 
 export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
 export type SubscriptionStatus = "active" | "paused" | "cancelled"
+export type SubscriptionKind = "online"
 
 export interface Subscription {
   id: string
@@ -137,6 +138,7 @@ export interface Subscription {
   cancellation_url: string | null
   status: SubscriptionStatus
   notes: string | null
+  kind: SubscriptionKind
   created_at: string
   updated_at: string
   merchant_name?: string | null
@@ -510,6 +512,7 @@ export const createSubscription = (subscription: {
   cancellation_url?: string | null
   status?: SubscriptionStatus
   notes?: string | null
+  kind?: SubscriptionKind
 }) => invoke<Subscription>("create_subscription", { subscription })
 
 export const updateSubscription = (subscription: Subscription) =>
