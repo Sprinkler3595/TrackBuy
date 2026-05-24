@@ -379,29 +379,16 @@ export function ScanReviewPage() {
     // the per-item product_reference / description disambiguate the file).
     const sharedCtx = drafts.length > 0 ? ctxFor(drafts[0]) : ctxFor(emptyDraft(shared.currency))
 
-    // Two distinct invoice attach paths:
-    //   (a) Resumed pending invoice → the encrypted file already lives in the
-    //       vault; promote it via attach_pending_invoice_to_item (no decrypt /
-    //       reencrypt). This branch also drops the pending_invoices row
-    //       atomically, so we skip the cleanup deletePendingInvoice call below.
-    //   (b) Regular scan with a local file path → existing addAttachment flow.
+    // Three distinct invoice attach paths, in priority order:
+    //   (a) User manually picked a file (shared.invoiceFile set) → use it via
+    //       the regular addAttachment flow. If a pending was also queued, the
+    //       user explicitly overrode it — drop the pending row.
+    //   (b) Resumed pending invoice with no manual override → promote the
+    //       encrypted file via attach_pending_invoice_to_item (no decrypt /
+    //       reencrypt). The command also drops the pending row atomically.
+    //   (c) No invoice → nothing to do.
     let pendingPromoted = false
-    if (createdIds.length > 0 && pendingInvoiceId) {
-      try {
-        const fallbackName = pendingInvoiceName ?? originalAttach?.name ?? "facture.pdf"
-        const invoiceName = await harmonize("invoice", sharedCtx, fallbackName)
-        await api.attachPendingInvoiceToItem(
-          pendingInvoiceId,
-          createdIds[0],
-          "invoice",
-          invoiceName,
-          createdIds.length >= 2,
-        )
-        pendingPromoted = true
-      } catch (err) {
-        failures.push(`Facture (en attente): ${err}`)
-      }
-    } else if (createdIds.length > 0 && shared.invoiceFile) {
+    if (createdIds.length > 0 && shared.invoiceFile) {
       try {
         const invoiceName = await harmonize("invoice", sharedCtx, shared.invoiceFile.name)
         await api.addAttachment(
@@ -413,6 +400,21 @@ export function ScanReviewPage() {
         )
       } catch (err) {
         failures.push(`Facture: ${err}`)
+      }
+    } else if (createdIds.length > 0 && pendingInvoiceId) {
+      try {
+        const fallbackName = pendingInvoiceName ?? "facture.pdf"
+        const invoiceName = await harmonize("invoice", sharedCtx, fallbackName)
+        await api.attachPendingInvoiceToItem(
+          pendingInvoiceId,
+          createdIds[0],
+          "invoice",
+          invoiceName,
+          createdIds.length >= 2,
+        )
+        pendingPromoted = true
+      } catch (err) {
+        failures.push(`Facture (en attente): ${err}`)
       }
     }
     if (createdIds.length > 0 && shared.purchaseOrderFile) {
@@ -532,6 +534,7 @@ export function ScanReviewPage() {
               locations={locations}
               cards={cards}
               onQuickCreate={setQuickCreate}
+              pendingInvoiceName={pendingInvoiceName}
             />
           )}
 

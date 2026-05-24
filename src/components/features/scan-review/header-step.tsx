@@ -1,4 +1,4 @@
-import { Plus, FileText, ClipboardList, AlertCircle, TicketPercent } from "lucide-react"
+import { Plus, FileText, ClipboardList, AlertCircle, TicketPercent, Paperclip, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DocSlot } from "@/components/features/doc-slot"
@@ -22,6 +22,10 @@ interface HeaderStepProps {
   locations: api.Location[]
   cards: api.PaymentCard[]
   onQuickCreate: (entity: "merchant" | "location" | "card") => void
+  /** When the wizard was launched from a pending invoice, holds the original
+   *  filename so we can show a visual hint that it will be auto-attached on
+   *  submit (the user can still override by picking a file in the slot). */
+  pendingInvoiceName?: string | null
 }
 
 export function HeaderStep({
@@ -31,8 +35,13 @@ export function HeaderStep({
   locations,
   cards,
   onQuickCreate,
+  pendingInvoiceName,
 }: HeaderStepProps) {
   const discountTotal = shared.discounts.reduce((sum, d) => sum + d.price, 0)
+  // Pre-attached state: a file from the pending queue is queued for auto
+  // attach. The hint disappears as soon as the user manually picks one in
+  // the slot (manual pick takes priority on submit).
+  const showPendingHint = !!pendingInvoiceName && !shared.invoiceFile
 
   return (
     <div className="space-y-5">
@@ -119,13 +128,32 @@ export function HeaderStep({
       {/* Shared documents — facture (invoice) and bon de commande (purchase
           order) attached at the order level (shareWithOrder=true on submit). */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <DocSlot
-          label="Facture"
-          icon={<FileText className="h-3.5 w-3.5" />}
-          value={shared.invoiceFile}
-          onChange={(v) => onChange({ invoiceFile: v })}
-          dialogTitle="Sélectionner la facture"
-        />
+        <div className="space-y-2">
+          <DocSlot
+            label="Facture"
+            icon={<FileText className="h-3.5 w-3.5" />}
+            value={shared.invoiceFile}
+            onChange={(v) => onChange({ invoiceFile: v })}
+            dialogTitle="Sélectionner la facture"
+          />
+          {showPendingHint && (
+            <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-2 text-xs text-blue-700 dark:text-blue-300">
+              <Paperclip className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  Facture déjà en file d'attente
+                </p>
+                <p className="truncate" title={pendingInvoiceName ?? ""}>
+                  {pendingInvoiceName}
+                </p>
+                <p className="text-blue-700/80 dark:text-blue-300/80 mt-0.5">
+                  S'attachera automatiquement. Choisis un fichier ci-dessus pour la remplacer.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
         <DocSlot
           label="Bon de commande"
           icon={<ClipboardList className="h-3.5 w-3.5" />}
