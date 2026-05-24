@@ -32,6 +32,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 5 {
         migrate_v5(conn)?;
     }
+    if current_version < 6 {
+        migrate_v6(conn)?;
+    }
 
     Ok(())
 }
@@ -357,6 +360,36 @@ fn migrate_v5(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (5);
         "
     ).map_err(|e| format!("Migration v5 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Pending invoices: a holding area for receipt files (PDF/image) uploaded by
+/// the user but not yet scanned and turned into items. Each row keeps the
+/// encrypted file path (same `<vault>/files/` pool as attachments) plus
+/// optional user metadata (short label, free-form notes). Rows are deleted —
+/// and the underlying ciphertext shredded — once the user processes the
+/// invoice through the scan-review wizard.
+fn migrate_v6(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE pending_invoices (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            notes TEXT,
+            original_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX idx_pending_invoices_created ON pending_invoices(created_at);
+
+        INSERT INTO schema_version (version) VALUES (6);
+        "
+    ).map_err(|e| format!("Migration v6 failed: {}", e))?;
 
     Ok(())
 }

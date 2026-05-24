@@ -82,6 +82,9 @@ export interface PendingReceipt {
   /** Original receipt file (attached as the invoice if no override). */
   attachFile: string
   attachName: string
+  /** When set, the user resumed a pending invoice. Deleted from the queue
+   *  once the wizard creates the items successfully. */
+  pending_invoice_id?: string
 }
 
 export const PENDING_RECEIPT_KEY = "trackbuy.pendingReceipt"

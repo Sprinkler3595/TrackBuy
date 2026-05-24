@@ -76,6 +76,9 @@ export function ScanReviewPage() {
   const [shared, setShared] = useState<SharedState>(blankShared)
   const [drafts, setDrafts] = useState<ItemDraft[]>([])
   const [originalAttach, setOriginalAttach] = useState<{ path: string; name: string } | null>(null)
+  // Set when this wizard was launched from a pending invoice — the row is
+  // dropped from the queue once createItem(s) succeed.
+  const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [quickCreate, setQuickCreate] = useState<QuickCreateEntity | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -130,6 +133,7 @@ export function ScanReviewPage() {
           ? { path: payload.attachFile, name: payload.attachName }
           : null,
       )
+      setPendingInvoiceId(payload.pending_invoice_id ?? null)
     } catch (err) {
       console.error("Failed to hydrate scan-review:", err)
       toast("Données du scan invalides.", "error")
@@ -157,12 +161,13 @@ export function ScanReviewPage() {
         drafts,
         attachFile: originalAttach?.path ?? "",
         attachName: originalAttach?.name ?? "",
+        pending_invoice_id: pendingInvoiceId ?? undefined,
       }
       sessionStorage.setItem(PENDING_RECEIPT_KEY, JSON.stringify(payload))
     } catch {
       /* quota or serialization error — silently ignore, persistence is best-effort */
     }
-  }, [hydrated, shared, drafts, originalAttach])
+  }, [hydrated, shared, drafts, originalAttach, pendingInvoiceId])
 
   // ------------------ Patches helpers ------------------
   const patchShared = useCallback((p: Partial<SharedState>) => {
@@ -352,6 +357,17 @@ export function ScanReviewPage() {
         )
       } catch (err) {
         failures.push(`Bon de commande: ${err}`)
+      }
+    }
+
+    // Drop the pending invoice from the queue once at least one item was
+    // created from it. Best-effort: a failure here just leaves the row in the
+    // queue, which the user can delete manually.
+    if (pendingInvoiceId && createdIds.length > 0) {
+      try {
+        await api.deletePendingInvoice(pendingInvoiceId)
+      } catch (err) {
+        console.warn("Failed to delete pending invoice:", err)
       }
     }
 

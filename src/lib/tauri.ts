@@ -104,6 +104,18 @@ export interface Attachment {
   created_at: string
 }
 
+export interface PendingInvoice {
+  id: string
+  label: string | null
+  notes: string | null
+  original_name: string
+  mime_type: string
+  file_path: string
+  size_bytes: number
+  created_at: string
+  updated_at: string
+}
+
 export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
 export type SubscriptionStatus = "active" | "paused" | "cancelled"
 
@@ -342,6 +354,28 @@ export const addTextAttachment = (
 export const deleteAttachment = (id: string) => invoke<void>("delete_attachment", { id })
 export const exportAttachment = (id: string, destination: string) => invoke<void>("export_attachment", { id, destination })
 export const getAttachmentData = (id: string) => invoke<string>("get_attachment_data", { id })
+
+// Pending invoices: receipt files stored encrypted, awaiting OCR + creation.
+export const listPendingInvoices = () =>
+  invoke<PendingInvoice[]>("list_pending_invoices")
+export const addPendingInvoice = (
+  sourcePath: string,
+  label?: string | null,
+  notes?: string | null,
+) =>
+  invoke<PendingInvoice>("add_pending_invoice", { sourcePath, label, notes })
+export const addPendingInvoicesBatch = (sourcePaths: string[]) =>
+  invoke<PendingInvoice[]>("add_pending_invoices_batch", { sourcePaths })
+export const updatePendingInvoice = (
+  id: string,
+  label: string | null,
+  notes: string | null,
+) =>
+  invoke<PendingInvoice>("update_pending_invoice", { id, label, notes })
+export const deletePendingInvoice = (id: string) =>
+  invoke<void>("delete_pending_invoice", { id })
+export const getPendingInvoiceData = (id: string) =>
+  invoke<string>("get_pending_invoice_data", { id })
 
 // Backup & stats commands
 export const backupVault = (destination: string) => invoke<string>("backup_vault", { destination })

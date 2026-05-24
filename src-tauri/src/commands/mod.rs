@@ -7,6 +7,7 @@ pub mod files;
 pub mod items;
 pub mod locations;
 pub mod merchants;
+pub mod pending_invoices;
 pub mod reminders;
 pub mod subscriptions;
 pub mod warranties;
