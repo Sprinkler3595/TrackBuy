@@ -480,8 +480,10 @@ export interface Stats {
   top_creditors: Array<{ name: string; total: number }>
   yoy_by_engagement: YoyEngagement[]
   window_months: number
+  display_currency: string
 }
-export const getStats = (months?: number) => invoke<Stats>("get_stats", { months })
+export const getStats = (months?: number, currency?: string) =>
+  invoke<Stats>("get_stats", { months, currency })
 
 // File I/O commands (path-validated, replace direct plugin-fs usage)
 export const writeTextFile = (destination: string, content: string) =>

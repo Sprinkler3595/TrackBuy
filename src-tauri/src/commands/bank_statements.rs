@@ -216,6 +216,7 @@ struct ItemCandidate {
     id: String,
     purchase_date: String,
     amount_cents: i64,
+    currency: String,
     merchant_id: String,
     merchant_name_normalized: String,
 }
@@ -255,6 +256,7 @@ fn load_item_candidates(
 
     let sql = "SELECT i.id, i.purchase_date,
                       i.purchase_price,
+                      i.currency,
                       i.merchant_id,
                       COALESCE(m.name, '')
                FROM items i
@@ -274,12 +276,13 @@ fn load_item_candidates(
     let rows = stmt
         .query_map([&lo, &hi], |row| {
             let amount: f64 = row.get(2)?;
-            let merchant_name: String = row.get(4)?;
+            let merchant_name: String = row.get(5)?;
             Ok(ItemCandidate {
                 id: row.get(0)?,
                 purchase_date: row.get(1)?,
                 amount_cents: to_cents(amount),
-                merchant_id: row.get(3)?,
+                currency: row.get(3)?,
+                merchant_id: row.get(4)?,
                 merchant_name_normalized: normalize_name(&merchant_name),
             })
         })
@@ -305,6 +308,7 @@ fn date_diff_days(a: &str, b: &str) -> Option<i64> {
 fn match_single_item(
     haystack: &str,
     tx_amount_cents: i64,
+    tx_currency: &str,
     tx_date: &str,
     direction: &str,
     items: &[ItemCandidate],
@@ -314,6 +318,11 @@ fn match_single_item(
     }
     let mut best: Option<(String, f64)> = None;
     for it in items {
+        // Skip currency mismatch — no FX conversion is performed, so a
+        // 100 CHF item must not falsely match a 100 EUR debit.
+        if !it.currency.eq_ignore_ascii_case(tx_currency) {
+            continue;
+        }
         if (it.amount_cents - tx_amount_cents).abs() > AMOUNT_EPSILON_CENTS {
             continue;
         }
@@ -350,6 +359,7 @@ fn match_single_item(
 fn match_grouped_items(
     haystack: &str,
     tx_amount_cents: i64,
+    tx_currency: &str,
     tx_date: &str,
     direction: &str,
     items: &[ItemCandidate],
@@ -360,9 +370,13 @@ fn match_grouped_items(
     // Bucket by (merchant_id, purchase_date) and only keep buckets where
     // (a) the bank libellé contains the merchant name (signal required),
     // (b) the bucket has at least 2 items (else use single_item path),
-    // (c) the date is within ±7d of the transaction date (window).
+    // (c) the date is within ±7d of the transaction date (window),
+    // (d) the currency matches the bank line (no FX conversion).
     let mut buckets: HashMap<(String, String), Vec<&ItemCandidate>> = HashMap::new();
     for it in items {
+        if !it.currency.eq_ignore_ascii_case(tx_currency) {
+            continue;
+        }
         let dd = date_diff_days(&it.purchase_date, tx_date).unwrap_or(i64::MAX);
         if dd > ITEM_DATE_TOLERANCE_DAYS {
             continue;
@@ -609,6 +623,26 @@ pub fn save_extracted_transactions(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
+    // Refuse re-extraction when the user has already confirmed/materialized
+    // any match on this statement — wiping those rows would also orphan the
+    // back-links posted on items.bank_transaction_id. Force an explicit
+    // delete-statement-and-re-import flow instead of silent data loss.
+    let engaged: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM bank_statement_transactions
+             WHERE statement_id = ?1 AND match_status IN ('confirmed', 'created')",
+            [&statement_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if engaged > 0 {
+        return Err(format!(
+            "Re-extraction refusée : {} transaction(s) déjà confirmée(s) ou matérialisée(s) sur ce relevé. \
+             Supprimez le relevé pour repartir à zéro.",
+            engaged
+        ));
+    }
+
     // Drop any previous extraction so the user can re-run without dupes.
     conn.execute(
         "DELETE FROM bank_statement_transactions WHERE statement_id = ?1",
@@ -624,6 +658,16 @@ pub fn save_extracted_transactions(
             .currency
             .clone()
             .unwrap_or_else(|| "CHF".to_string());
+        // Normalize direction so case/whitespace variants from the AI
+        // ("Debit", " DEBIT ", "Credit") don't silently break every
+        // downstream matcher that compares with == "debit".
+        let direction = tx.direction.trim().to_lowercase();
+        if direction != "debit" && direction != "credit" {
+            return Err(format!(
+                "Direction invalide '{}' pour la transaction « {} » — attendu 'debit' ou 'credit'.",
+                tx.direction, tx.raw_description
+            ));
+        }
         conn.execute(
             "INSERT INTO bank_statement_transactions (id, statement_id, transaction_date,
              booking_date, raw_description, cleaned_description, amount, currency, direction,
@@ -638,7 +682,7 @@ pub fn save_extracted_transactions(
                 cleaned,
                 tx.amount,
                 currency,
-                tx.direction,
+                direction,
                 tx.reference_number,
                 tx.counterparty_iban,
             ],
@@ -788,10 +832,10 @@ pub fn suggest_matches_for_statement(
         period_end.as_deref(),
     )?;
 
-    let txs: Vec<(String, String, Option<String>, f64, String, String)> = {
+    let txs: Vec<(String, String, Option<String>, f64, String, String, String)> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, raw_description, cleaned_description, amount, direction, transaction_date
+                "SELECT id, raw_description, cleaned_description, amount, direction, transaction_date, currency
                  FROM bank_statement_transactions
                  WHERE statement_id = ?1 AND match_status = 'unmatched'",
             )
@@ -804,6 +848,7 @@ pub fn suggest_matches_for_statement(
                 row.get::<_, f64>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -812,7 +857,7 @@ pub fn suggest_matches_for_statement(
     };
 
     let mut updated = 0;
-    for (tx_id, raw, cleaned, amount, direction, tx_date) in txs {
+    for (tx_id, raw, cleaned, amount, direction, tx_date, tx_currency) in txs {
         let haystack = cleaned.clone().unwrap_or_else(|| raw.to_lowercase());
         // 1) Persisted rules
         let mut matched: Option<(String, String, String, f64)> = None; // (kind, id, rule_id, conf)
@@ -882,6 +927,7 @@ pub fn suggest_matches_for_statement(
             if let Some((item_id, conf)) = match_single_item(
                 &needle_haystack,
                 amount_cents,
+                &tx_currency,
                 &tx_date,
                 &direction,
                 &item_candidates,
@@ -890,6 +936,7 @@ pub fn suggest_matches_for_statement(
             } else if let Some((ids, conf)) = match_grouped_items(
                 &needle_haystack,
                 amount_cents,
+                &tx_currency,
                 &tx_date,
                 &direction,
                 &item_candidates,

@@ -35,8 +35,15 @@ export function formatDate(date: string): string {
 }
 
 export function daysUntil(dateStr: string): number {
-  const target = new Date(dateStr)
+  // Parse as local midnight (not UTC) so the comparison is in the user's
+  // calendar — otherwise "2025-06-15" is read as midnight UTC, which sits
+  // on June 14 in UTC-5 zones and yields off-by-one warranty/renewal alerts.
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number)
+  if (!y || !m || !d) return 0
+  const target = new Date(y, m - 1, d)
   const now = new Date()
-  const diff = target.getTime() - now.getTime()
-  return Math.ceil(diff / (1000 * 60 * 60 * 24))
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  // Round (not ceil): both ends are local midnights so the diff is a whole
+  // number of days modulo DST — round absorbs the ±1h DST drift cleanly.
+  return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
