@@ -154,6 +154,42 @@ export function BankStatementReviewPage() {
   }
   useEffect(() => { load() }, [id])
 
+  // All hooks must be declared before any early return — otherwise the
+  // count of hooks differs between renders ("Rendered more hooks than
+  // during the previous render") which throws inside React.
+  const sortedTransactions = useMemo(() => {
+    const copy = [...transactions]
+    switch (sortKey) {
+      case "date":   return copy.sort((a, b) => a.transaction_date.localeCompare(b.transaction_date))
+      case "amount": return copy.sort((a, b) => b.amount - a.amount)
+      case "status": {
+        const order: Record<api.BankTxMatchStatus, number> = {
+          unmatched: 0, suggested: 1, confirmed: 2, created: 3, ignored: 4,
+        }
+        return copy.sort((a, b) => order[a.match_status] - order[b.match_status])
+      }
+    }
+  }, [transactions, sortKey])
+
+  const totals = useMemo(() => {
+    let debit = 0, credit = 0, unmatched = 0, suggested = 0, confirmed = 0
+    for (const t of transactions) {
+      if (t.direction === "debit") debit += t.amount; else credit += t.amount
+      if (t.match_status === "unmatched") unmatched++
+      else if (t.match_status === "suggested") suggested++
+      else if (t.match_status === "confirmed" || t.match_status === "created") confirmed++
+    }
+    return { debit, credit, unmatched, suggested, confirmed }
+  }, [transactions])
+
+  const filteredCandidates = useMemo(() => {
+    const q = pickerSearch.toLowerCase().trim()
+    if (!q) return candidates.slice(0, 30)
+    return candidates
+      .filter((c) => c.label.toLowerCase().includes(q) || (c.hint ?? "").toLowerCase().includes(q))
+      .slice(0, 30)
+  }, [candidates, pickerSearch])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -366,39 +402,6 @@ export function BankStatementReviewPage() {
       toast(`Erreur: ${err}`, "error")
     }
   }
-
-  const sortedTransactions = useMemo(() => {
-    const copy = [...transactions]
-    switch (sortKey) {
-      case "date":   return copy.sort((a, b) => a.transaction_date.localeCompare(b.transaction_date))
-      case "amount": return copy.sort((a, b) => b.amount - a.amount)
-      case "status": {
-        const order: Record<api.BankTxMatchStatus, number> = {
-          unmatched: 0, suggested: 1, confirmed: 2, created: 3, ignored: 4,
-        }
-        return copy.sort((a, b) => order[a.match_status] - order[b.match_status])
-      }
-    }
-  }, [transactions, sortKey])
-
-  const totals = useMemo(() => {
-    let debit = 0, credit = 0, unmatched = 0, suggested = 0, confirmed = 0
-    for (const t of transactions) {
-      if (t.direction === "debit") debit += t.amount; else credit += t.amount
-      if (t.match_status === "unmatched") unmatched++
-      else if (t.match_status === "suggested") suggested++
-      else if (t.match_status === "confirmed" || t.match_status === "created") confirmed++
-    }
-    return { debit, credit, unmatched, suggested, confirmed }
-  }, [transactions])
-
-  const filteredCandidates = useMemo(() => {
-    const q = pickerSearch.toLowerCase().trim()
-    if (!q) return candidates.slice(0, 30)
-    return candidates
-      .filter((c) => c.label.toLowerCase().includes(q) || (c.hint ?? "").toLowerCase().includes(q))
-      .slice(0, 30)
-  }, [candidates, pickerSearch])
 
   const candidateLabel = (kind: api.BankTxTargetKind | null, id: string | null, fallback?: string | null): string => {
     if (!kind || !id) return fallback ?? "—"
