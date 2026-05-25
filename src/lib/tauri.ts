@@ -107,6 +107,8 @@ export interface Attachment {
   engagement_id: string | null
   engagement_charge_id: string | null
   engagement_revision_id: string | null
+  income_id: string | null
+  income_receipt_id: string | null
   original_name: string
   display_name: string
   mime_type: string
@@ -838,6 +840,143 @@ export const addEngagementRevisionAttachment = (
 ) =>
   invoke<Attachment>("add_engagement_revision_attachment", {
     revisionId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+// ============================================================================
+// Incomes (salaries, bonuses, allowances, dividends, …)
+// ============================================================================
+
+export type IncomeType =
+  | "salary" | "bonus" | "thirteenth" | "pension"
+  | "unemployment" | "family_allowance" | "dividend"
+  | "rental" | "gift" | "reimbursement" | "other"
+
+export type IncomeBillingCycle =
+  | "monthly" | "quarterly" | "yearly" | "one_shot" | "custom"
+
+export type IncomeStatus = "active" | "ended"
+
+export interface Income {
+  id: string
+  name: string
+  income_type: IncomeType
+  source_name: string | null
+  payment_card_id: string | null
+  billing_cycle: IncomeBillingCycle
+  cycle_interval: number
+  next_expected_date: string | null
+  current_amount: number | null
+  currency: string
+  status: IncomeStatus
+  started_on: string | null
+  ended_on: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface IncomeReceipt {
+  id: string
+  income_id: string
+  received_on: string
+  amount: number
+  currency: string
+  period_label: string | null
+  gross_amount: number | null
+  social_charges_amount: number | null
+  pension_amount: number | null
+  tax_at_source_amount: number | null
+  other_deductions_amount: number | null
+  bonus_amount: number | null
+  notes: string | null
+  created_at: string
+}
+
+// Incomes CRUD
+export const getIncomes = (params?: { status?: string; income_type?: string }) =>
+  invoke<Income[]>("get_incomes", params ?? {})
+
+export const getIncome = (id: string) =>
+  invoke<Income>("get_income", { id })
+
+export const createIncome = (income: {
+  name: string
+  income_type: IncomeType
+  source_name?: string | null
+  payment_card_id?: string | null
+  billing_cycle: IncomeBillingCycle
+  cycle_interval?: number
+  next_expected_date?: string | null
+  current_amount?: number | null
+  currency?: string
+  status?: IncomeStatus
+  started_on?: string | null
+  notes?: string | null
+}) => invoke<Income>("create_income", { income })
+
+export const updateIncome = (income: Income) =>
+  invoke<void>("update_income", { income })
+
+export const deleteIncome = (id: string) =>
+  invoke<void>("delete_income", { id })
+
+// Income receipts (each reception, with optional payslip detail)
+export const getIncomeReceipts = (incomeId: string) =>
+  invoke<IncomeReceipt[]>("get_income_receipts", { incomeId })
+
+export const logIncomeReceipt = (receipt: {
+  income_id: string
+  received_on: string
+  amount: number
+  currency?: string
+  period_label?: string | null
+  gross_amount?: number | null
+  social_charges_amount?: number | null
+  pension_amount?: number | null
+  tax_at_source_amount?: number | null
+  other_deductions_amount?: number | null
+  bonus_amount?: number | null
+  notes?: string | null
+}) => invoke<IncomeReceipt>("log_income_receipt", { receipt })
+
+export const updateIncomeReceipt = (receipt: IncomeReceipt) =>
+  invoke<void>("update_income_receipt", { receipt })
+
+export const deleteIncomeReceipt = (id: string) =>
+  invoke<void>("delete_income_receipt", { id })
+
+// Polymorphic attachments
+export const getIncomeAttachments = (incomeId: string) =>
+  invoke<Attachment[]>("get_income_attachments", { incomeId })
+
+export const getIncomeReceiptAttachments = (receiptId: string) =>
+  invoke<Attachment[]>("get_income_receipt_attachments", { receiptId })
+
+export const addIncomeAttachment = (
+  incomeId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_income_attachment", {
+    incomeId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addIncomeReceiptAttachment = (
+  receiptId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_income_receipt_attachment", {
+    receiptId,
     sourcePath,
     displayName,
     attachmentType,

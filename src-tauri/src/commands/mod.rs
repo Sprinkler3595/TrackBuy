@@ -5,6 +5,7 @@ pub mod backup;
 pub mod cards;
 pub mod creditors;
 pub mod engagements;
+pub mod incomes;
 pub mod filename_templates;
 pub mod files;
 pub mod items;

@@ -44,6 +44,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 9 {
         migrate_v9(conn)?;
     }
+    if current_version < 10 {
+        migrate_v10(conn)?;
+    }
 
     Ok(())
 }
@@ -650,6 +653,138 @@ fn migrate_v9(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (9);
         "
     ).map_err(|e| format!("Migration v9 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Incomes (salaries, bonuses, allowances, dividends, refunds…). Designed
+/// as the symmetric counterpart to `engagements`: a header table for each
+/// recurring (or one-shot) income stream, plus an `income_receipts` table
+/// that snapshots each actual reception.
+///
+/// Receipts carry optional payslip-detail columns (gross_amount, social
+/// charges, pension, tax-at-source, other deductions, bonus). For a
+/// non-salary income (allocations familiales, dividendes…) these stay
+/// NULL — only `amount` (= what landed in the account) is filled.
+/// Keeping payslip detail on the same row avoids a JOIN-per-receipt and
+/// matches the typical "one payslip → one credit" reality. If a payslip
+/// ever needs richer structure (multiple bonus lines, hourly breakdown),
+/// we can split into a child table without a breaking change.
+///
+/// `attachments` is rebuilt once more (same `attachments_new` pattern as
+/// v3/v5/v9) to add polymorphic FKs to incomes and income_receipts so the
+/// encrypted PDF bulletin lives next to the receipt that materialises it.
+fn migrate_v10(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE incomes (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            income_type TEXT NOT NULL,
+            source_name TEXT,
+            payment_card_id TEXT,
+            billing_cycle TEXT NOT NULL,
+            cycle_interval INTEGER NOT NULL DEFAULT 1,
+            next_expected_date TEXT,
+            current_amount REAL,
+            currency TEXT NOT NULL DEFAULT 'CHF',
+            status TEXT NOT NULL DEFAULT 'active',
+            started_on TEXT,
+            ended_on TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (payment_card_id) REFERENCES payment_cards(id)
+        );
+        CREATE INDEX idx_incomes_type ON incomes(income_type);
+        CREATE INDEX idx_incomes_status ON incomes(status);
+        CREATE INDEX idx_incomes_next ON incomes(next_expected_date);
+
+        CREATE TABLE income_receipts (
+            id TEXT PRIMARY KEY,
+            income_id TEXT NOT NULL,
+            received_on TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            period_label TEXT,
+            -- Optional payslip detail (salaries only): all NULL for
+            -- allocations / dividends / refunds. Sum of deductions should
+            -- equal gross_amount - amount, but no DB constraint enforces
+            -- it — the UI handles the sanity check.
+            gross_amount REAL,
+            social_charges_amount REAL,
+            pension_amount REAL,
+            tax_at_source_amount REAL,
+            other_deductions_amount REAL,
+            bonus_amount REAL,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_income_receipts_income ON income_receipts(income_id);
+        CREATE INDEX idx_income_receipts_date ON income_receipts(received_on);
+
+        -- Widen attachments once more: add income_id + income_receipt_id.
+        -- Same `attachments_new` rebuild pattern as v3/v5/v9 since SQLite
+        -- cannot ALTER a CHECK constraint in place.
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            subscription_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            income_id TEXT,
+            income_receipt_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL OR subscription_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL
+                   OR income_id IS NOT NULL OR income_receipt_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, subscription_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             income_id, income_receipt_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, subscription_id, engagement_id,
+               engagement_charge_id, engagement_revision_id,
+               NULL, NULL,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_subscription ON attachments(subscription_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+        CREATE INDEX idx_attachments_income ON attachments(income_id);
+        CREATE INDEX idx_attachments_income_receipt ON attachments(income_receipt_id);
+
+        INSERT INTO schema_version (version) VALUES (10);
+        "
+    ).map_err(|e| format!("Migration v10 failed: {}", e))?;
 
     Ok(())
 }

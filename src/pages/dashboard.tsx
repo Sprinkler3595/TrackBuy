@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatPrice, formatDate, daysUntil } from "@/lib/utils"
 import { monthlyEquivalent as engagementMonthlyEquivalent } from "@/lib/finance"
+import { MaskedAmount, useAmountsVisible } from "@/components/features/amount-masked"
 import * as api from "@/lib/tauri"
 
 /// Normalise a subscription's price to its per-month equivalent so the
@@ -21,6 +22,7 @@ function monthlyEquivalent(s: api.Subscription): number {
 }
 
 export function DashboardPage() {
+  const [amountsVisible] = useAmountsVisible()
   const [items, setItems] = useState<api.Item[]>([])
   const [expiring, setExpiring] = useState<api.Warranty[]>([])
   const [reminders, setReminders] = useState<api.Reminder[]>([])
@@ -29,12 +31,13 @@ export function DashboardPage() {
   const [subs, setSubs] = useState<api.Subscription[]>([])
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [upcomingCharges, setUpcomingCharges] = useState<api.EngagementCharge[]>([])
+  const [incomes, setIncomes] = useState<api.Income[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       try {
-        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData, engData, chargesData] = await Promise.all([
+        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData, engData, chargesData, incomesData] = await Promise.all([
           api.getItems(),
           api.getExpiringWarranties(30),
           api.getUpcomingReminders(30),
@@ -43,6 +46,7 @@ export function DashboardPage() {
           api.getSubscriptions({ status: "active" }),
           api.getEngagements({ status: "active" }),
           api.getUpcomingEngagementCharges(30),
+          api.getIncomes({ status: "active" }),
         ])
         setItems(itemsData)
         setExpiring(expiringData)
@@ -52,6 +56,7 @@ export function DashboardPage() {
         setSubs(subsData)
         setEngagements(engData)
         setUpcomingCharges(chargesData)
+        setIncomes(incomesData)
       } catch (err) {
         console.error("Failed to load dashboard:", err)
       } finally {
@@ -77,6 +82,12 @@ export function DashboardPage() {
     .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot")
     .reduce((acc, e) => acc + engagementMonthlyEquivalent(e.current_amount as number, e.billing_cycle, e.cycle_interval), 0)
   const dueIn30 = upcomingCharges.reduce((acc, c) => acc + c.amount, 0)
+  const monthlyIncome = incomes
+    .filter((i) => i.current_amount != null && i.billing_cycle !== "one_shot")
+    .reduce((acc, i) => acc + engagementMonthlyEquivalent(i.current_amount as number, i.billing_cycle, i.cycle_interval), 0)
+  const totalMonthlyExpense = monthlyCost + engagementMonthly
+  const expenseRatio = monthlyIncome > 0 ? (totalMonthlyExpense / monthlyIncome) * 100 : 0
+  const remaining = monthlyIncome - totalMonthlyExpense
 
   return (
     <div className="space-y-6">
@@ -153,6 +164,52 @@ export function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Finances : revenus mensuels nets + ratio dépenses/revenus + reste à vivre.
+          Affiché seulement si au moins un revenu actif existe — sinon la
+          division par 0 cache le ratio. */}
+      {monthlyIncome > 0 && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Revenu mensuel net</CardTitle>
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                <MaskedAmount amount={monthlyIncome} currency="CHF" visible={amountsVisible} />
+              </div>
+              <p className="text-xs text-muted-foreground">{incomes.length} source(s) active(s)</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Ratio dépenses / revenus</CardTitle>
+              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-bold ${expenseRatio > 100 ? "text-destructive" : expenseRatio > 80 ? "text-amber-600 dark:text-amber-500" : ""}`}>
+                {expenseRatio.toFixed(1)} %
+              </div>
+              <p className="text-xs text-muted-foreground">Engagements + abonnements / revenu net</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Reste à vivre</CardTitle>
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-bold ${remaining < 0 ? "text-destructive" : ""}`}>
+                <MaskedAmount amount={remaining} currency="CHF" visible={amountsVisible} />
+              </div>
+              <p className="text-xs text-muted-foreground">Avant achats ponctuels et imprévus</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Monthly spending chart */}
       {stats && stats.monthly_spending.length > 0 && (

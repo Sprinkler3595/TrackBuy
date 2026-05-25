@@ -102,6 +102,8 @@ pub struct Attachment {
     pub engagement_id: Option<String>,
     pub engagement_charge_id: Option<String>,
     pub engagement_revision_id: Option<String>,
+    pub income_id: Option<String>,
+    pub income_receipt_id: Option<String>,
     pub original_name: String,
     pub display_name: String,
     pub mime_type: String,
@@ -526,5 +528,89 @@ pub struct CreateEngagementRevisionRequest {
     pub amount: f64,
     pub currency: Option<String>,
     pub change_reason: Option<String>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Incomes (salaries, bonuses, allowances, dividends, …)
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Income {
+    pub id: String,
+    pub name: String,
+    /// 'salary' | 'bonus' | 'thirteenth' | 'pension' | 'unemployment'
+    /// 'family_allowance' | 'dividend' | 'rental' | 'gift' | 'reimbursement'
+    /// 'other'
+    pub income_type: String,
+    pub source_name: Option<String>,
+    pub payment_card_id: Option<String>,
+    /// 'monthly' | 'quarterly' | 'yearly' | 'one_shot' | 'custom'
+    pub billing_cycle: String,
+    pub cycle_interval: i32,
+    pub next_expected_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: String,
+    /// 'active' | 'ended'
+    pub status: String,
+    pub started_on: Option<String>,
+    pub ended_on: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_deserializing)]
+    pub card_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateIncomeRequest {
+    pub name: String,
+    pub income_type: String,
+    pub source_name: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub billing_cycle: String,
+    pub cycle_interval: Option<i32>,
+    pub next_expected_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: Option<String>,
+    pub status: Option<String>,
+    pub started_on: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomeReceipt {
+    pub id: String,
+    pub income_id: String,
+    pub received_on: String,
+    /// Net amount that actually landed in the account.
+    pub amount: f64,
+    pub currency: String,
+    pub period_label: Option<String>,
+    // Optional payslip detail — populated for salaries, left NULL for
+    // allocations / dividends / refunds.
+    pub gross_amount: Option<f64>,
+    pub social_charges_amount: Option<f64>,
+    pub pension_amount: Option<f64>,
+    pub tax_at_source_amount: Option<f64>,
+    pub other_deductions_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateIncomeReceiptRequest {
+    pub income_id: String,
+    pub received_on: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub period_label: Option<String>,
+    pub gross_amount: Option<f64>,
+    pub social_charges_amount: Option<f64>,
+    pub pension_amount: Option<f64>,
+    pub tax_at_source_amount: Option<f64>,
+    pub other_deductions_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
     pub notes: Option<String>,
 }

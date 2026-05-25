@@ -411,6 +411,65 @@ export type TranslationKeys = {
   "creditors.typeEmployer": string
   "creditors.typeBank": string
   "creditors.typeOther": string
+
+  // Incomes
+  "nav.incomes": string
+  "incomes.title": string
+  "incomes.subtitle": string
+  "incomes.new": string
+  "incomes.edit": string
+  "incomes.name": string
+  "incomes.type": string
+  "incomes.source": string
+  "incomes.card": string
+  "incomes.cycle": string
+  "incomes.cycleInterval": string
+  "incomes.nextExpected": string
+  "incomes.currentAmount": string
+  "incomes.currency": string
+  "incomes.status": string
+  "incomes.startedOn": string
+  "incomes.endedOn": string
+  "incomes.notes": string
+  "incomes.statusActive": string
+  "incomes.statusEnded": string
+  "incomes.deleteConfirm": string
+  "incomes.created": string
+  "incomes.updated": string
+  "incomes.deleted": string
+  "incomes.noIncomes": string
+  "incomes.monthlyTotal": string
+  "incomes.showAmounts": string
+  "incomes.hideAmounts": string
+  "incomes.receipts": string
+  "incomes.logReceipt": string
+  "incomes.receivedOn": string
+  "incomes.amount": string
+  "incomes.periodLabel": string
+  "incomes.payslipDetail": string
+  "incomes.grossAmount": string
+  "incomes.socialCharges": string
+  "incomes.pension": string
+  "incomes.taxAtSource": string
+  "incomes.otherDeductions": string
+  "incomes.bonus": string
+  "incomes.deductionCheck": string
+  "incomes.noReceipts": string
+  "incomes.totalYTD": string
+  "incomes.attachments": string
+
+  // Income type labels
+  "incomes.type.salary": string
+  "incomes.type.bonus": string
+  "incomes.type.thirteenth": string
+  "incomes.type.pension": string
+  "incomes.type.unemployment": string
+  "incomes.type.family_allowance": string
+  "incomes.type.dividend": string
+  "incomes.type.rental": string
+  "incomes.type.gift": string
+  "incomes.type.reimbursement": string
+  "incomes.type.other": string
 }
 
 const translations: Record<Locale, TranslationKeys> = {
@@ -801,6 +860,63 @@ const translations: Record<Locale, TranslationKeys> = {
     "creditors.typeEmployer": "Employeur",
     "creditors.typeBank": "Banque",
     "creditors.typeOther": "Autre",
+
+    "nav.incomes": "Revenus",
+    "incomes.title": "Revenus",
+    "incomes.subtitle": "Salaires, primes, allocations, rentes, dividendes",
+    "incomes.new": "Nouveau revenu",
+    "incomes.edit": "Modifier le revenu",
+    "incomes.name": "Nom",
+    "incomes.type": "Type",
+    "incomes.source": "Source / employeur",
+    "incomes.card": "Compte de destination",
+    "incomes.cycle": "Périodicité",
+    "incomes.cycleInterval": "Intervalle",
+    "incomes.nextExpected": "Prochain versement attendu",
+    "incomes.currentAmount": "Montant net courant",
+    "incomes.currency": "Devise",
+    "incomes.status": "Statut",
+    "incomes.startedOn": "Début",
+    "incomes.endedOn": "Fin",
+    "incomes.notes": "Notes",
+    "incomes.statusActive": "Actif",
+    "incomes.statusEnded": "Terminé",
+    "incomes.deleteConfirm": "Ce revenu, son historique et les bulletins associés seront supprimés définitivement.",
+    "incomes.created": "Revenu créé",
+    "incomes.updated": "Revenu modifié",
+    "incomes.deleted": "Revenu supprimé",
+    "incomes.noIncomes": "Aucun revenu enregistré.",
+    "incomes.monthlyTotal": "Revenu mensuel total",
+    "incomes.showAmounts": "Afficher les montants",
+    "incomes.hideAmounts": "Masquer les montants",
+    "incomes.receipts": "Versements",
+    "incomes.logReceipt": "Enregistrer un versement",
+    "incomes.receivedOn": "Reçu le",
+    "incomes.amount": "Montant net",
+    "incomes.periodLabel": "Période",
+    "incomes.payslipDetail": "Détail du bulletin",
+    "incomes.grossAmount": "Brut",
+    "incomes.socialCharges": "AVS / AI / APG",
+    "incomes.pension": "2e pilier",
+    "incomes.taxAtSource": "Impôt à la source",
+    "incomes.otherDeductions": "Autres retenues",
+    "incomes.bonus": "Prime / bonus",
+    "incomes.deductionCheck": "Brut − retenues",
+    "incomes.noReceipts": "Aucun versement enregistré.",
+    "incomes.totalYTD": "Cumul versé",
+    "incomes.attachments": "Bulletins de salaire",
+
+    "incomes.type.salary": "Salaire",
+    "incomes.type.bonus": "Prime / bonus",
+    "incomes.type.thirteenth": "13e salaire",
+    "incomes.type.pension": "Rente / pension",
+    "incomes.type.unemployment": "Indemnités chômage",
+    "incomes.type.family_allowance": "Allocations familiales",
+    "incomes.type.dividend": "Dividendes",
+    "incomes.type.rental": "Revenus locatifs",
+    "incomes.type.gift": "Don / cadeau",
+    "incomes.type.reimbursement": "Remboursement",
+    "incomes.type.other": "Autre",
   },
 
   en: {
@@ -1190,6 +1306,63 @@ const translations: Record<Locale, TranslationKeys> = {
     "creditors.typeEmployer": "Employer",
     "creditors.typeBank": "Bank",
     "creditors.typeOther": "Other",
+
+    "nav.incomes": "Incomes",
+    "incomes.title": "Incomes",
+    "incomes.subtitle": "Salaries, bonuses, allowances, pensions, dividends",
+    "incomes.new": "New income",
+    "incomes.edit": "Edit income",
+    "incomes.name": "Name",
+    "incomes.type": "Type",
+    "incomes.source": "Source / employer",
+    "incomes.card": "Destination account",
+    "incomes.cycle": "Frequency",
+    "incomes.cycleInterval": "Interval",
+    "incomes.nextExpected": "Next expected receipt",
+    "incomes.currentAmount": "Current net amount",
+    "incomes.currency": "Currency",
+    "incomes.status": "Status",
+    "incomes.startedOn": "Started",
+    "incomes.endedOn": "Ended",
+    "incomes.notes": "Notes",
+    "incomes.statusActive": "Active",
+    "incomes.statusEnded": "Ended",
+    "incomes.deleteConfirm": "This income, its history and the associated payslips will be permanently deleted.",
+    "incomes.created": "Income created",
+    "incomes.updated": "Income updated",
+    "incomes.deleted": "Income deleted",
+    "incomes.noIncomes": "No income recorded yet.",
+    "incomes.monthlyTotal": "Total monthly income",
+    "incomes.showAmounts": "Show amounts",
+    "incomes.hideAmounts": "Hide amounts",
+    "incomes.receipts": "Receipts",
+    "incomes.logReceipt": "Log a receipt",
+    "incomes.receivedOn": "Received on",
+    "incomes.amount": "Net amount",
+    "incomes.periodLabel": "Period",
+    "incomes.payslipDetail": "Payslip detail",
+    "incomes.grossAmount": "Gross",
+    "incomes.socialCharges": "Social charges (AVS/AI)",
+    "incomes.pension": "Pension (2nd pillar)",
+    "incomes.taxAtSource": "Tax at source",
+    "incomes.otherDeductions": "Other deductions",
+    "incomes.bonus": "Bonus",
+    "incomes.deductionCheck": "Gross − deductions",
+    "incomes.noReceipts": "No receipts recorded.",
+    "incomes.totalYTD": "YTD total",
+    "incomes.attachments": "Payslips",
+
+    "incomes.type.salary": "Salary",
+    "incomes.type.bonus": "Bonus",
+    "incomes.type.thirteenth": "13th month",
+    "incomes.type.pension": "Pension",
+    "incomes.type.unemployment": "Unemployment",
+    "incomes.type.family_allowance": "Family allowance",
+    "incomes.type.dividend": "Dividends",
+    "incomes.type.rental": "Rental income",
+    "incomes.type.gift": "Gift",
+    "incomes.type.reimbursement": "Reimbursement",
+    "incomes.type.other": "Other",
   },
 }
 

@@ -12,6 +12,7 @@ import {
   Ticket,
   Repeat,
   FileText,
+  TrendingUp,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -39,6 +40,7 @@ const navSections: NavSection[] = [
     items: [
       { to: "/engagements", icon: FileText, label: "Engagements" },
       { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
+      { to: "/incomes", icon: TrendingUp, label: "Revenus" },
     ],
   },
   {
