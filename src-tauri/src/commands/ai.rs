@@ -111,30 +111,43 @@ pub async fn ai_extract_receipt(
 
 const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
 
-const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction.
+const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction réelle PRÉSENTE DANS LE TEXTE.
 
-CLÉ RACINE OBLIGATOIRE : "transactions" (un tableau JSON). N'utilise AUCUN autre nom de clé racine ("extrait de compte", "relevé", etc. sont INTERDITS).
+ANTI-HALLUCINATION (CRITIQUE) :
+- N'INVENTE JAMAIS une transaction. Si tu n'es pas sûr, omets.
+- Les dates, montants et libellés DOIVENT venir littéralement du texte fourni — pas de paraphrase.
+- Refuse les dates séquentielles factices (1, 2, 3, 4 avril…) si elles ne sont pas dans le texte.
+- N'utilise PAS de montants ronds (1000, 500, 100…) sauf s'ils figurent textuellement.
+
+CLÉ RACINE OBLIGATOIRE : "transactions" (un tableau JSON).
+
+LECTURE DU TABLEAU (format typique PostFinance / UBS / Raiffeisen) :
+Le tableau a généralement les colonnes : Date | Texte | Crédit | Débit | Valeur | Solde.
+Une transaction occupe SOUVENT PLUSIEURS LIGNES :
+  Ligne 1 : date + début de libellé + montant (dans colonne Crédit ou Débit) + date valeur + nouveau solde
+  Lignes 2-N : suite du libellé (nom du marchand, IBAN contrepartie, ville…)
+Toutes ces lignes appartiennent à UNE SEULE transaction. Concatène le libellé sur 2-5 lignes maximum.
 
 RÈGLES :
-1. `date` = date de transaction au format YYYY-MM-DD. Si une seule date est donnée par ligne, c'est elle. Si deux dates apparaissent (valeur vs comptable), utilise la valeur dans `date` et la comptable dans `booking_date`.
-2. `description` = libellé brut tel qu'il apparaît sur la ligne, y compris la contre-partie / le commerçant / le motif. Ne raccourcis pas.
-3. `amount` = TOUJOURS un nombre POSITIF avec maximum 2 décimales (jamais négatif, jamais d'infinité de zéros). La direction est portée par `direction`.
-4. `direction` = "debit" si l'argent sort du compte, "credit" s'il y entre.
-5. `currency` = code ISO (CHF / EUR / USD…). Défaut CHF si non précisé.
-6. `reference` = suite numérique de référence BVR / QR-bill quand elle apparaît en fin de libellé (souvent 26-27 chiffres). null sinon.
-7. `counterparty_iban` = IBAN de la contre-partie si visible (CH/LI 21 caractères). null sinon.
+1. `date` = date de la transaction au format YYYY-MM-DD. Les dates suisses sont écrites DD.MM.YY ou DD.MM.YYYY — convertis : "02.04.26" → "2026-04-02".
+2. `description` = libellé concaténé sur toutes les lignes liées (marchand, type d'opération, contrepartie). Ne raccourcis pas.
+3. `amount` = TOUJOURS positif, max 2 décimales. La direction est portée par `direction`.
+4. `direction` = "debit" si le montant apparaît dans la colonne Débit OU si le libellé contient « ACHAT », « DÉBIT », « PAIEMENT » ; "credit" si colonne Crédit OU « CRÉDIT », « RÉCEPTION », « SALAIRE », « VERSEMENT ».
+5. `currency` = "CHF" par défaut sur un relevé suisse.
+6. `reference` = suite de 26-27 chiffres BVR / QR-bill si présente. null sinon.
+7. `counterparty_iban` = IBAN visible (CH/LI commençant par "CH" ou "LI", 21 caractères). null sinon.
 
 IGNORE absolument :
-- Les en-têtes du relevé (nom titulaire, adresse, IBAN du compte, période)
-- Les lignes de solde (« Solde au … », « Saldo … », « Balance forward »)
-- Les totaux mensuels (« Total débits », « Total crédits », « Net mouvement »)
-- Les lignes sans montant
-- Les notes explicatives en bas de page
+- En-têtes (nom titulaire, adresse, IBAN du compte, période, BIC, numéro de compte)
+- « Etat de compte » initial (solde d'ouverture)
+- « Solde au … », « Saldo … », « Balance forward »
+- Totaux mensuels et totaux de page
+- Lignes purement de mise en page (numéros de page, « Page 1 / 4 »)
 
-EXEMPLE DE RÉPONSE VALIDE (3 transactions fictives) :
-{"transactions":[{"date":"2025-05-03","booking_date":"2025-05-03","description":"CSS Assurance prime mai","amount":420.50,"currency":"CHF","direction":"debit","reference":"210000000003139471430009017","counterparty_iban":"CH4431999123000889012"},{"date":"2025-05-25","booking_date":null,"description":"Salaire mensuel","amount":7500.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2025-05-12","booking_date":"2025-05-13","description":"Migros Lausanne","amount":87.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null}]}
+EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
+{"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":"CH6330000011875037700"}]}
 
-Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT.
+Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
 
 TEXTE DU RELEVÉ (entre <<<>>>) :
 <<<{TEXT}>>>"#;

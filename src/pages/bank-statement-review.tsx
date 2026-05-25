@@ -19,44 +19,100 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString()
 
-/// Build a single text block out of a PDF document by concatenating every
-/// page's TextContent items. Bank statements are usually text-native (not
-/// image scans) so this works directly. For image-only scans, the AI prompt
-/// degrades gracefully — but the matching will be poor.
+/// Build a single text block out of a PDF document while preserving the
+/// table structure. Bank statements use a column layout (Date / Texte /
+/// Crédit / Débit / Valeur / Solde) — flattening every text item into a
+/// single space-separated blob destroys that structure and the LLM ends
+/// up inventing transactions instead of extracting them (observed with
+/// PostFinance statements via ministral-3:8b).
+///
+/// We sort each page's items by Y descending then X ascending, and insert
+/// a newline every time Y drops below the previous item's Y minus half the
+/// font height — that's a robust heuristic for "next line" across all
+/// Swiss bank statement layouts I've sampled.
 ///
 /// Uses streamTextContent() + reader.read() instead of getTextContent(),
 /// because pdfjs-dist v5's getTextContent() does
 /// `for await (const v of readableStream)` which requires
 /// `ReadableStream[Symbol.asyncIterator]` — missing in the WebKit shipped
-/// with macOS Tauri webview (and webkit2gtk on Linux). Calling read() in
-/// a while loop is the portable equivalent.
+/// with macOS Tauri webview (and webkit2gtk on Linux).
 async function extractPdfText(base64: string): Promise<string> {
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   const doc = await pdfjsLib.getDocument({ data: bytes }).promise
-  const parts: string[] = []
+  const pages: string[] = []
+
+  type Item = { x: number; y: number; h: number; str: string }
+
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const stream = page.streamTextContent({}) as ReadableStream<{
-      items: Array<{ str?: string } | unknown>
+      items: Array<{
+        str?: string
+        transform?: number[]
+        height?: number
+      }>
     }>
     const reader = stream.getReader()
-    const pageText: string[] = []
+    const items: Item[] = []
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      if (value && Array.isArray(value.items)) {
-        for (const it of value.items) {
-          if (it && typeof it === "object" && "str" in it) {
-            pageText.push((it as { str: string }).str)
-          }
-        }
+      if (!value || !Array.isArray(value.items)) continue
+      for (const it of value.items) {
+        if (!it || typeof it.str !== "string") continue
+        if (!it.str.trim() && it.str !== " ") continue
+        // transform = [a, b, c, d, e=x, f=y] (PDF matrix). y origin is at
+        // the page bottom; we'll sort descending to read top-to-bottom.
+        const x = it.transform?.[4] ?? 0
+        const y = it.transform?.[5] ?? 0
+        const h = it.height ?? 10
+        items.push({ x, y, h, str: it.str })
       }
     }
-    parts.push(pageText.join(" "))
+
+    // Group items into lines by Y coordinate. A new line starts whenever
+    // the current item's Y is more than half a font-height below the line
+    // we're currently building.
+    items.sort((a, b) => b.y - a.y || a.x - b.x)
+    const lines: { y: number; items: Item[] }[] = []
+    for (const it of items) {
+      const tol = Math.max(it.h / 2, 3)
+      const last = lines[lines.length - 1]
+      if (last && Math.abs(last.y - it.y) <= tol) {
+        last.items.push(it)
+      } else {
+        lines.push({ y: it.y, items: [it] })
+      }
+    }
+
+    // Inside each line, sort by X and join with single spaces — large
+    // X jumps (column gaps) are preserved by emitting multiple spaces
+    // proportional to the gap, so the model sees something close to a
+    // monospaced table.
+    const pageLines = lines.map((line) => {
+      line.items.sort((a, b) => a.x - b.x)
+      let out = ""
+      let prevEnd = -Infinity
+      for (const it of line.items) {
+        if (out === "") {
+          out = it.str
+        } else {
+          const gap = it.x - prevEnd
+          // Approximate space width as ~5 PDF units. Cap at 8 spaces to
+          // avoid pathological cases where a single line of metadata
+          // explodes into a wall of whitespace.
+          const spaces = Math.min(8, Math.max(1, Math.round(gap / 5)))
+          out += " ".repeat(spaces) + it.str
+        }
+        prevEnd = it.x + it.str.length * 5
+      }
+      return out
+    })
+    pages.push(pageLines.join("\n"))
   }
-  return parts.join("\n\n")
+  return pages.join("\n\n--- PAGE BREAK ---\n\n")
 }
 
 interface TargetCandidate {
