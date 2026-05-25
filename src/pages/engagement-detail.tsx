@@ -588,6 +588,12 @@ export function EngagementDetailPage() {
         <AttachmentsPanel
           engagementId={e.id}
           itemDescription={e.name}
+          templateContext={{
+            merchant: e.creditor_name ?? undefined,
+            description: e.name,
+            invoice_number: e.contract_reference ?? undefined,
+            date: today(),
+          }}
         />
       )}
 

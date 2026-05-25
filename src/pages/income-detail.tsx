@@ -442,6 +442,11 @@ export function IncomeDetailPage() {
         <AttachmentsPanel
           incomeId={i.id}
           itemDescription={i.name}
+          templateContext={{
+            merchant: i.source_name ?? undefined,
+            description: i.name,
+            date: today(),
+          }}
         />
       )}
 

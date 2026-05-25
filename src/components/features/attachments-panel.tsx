@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +36,10 @@ const ATTACHMENT_TYPES = [
   { slug: "invoice", label: "Ticket / Facture", Icon: Receipt },
   { slug: "warranty", label: "Garantie", Icon: Shield },
   { slug: "purchase_order", label: "Bon de commande", Icon: ClipboardList },
+  { slug: "contract", label: "Contrat / police", Icon: ScrollText },
+  { slug: "qrbill", label: "QR-facture / BVR", Icon: Banknote },
+  { slug: "payslip", label: "Bulletin de salaire", Icon: Wallet },
+  { slug: "claim", label: "Justificatif remb.", Icon: HandCoins },
   { slug: "photo", label: "Image", Icon: ImageIcon },
   { slug: "other", label: "Autre", Icon: File },
 ] as const

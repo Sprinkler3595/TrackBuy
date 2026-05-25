@@ -440,6 +440,11 @@ export const restoreBackup = (source: string, targetName: string | null, overwri
   invoke<string>("restore_backup", { source, targetName, overwrite })
 
 export const exportItemsCsv = () => invoke<string>("export_items_csv")
+export const exportEngagementsCsv = () => invoke<string>("export_engagements_csv")
+export const exportEngagementChargesCsv = () => invoke<string>("export_engagement_charges_csv")
+export const exportIncomesCsv = () => invoke<string>("export_incomes_csv")
+export const exportIncomeReceiptsCsv = () => invoke<string>("export_income_receipts_csv")
+export const exportReimbursementsCsv = () => invoke<string>("export_reimbursements_csv")
 
 export interface YoyEngagement {
   engagement_id: string
@@ -813,6 +818,17 @@ export const addEngagementRevision = (revision: {
 
 export const deleteEngagementRevision = (id: string) =>
   invoke<void>("delete_engagement_revision", { id })
+
+export const migrateSubscriptionToEngagement = (
+  subscriptionId: string,
+  engagementType: EngagementType,
+  creditorId?: string | null
+) =>
+  invoke<Engagement>("migrate_subscription_to_engagement", {
+    subscriptionId,
+    engagementType,
+    creditorId,
+  })
 
 // Polymorphic attachments
 export const getEngagementAttachments = (engagementId: string) =>

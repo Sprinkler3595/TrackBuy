@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, Repeat, RefreshCw, ExternalLink, Search } from "lucide-react"
+import { Plus, Trash2, Edit, Repeat, RefreshCw, ExternalLink, Search, ArrowRight, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,6 +11,35 @@ import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { I18nContext } from "@/lib/i18n"
 import { useContext } from "react"
 import * as api from "@/lib/tauri"
+
+const DISMISSED_KEY = "trackbuy-subscription-migration-dismissed"
+
+/// Heuristics to spot subscriptions that are actually real-world recurring
+/// charges (telecom, insurance, gym, leasing, utilities…). Returns the
+/// canonical engagement_type to use as default in the migration dialog,
+/// or null if the row looks like a genuine online subscription.
+function detectEngagementType(s: api.Subscription): api.EngagementType | null {
+  const haystack = `${s.name} ${s.category ?? ""} ${s.merchant_name ?? ""}`.toLowerCase()
+  const map: Array<[RegExp, api.EngagementType]> = [
+    [/\b(salt|sunrise|swisscom|orange|free mobile|bouygues|sfr|mobile|téléphon)\b/i, "phone"],
+    [/\b(internet|fibre|adsl|vdsl|fttb|fai|box internet)\b/i, "internet"],
+    [/\b(tv|radio|serafe|billag|redevance)\b/i, "tv_radio"],
+    [/\b(assurance|insurance|css|helvetia|axa|zurich|mobilière|allianz|groupama|maaf|matmut|swica|sanitas|concordia|visana|atupri|kpt)\b/i, "insurance_other"],
+    [/\b(loyer|rent|bail|locataire|bailleur)\b/i, "rent"],
+    [/\b(parking|garage|box|place de parc)\b/i, "parking"],
+    [/\b(leasing|location longue durée|lld)\b/i, "leasing"],
+    [/\b(electricit|electric|romande énergie|sig|groupe e|swisspower|edf|engie)\b/i, "electricity"],
+    [/\b(gaz natural|gaznat|gas)\b/i, "gas"],
+    [/\b(eau|water|sigge)\b/i, "water"],
+    [/\b(carburant|essence|diesel|fuel|recharge|borne)\b/i, "fuel"],
+    [/\b(gym|fitness|basic-fit|crossfit|salle de sport|abonnement sport)\b/i, "membership"],
+    [/\b(impôts|tax|fiscal)\b/i, "tax_other"],
+  ]
+  for (const [re, typ] of map) {
+    if (re.test(haystack)) return typ
+  }
+  return null
+}
 
 type FormState = {
   name: string
@@ -74,6 +103,7 @@ export function SubscriptionsPage() {
   const [subs, setSubs] = useState<api.Subscription[]>([])
   const [merchants, setMerchants] = useState<api.Merchant[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
+  const [creditors, setCreditors] = useState<api.Creditor[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<api.Subscription | null>(null)
@@ -81,18 +111,27 @@ export function SubscriptionsPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [statusFilter, setStatusFilter] = useState<"all" | api.SubscriptionStatus>("active")
   const [search, setSearch] = useState("")
+  const [migrationDismissed, setMigrationDismissed] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]")) }
+    catch { return new Set() }
+  })
+  const [migrationTarget, setMigrationTarget] = useState<api.Subscription | null>(null)
+  const [migrationType, setMigrationType] = useState<api.EngagementType>("other")
+  const [migrationCreditorId, setMigrationCreditorId] = useState<string>("")
   const { toast } = useToast()
 
   const load = async () => {
     try {
-      const [subsData, merchantsData, cardsData] = await Promise.all([
+      const [subsData, merchantsData, cardsData, creditorsData] = await Promise.all([
         api.getSubscriptions(),
         api.getMerchants(),
         api.getCards(),
+        api.getCreditors(),
       ])
       setSubs(subsData)
       setMerchants(merchantsData)
       setCards(cardsData)
+      setCreditors(creditorsData)
     } catch (e) {
       console.error(e)
     } finally {
@@ -200,6 +239,35 @@ export function SubscriptionsPage() {
     }
   }
 
+  const openMigration = (s: api.Subscription) => {
+    setMigrationTarget(s)
+    setMigrationType(detectEngagementType(s) ?? "other")
+    setMigrationCreditorId("")
+  }
+
+  const dismissMigrationHint = (id: string) => {
+    const next = new Set(migrationDismissed)
+    next.add(id)
+    setMigrationDismissed(next)
+    try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...next])) } catch { /* ignore */ }
+  }
+
+  const confirmMigration = async () => {
+    if (!migrationTarget) return
+    try {
+      const created = await api.migrateSubscriptionToEngagement(
+        migrationTarget.id,
+        migrationType,
+        migrationCreditorId || null,
+      )
+      toast(`Migré vers Engagements : « ${created.name} »`, "success")
+      setMigrationTarget(null)
+      await load()
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    }
+  }
+
   const handleMarkRenewed = async (id: string) => {
     try {
       await api.markRenewed(id)
@@ -264,6 +332,60 @@ export function SubscriptionsPage() {
           <Plus className="h-4 w-4" />{t("subscriptions.new")}
         </Button>
       </div>
+
+      {/* Migration hint banner: surfaces subscriptions that look like
+          real-world engagements (téléphone, internet, assurance, gym…).
+          Each row carries a one-click migrate button + a dismiss cross. */}
+      {(() => {
+        const candidates = subs
+          .filter((s) => s.status === "active" && !migrationDismissed.has(s.id))
+          .map((s) => ({ sub: s, target: detectEngagementType(s) }))
+          .filter((c): c is { sub: api.Subscription; target: api.EngagementType } => c.target !== null)
+        if (candidates.length === 0) return null
+        return (
+          <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900">
+            <CardContent className="p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <ArrowRight className="h-5 w-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm">
+                    {candidates.length === 1
+                      ? "1 abonnement ressemble plutôt à un engagement (charge récurrente du monde réel)."
+                      : `${candidates.length} abonnements ressemblent plutôt à des engagements (charges récurrentes du monde réel).`}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Les migrer vers Engagements préserve l'historique de paiements et les pièces jointes,
+                    et débloque le suivi par catégorie + l'analyse YoY dans Finances.
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {candidates.slice(0, 5).map((c) => (
+                  <div key={c.sub.id} className="flex items-center justify-between gap-2 rounded-md bg-background/60 border px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium truncate">{c.sub.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Cible suggérée : {t(`engagements.type.${c.target}` as never)}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => openMigration(c.sub)}>
+                      Migrer →
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => dismissMigrationHint(c.sub.id)} title="Ignorer cette suggestion">
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+                {candidates.length > 5 && (
+                  <p className="text-xs text-muted-foreground italic pt-1">
+                    Et {candidates.length - 5} de plus…
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )
+      })()}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
@@ -494,6 +616,67 @@ export function SubscriptionsPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {migrationTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setMigrationTarget(null)}>
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold">Migrer vers Engagements</h3>
+            <p className="text-sm text-muted-foreground mt-1">{migrationTarget.name}</p>
+            <p className="text-xs text-muted-foreground mt-2">
+              {formatPrice(migrationTarget.price, migrationTarget.currency)} · {cycleLabel(migrationTarget)}
+            </p>
+            <div className="mt-4 space-y-3">
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Type d'engagement</label>
+                <select
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={migrationType}
+                  onChange={(e) => setMigrationType(e.target.value as api.EngagementType)}
+                >
+                  <option value="insurance_health">Assurance maladie</option>
+                  <option value="insurance_household">Assurance RC ménage</option>
+                  <option value="insurance_car">Assurance auto</option>
+                  <option value="insurance_other">Autre assurance</option>
+                  <option value="rent">Loyer</option>
+                  <option value="parking">Place de parc</option>
+                  <option value="leasing">Leasing</option>
+                  <option value="electricity">Électricité</option>
+                  <option value="gas">Gaz</option>
+                  <option value="water">Eau</option>
+                  <option value="phone">Téléphone</option>
+                  <option value="internet">Internet</option>
+                  <option value="tv_radio">Redevance TV / radio</option>
+                  <option value="fuel">Carburant / recharge</option>
+                  <option value="membership">Cotisation / gym</option>
+                  <option value="tax_other">Autre taxe</option>
+                  <option value="other">Autre</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Créancier (optionnel)</label>
+                <select
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={migrationCreditorId}
+                  onChange={(e) => setMigrationCreditorId(e.target.value)}
+                >
+                  <option value="">—</option>
+                  {creditors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Tu peux créer un créancier maintenant dans Paramètres → Créanciers, ou laisser vide et le renseigner après.
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground bg-muted/50 p-2 rounded">
+                L'historique des paiements ({"≈"} chaque versement) sera converti en charges payées, les pièces jointes seront ré-attachées, et l'abonnement source sera supprimé. Action atomique : si elle échoue, rien ne change.
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" size="sm" onClick={() => setMigrationTarget(null)}>Annuler</Button>
+                <Button size="sm" onClick={confirmMigration}>Migrer</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

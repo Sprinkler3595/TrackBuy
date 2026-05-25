@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useContext } from "react"
-import { Plus, Trash2, Edit, HandCoins, Send, CheckCircle2, Search, Paperclip, X } from "lucide-react"
+import { Plus, Trash2, Edit, HandCoins, Send, CheckCircle2, Search, Paperclip, X, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,6 +8,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
+import { downloadExport } from "@/lib/export"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
@@ -287,9 +288,27 @@ export function ReimbursementsPage() {
             <span className="font-semibold text-foreground">{formatPrice(totalPending)}</span>
           </p>
         </div>
-        <Button onClick={() => { resetForm(); setShowForm(true) }}>
-          <Plus className="h-4 w-4" />{t("reimbursements.new")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                const csv = await api.exportReimbursementsCsv()
+                await downloadExport(csv, `remboursements-${today().slice(0, 7)}.csv`)
+              } catch (e) {
+                toast(`Erreur export: ${e}`, "error")
+              }
+            }}
+            title="Exporter en CSV"
+          >
+            <Download className="h-4 w-4" />
+            Exporter CSV
+          </Button>
+          <Button onClick={() => { resetForm(); setShowForm(true) }}>
+            <Plus className="h-4 w-4" />{t("reimbursements.new")}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-1 border-b">

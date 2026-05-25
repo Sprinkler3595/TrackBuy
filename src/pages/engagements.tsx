@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, FileText, Search } from "lucide-react"
+import { Plus, Trash2, Edit, FileText, Search, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { formatPrice, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
+import { downloadExport } from "@/lib/export"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { ClausesEditor } from "@/components/features/clauses-editor"
 import * as api from "@/lib/tauri"
@@ -318,9 +319,31 @@ export function EngagementsPage() {
             <span className="font-medium">{formatPrice(totalMonthly)}</span>
           </p>
         </div>
-        <Button onClick={() => { resetForm(); setShowForm(true) }}>
-          <Plus className="h-4 w-4" />{t("engagements.new")}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                const [eng, charges] = await Promise.all([
+                  api.exportEngagementsCsv(),
+                  api.exportEngagementChargesCsv(),
+                ])
+                await downloadExport(eng, `engagements-${today().slice(0, 7)}.csv`)
+                await downloadExport(charges, `engagements-echeances-${today().slice(0, 7)}.csv`)
+              } catch (e) {
+                toast(`Erreur export: ${e}`, "error")
+              }
+            }}
+            title="Exporter en CSV (engagements + échéances)"
+          >
+            <Download className="h-4 w-4" />
+            Exporter CSV
+          </Button>
+          <Button onClick={() => { resetForm(); setShowForm(true) }}>
+            <Plus className="h-4 w-4" />{t("engagements.new")}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

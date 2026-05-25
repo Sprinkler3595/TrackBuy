@@ -688,3 +688,109 @@ pub fn delete_engagement_revision(state: State<'_, AppState>, id: String) -> Res
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// One-shot migration: turns an existing `subscriptions` row into an
+/// `engagements` row of the chosen type, transfers any attachments, and
+/// deletes the source subscription. Wrapped in a SQLite transaction so an
+/// error mid-flight rolls everything back — the user never sees half-
+/// migrated state.
+///
+/// Field mapping:
+///   subscriptions.name           → engagements.name
+///   subscriptions.merchant       → (the front separately resolves a creditor)
+///   subscriptions.payment_card   → engagements.payment_card_id
+///   subscriptions.start_date     → engagements.contract_start_date
+///   subscriptions.next_renewal   → engagements.next_due_date
+///   subscriptions.billing_cycle  → engagements.billing_cycle (same values)
+///   subscriptions.cycle_interval → engagements.cycle_interval
+///   subscriptions.price          → engagements.current_amount
+///   subscriptions.currency       → engagements.currency
+///   subscriptions.notes          → engagements.notes (+ trace line)
+///   subscription_payments        → engagement_charges (status='paid' since
+///                                  every payment row represents a settled
+///                                  charge in the old model)
+#[tauri::command]
+pub fn migrate_subscription_to_engagement(
+    state: State<'_, AppState>,
+    subscription_id: String,
+    engagement_type: String,
+    creditor_id: Option<String>,
+) -> Result<Engagement, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 1. Read the source subscription.
+    let (name, payment_card_id, start_date, next_renewal_date, billing_cycle,
+         cycle_interval, price, currency, notes): (
+        String, Option<String>, String, String, String, i32, f64, String, Option<String>
+    ) = tx
+        .query_row(
+            "SELECT name, payment_card_id, start_date, next_renewal_date, billing_cycle,
+                    cycle_interval, price, currency, notes
+             FROM subscriptions WHERE id = ?1",
+            [&subscription_id],
+            |row| {
+                Ok((
+                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("Abonnement introuvable: {}", e))?;
+
+    let new_id = Uuid::new_v4().to_string();
+    let merged_notes = match notes {
+        Some(n) if !n.is_empty() => format!("{}\n— Migré depuis l'abonnement « {} »", n, name),
+        _ => format!("Migré depuis l'abonnement « {} »", name),
+    };
+
+    // 2. Create the engagement.
+    tx.execute(
+        "INSERT INTO engagements (id, name, engagement_type, payment_card_id, creditor_id,
+         contract_start_date, billing_cycle, cycle_interval, next_due_date,
+         current_amount, currency, status, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12)",
+        rusqlite::params![
+            new_id, name, engagement_type, payment_card_id, creditor_id,
+            start_date, billing_cycle, cycle_interval, next_renewal_date,
+            price, currency, merged_notes,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 3. Copy each historical subscription_payment into engagement_charges
+    //    with status='paid'. The original price snapshot is preserved.
+    tx.execute(
+        "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
+         payment_card_id, paid_on, status)
+         SELECT lower(hex(randomblob(16))), ?1, paid_on, amount, currency,
+                payment_card_id, paid_on, 'paid'
+         FROM subscription_payments WHERE subscription_id = ?2",
+        rusqlite::params![new_id, subscription_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 4. Re-point any existing attachments from subscription_id → engagement_id.
+    tx.execute(
+        "UPDATE attachments SET subscription_id = NULL, engagement_id = ?1
+         WHERE subscription_id = ?2",
+        rusqlite::params![new_id, subscription_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 5. Drop the source subscription (CASCADE wipes payments + members).
+    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [&subscription_id])
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    let sql = format!(
+        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+        ENG_SELECT_COLUMNS, ENG_JOINS
+    );
+    conn.query_row(&sql, [&new_id], row_to_engagement)
+        .map_err(|e| e.to_string())
+}

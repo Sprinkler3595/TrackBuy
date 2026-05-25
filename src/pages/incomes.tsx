@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, TrendingUp, Search } from "lucide-react"
+import { Plus, Trash2, Edit, TrendingUp, Search, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { formatDate, daysUntil } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
+import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -228,6 +229,26 @@ export function IncomesPage() {
             labelShow={t("incomes.showAmounts")}
             labelHide={t("incomes.hideAmounts")}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                const [hdr, recpts] = await Promise.all([
+                  api.exportIncomesCsv(),
+                  api.exportIncomeReceiptsCsv(),
+                ])
+                await downloadExport(hdr, `revenus-${today().slice(0, 7)}.csv`)
+                await downloadExport(recpts, `revenus-versements-${today().slice(0, 7)}.csv`)
+              } catch (e) {
+                toast(`Erreur export: ${e}`, "error")
+              }
+            }}
+            title="Exporter en CSV (revenus + versements avec bulletins)"
+          >
+            <Download className="h-4 w-4" />
+            Exporter CSV
+          </Button>
           <Button onClick={() => { resetForm(); setShowForm(true) }}>
             <Plus className="h-4 w-4" />{t("incomes.new")}
           </Button>
