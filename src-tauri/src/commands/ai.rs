@@ -102,7 +102,7 @@ pub async fn ai_extract_receipt(
     config: AiConfig,
 ) -> Result<ExtractedReceipt, String> {
     let prompt = EXTRACTION_PROMPT.replace("{OCR}", &ocr_text);
-    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt).await?;
+    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned)
         .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
@@ -151,13 +151,51 @@ pub struct ExtractedTransaction {
     pub counterparty_iban: Option<String>,
 }
 
+/// Schéma JSON strict pour structured outputs — interdit physiquement au
+/// modèle d'émettre autre chose que cette forme (clé racine "transactions",
+/// item shape précis, additionalProperties: false). C'est plus solide qu'un
+/// json_object basique : avec un petit modèle (≤ 8B) qui aurait tendance à
+/// inventer un nom de clé ou à renvoyer le schéma plutôt que les données,
+/// le décodage contraint le force à respecter la forme.
+fn bank_statement_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "transactions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string"},
+                        "booking_date": {"type": ["string", "null"]},
+                        "description": {"type": "string"},
+                        "amount": {"type": "number"},
+                        "currency": {"type": "string"},
+                        "direction": {"type": "string", "enum": ["debit", "credit"]},
+                        "reference": {"type": ["string", "null"]},
+                        "counterparty_iban": {"type": ["string", "null"]}
+                    },
+                    "required": [
+                        "date", "booking_date", "description", "amount",
+                        "currency", "direction", "reference", "counterparty_iban"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["transactions"],
+        "additionalProperties": false
+    })
+}
+
 #[tauri::command]
 pub async fn ai_extract_bank_statement(
     text: String,
     config: AiConfig,
 ) -> Result<Vec<ExtractedTransaction>, String> {
     let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
-    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt).await?;
+    let schema = bank_statement_schema();
+    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned).map_err(|e| {
         // Tronque l'aperçu pour rester lisible si le modèle a généré
@@ -240,6 +278,7 @@ pub async fn ai_test_connection(config: AiConfig) -> Result<String, String> {
         &config,
         "You are a connection test responder.",
         "Reply with the single word: OK",
+        None,
     )
     .await?;
     Ok(reply)
@@ -249,6 +288,7 @@ async fn call_provider(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -256,8 +296,8 @@ async fn call_provider(
         .map_err(|e| format!("Client init: {}", e))?;
 
     match config.provider {
-        AiProvider::Infomaniak => call_infomaniak(&client, config, system_prompt, user_prompt).await,
-        AiProvider::Ollama => call_ollama(&client, config, system_prompt, user_prompt).await,
+        AiProvider::Infomaniak => call_infomaniak(&client, config, system_prompt, user_prompt, json_schema).await,
+        AiProvider::Ollama => call_ollama(&client, config, system_prompt, user_prompt, json_schema).await,
     }
 }
 
@@ -266,6 +306,7 @@ async fn call_infomaniak(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     if config.api_key.trim().is_empty() {
         return Err("Clé API Infomaniak manquante".into());
@@ -277,11 +318,23 @@ async fn call_infomaniak(
         "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
         config.infomaniak_product_id.trim()
     );
-    // response_format: json_object force le modèle en mode JSON strict
-    // (OpenAI-compatible). max_tokens borne la sortie pour éviter les
-    // boucles de génération (ex. décimale infinie 1.000000000…) qui
-    // peuvent survenir avec des modèles plus petits.
-    let body = json!({
+    // OpenAI structured outputs (json_schema + strict:true) contrainent la
+    // décodage côté serveur — le modèle ne PEUT pas émettre de tokens hors
+    // grammaire. C'est nettement plus solide qu'un json_object générique,
+    // qui laisse encore au modèle la liberté d'inventer la forme de l'objet.
+    // Si aucun schéma n'est fourni, on retombe sur json_object basique.
+    let response_format = match json_schema {
+        Some(schema) => json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "extraction",
+                "strict": true,
+                "schema": schema
+            }
+        }),
+        None => json!({"type": "json_object"}),
+    };
+    let mut body = json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -289,7 +342,7 @@ async fn call_infomaniak(
         ],
         "temperature": 0.0,
         "max_tokens": 8192,
-        "response_format": {"type": "json_object"}
+        "response_format": response_format
     });
 
     let resp = client
@@ -299,6 +352,29 @@ async fn call_infomaniak(
         .send()
         .await
         .map_err(|e| format!("Requête Infomaniak: {}", e))?;
+
+    // Si le modèle ne supporte pas json_schema (modèles plus anciens),
+    // Infomaniak renvoie un 400. On retombe alors automatiquement sur
+    // json_object qui est universellement supporté — c'est mieux que de
+    // jeter une erreur incompréhensible à l'utilisateur.
+    let resp = if !resp.status().is_success() && json_schema.is_some() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 400 && text.contains("json_schema") {
+            body["response_format"] = json!({"type": "json_object"});
+            client
+                .post(&url)
+                .bearer_auth(config.api_key.trim())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("Requête Infomaniak (fallback json_object): {}", e))?
+        } else {
+            return Err(format!("Infomaniak {}: {}", status, text));
+        }
+    } else {
+        resp
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -321,6 +397,7 @@ async fn call_ollama(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     let base = if config.ollama_url.trim().is_empty() {
         "http://localhost:11434".to_string()
@@ -328,9 +405,13 @@ async fn call_ollama(
         config.ollama_url.trim_end_matches('/').to_string()
     };
     let url = format!("{}/api/chat", base);
-    // num_predict borne la longueur de génération (Ollama équivalent de
-    // max_tokens) pour éviter les boucles de décimale infinie qu'on observe
-    // avec des modèles plus petits sur ce type de prompt.
+    // Ollama 0.5+ accepte un schéma JSON dans le champ `format` pour
+    // contraindre la sortie (équivalent au json_schema d'OpenAI). Si pas
+    // de schéma fourni, on garde la chaîne "json" qui force juste un JSON
+    // bien formé sans contrainte de structure.
+    let format_value = json_schema
+        .cloned()
+        .unwrap_or_else(|| Value::String("json".to_string()));
     let body = json!({
         "model": config.model,
         "messages": [
@@ -338,7 +419,7 @@ async fn call_ollama(
             {"role": "user", "content": user_prompt}
         ],
         "stream": false,
-        "format": "json",
+        "format": format_value,
         "options": {"temperature": 0.0, "num_predict": 8192}
     });
 
