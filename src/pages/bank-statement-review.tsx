@@ -23,6 +23,13 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 /// page's TextContent items. Bank statements are usually text-native (not
 /// image scans) so this works directly. For image-only scans, the AI prompt
 /// degrades gracefully — but the matching will be poor.
+///
+/// Uses streamTextContent() + reader.read() instead of getTextContent(),
+/// because pdfjs-dist v5's getTextContent() does
+/// `for await (const v of readableStream)` which requires
+/// `ReadableStream[Symbol.asyncIterator]` — missing in the WebKit shipped
+/// with macOS Tauri webview (and webkit2gtk on Linux). Calling read() in
+/// a while loop is the portable equivalent.
 async function extractPdfText(base64: string): Promise<string> {
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
@@ -31,11 +38,23 @@ async function extractPdfText(base64: string): Promise<string> {
   const parts: string[] = []
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
-    const content = await page.getTextContent()
-    const text = content.items
-      .map((it) => ("str" in it ? (it as { str: string }).str : ""))
-      .join(" ")
-    parts.push(text)
+    const stream = page.streamTextContent({}) as ReadableStream<{
+      items: Array<{ str?: string } | unknown>
+    }>
+    const reader = stream.getReader()
+    const pageText: string[] = []
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value && Array.isArray(value.items)) {
+        for (const it of value.items) {
+          if (it && typeof it === "object" && "str" in it) {
+            pageText.push((it as { str: string }).str)
+          }
+        }
+      }
+    }
+    parts.push(pageText.join(" "))
   }
   return parts.join("\n\n")
 }
