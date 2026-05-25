@@ -109,14 +109,16 @@ pub async fn ai_extract_receipt(
     Ok(parse_extracted(&value))
 }
 
-const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Préfère omettre une transaction plutôt que d'en inventer une.";
+const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
 
 const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction.
+
+CLÉ RACINE OBLIGATOIRE : "transactions" (un tableau JSON). N'utilise AUCUN autre nom de clé racine ("extrait de compte", "relevé", etc. sont INTERDITS).
 
 RÈGLES :
 1. `date` = date de transaction au format YYYY-MM-DD. Si une seule date est donnée par ligne, c'est elle. Si deux dates apparaissent (valeur vs comptable), utilise la valeur dans `date` et la comptable dans `booking_date`.
 2. `description` = libellé brut tel qu'il apparaît sur la ligne, y compris la contre-partie / le commerçant / le motif. Ne raccourcis pas.
-3. `amount` = TOUJOURS un nombre POSITIF (jamais négatif). La direction est portée par `direction`.
+3. `amount` = TOUJOURS un nombre POSITIF avec maximum 2 décimales (jamais négatif, jamais d'infinité de zéros). La direction est portée par `direction`.
 4. `direction` = "debit" si l'argent sort du compte, "credit" s'il y entre.
 5. `currency` = code ISO (CHF / EUR / USD…). Défaut CHF si non précisé.
 6. `reference` = suite numérique de référence BVR / QR-bill quand elle apparaît en fin de libellé (souvent 26-27 chiffres). null sinon.
@@ -129,21 +131,10 @@ IGNORE absolument :
 - Les lignes sans montant
 - Les notes explicatives en bas de page
 
-FORMAT DE RÉPONSE (JSON strict) :
-{
-  "transactions": [
-    {
-      "date": "YYYY-MM-DD",
-      "booking_date": "YYYY-MM-DD"|null,
-      "description": string,
-      "amount": number,
-      "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
-      "direction": "debit"|"credit",
-      "reference": string|null,
-      "counterparty_iban": string|null
-    }
-  ]
-}
+EXEMPLE DE RÉPONSE VALIDE (3 transactions fictives) :
+{"transactions":[{"date":"2025-05-03","booking_date":"2025-05-03","description":"CSS Assurance prime mai","amount":420.50,"currency":"CHF","direction":"debit","reference":"210000000003139471430009017","counterparty_iban":"CH4431999123000889012"},{"date":"2025-05-25","booking_date":null,"description":"Salaire mensuel","amount":7500.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2025-05-12","booking_date":"2025-05-13","description":"Migros Lausanne","amount":87.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null}]}
+
+Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT.
 
 TEXTE DU RELEVÉ (entre <<<>>>) :
 <<<{TEXT}>>>"#;
@@ -168,14 +159,42 @@ pub async fn ai_extract_bank_statement(
     let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
     let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt).await?;
     let cleaned = strip_code_fences(&raw);
-    let value: Value = serde_json::from_str(&cleaned)
-        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    let value: Value = serde_json::from_str(&cleaned).map_err(|e| {
+        // Tronque l'aperçu pour rester lisible si le modèle a généré
+        // plusieurs milliers de caractères (cas de boucle infinie).
+        let preview: String = raw.chars().take(300).collect();
+        let suffix = if raw.chars().count() > 300 { "…" } else { "" };
+        format!(
+            "Le modèle n'a pas renvoyé de JSON valide ({}). Ton modèle est probablement trop petit ou mal configuré — essaye un modèle plus grand (≥ 7B), ou bascule sur Infomaniak/Mixtral. Début de réponse reçue : « {}{} »",
+            e, preview, suffix
+        )
+    })?;
 
+    // Le schéma demande "transactions" mais certains modèles inventent des
+    // synonymes : on accepte ces fallbacks pour ne pas perdre une extraction
+    // qui serait par ailleurs correcte. Ordre par décroissance de confiance.
     let arr = value
         .get("transactions")
+        .or_else(|| value.get("Transactions"))
+        .or_else(|| value.get("operations"))
+        .or_else(|| value.get("Opérations"))
+        .or_else(|| value.get("lines"))
+        .or_else(|| value.get("entries"))
+        // Dernier recours : si la valeur racine est elle-même un tableau,
+        // l'utiliser directement.
+        .or(if value.is_array() { Some(&value) } else { None })
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+
+    if arr.is_empty() {
+        return Err(format!(
+            "Le modèle n'a renvoyé aucune transaction. Vérifiez que la clé JSON racine est bien \"transactions\" — clés trouvées : {}",
+            value.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_else(|| "(non-objet)".into())
+        ));
+    }
 
     let mut out = Vec::with_capacity(arr.len());
     for tx in arr {
@@ -258,13 +277,19 @@ async fn call_infomaniak(
         "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
         config.infomaniak_product_id.trim()
     );
+    // response_format: json_object force le modèle en mode JSON strict
+    // (OpenAI-compatible). max_tokens borne la sortie pour éviter les
+    // boucles de génération (ex. décimale infinie 1.000000000…) qui
+    // peuvent survenir avec des modèles plus petits.
     let body = json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.0
+        "temperature": 0.0,
+        "max_tokens": 8192,
+        "response_format": {"type": "json_object"}
     });
 
     let resp = client
@@ -303,6 +328,9 @@ async fn call_ollama(
         config.ollama_url.trim_end_matches('/').to_string()
     };
     let url = format!("{}/api/chat", base);
+    // num_predict borne la longueur de génération (Ollama équivalent de
+    // max_tokens) pour éviter les boucles de décimale infinie qu'on observe
+    // avec des modèles plus petits sur ce type de prompt.
     let body = json!({
         "model": config.model,
         "messages": [
@@ -311,7 +339,7 @@ async fn call_ollama(
         ],
         "stream": false,
         "format": "json",
-        "options": {"temperature": 0.0}
+        "options": {"temperature": 0.0, "num_predict": 8192}
     });
 
     let resp = client
