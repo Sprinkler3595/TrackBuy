@@ -14,6 +14,15 @@ import { CardsPage } from "@/pages/cards"
 import { VaultsPage } from "@/pages/vaults"
 import { SubscriptionsPage } from "@/pages/subscriptions"
 import { SubscriptionDetailPage } from "@/pages/subscription-detail"
+import { EngagementsPage } from "@/pages/engagements"
+import { EngagementDetailPage } from "@/pages/engagement-detail"
+import { CreditorsPage } from "@/pages/creditors"
+import { IncomesPage } from "@/pages/incomes"
+import { IncomeDetailPage } from "@/pages/income-detail"
+import { ReimbursementsPage } from "@/pages/reimbursements"
+import { FinancesPage } from "@/pages/finances"
+import { BankStatementsPage } from "@/pages/bank-statements"
+import { BankStatementReviewPage } from "@/pages/bank-statement-review"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
@@ -21,6 +30,7 @@ import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
+import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
 import { useIdleLock, useIdleLockMinutes } from "@/hooks/use-idle-lock"
 import { I18nContext, getTranslation, type Locale } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -35,9 +45,10 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
 
-  // Activate warranty + subscription notifications when unlocked
+  // Activate warranty + subscription + engagement notifications when unlocked
   useWarrantyNotifications()
   useSubscriptionNotifications()
+  useEngagementNotifications()
 
   useEffect(() => {
     async function check() {
@@ -72,6 +83,7 @@ function AppContent() {
       // Catch up any missed renewal cycles before the dashboard renders, so
       // the user sees a current view from the first paint.
       try { await api.rollForwardDueSubscriptions() } catch { /* non-fatal */ }
+      try { await api.rollForwardDueEngagements() } catch { /* non-fatal */ }
       setVaultName(name)
       setUnlocked(true)
       localStorage.setItem(LAST_VAULT_KEY, name)
@@ -140,10 +152,19 @@ function AppContent() {
           <Route path="/tickets" element={<TicketsPage />} />
           <Route path="/subscriptions" element={<SubscriptionsPage />} />
           <Route path="/subscriptions/:id" element={<SubscriptionDetailPage />} />
+          <Route path="/engagements" element={<EngagementsPage />} />
+          <Route path="/engagements/:id" element={<EngagementDetailPage />} />
+          <Route path="/incomes" element={<IncomesPage />} />
+          <Route path="/incomes/:id" element={<IncomeDetailPage />} />
+          <Route path="/reimbursements" element={<ReimbursementsPage />} />
+          <Route path="/finances" element={<FinancesPage />} />
+          <Route path="/bank-statements" element={<BankStatementsPage />} />
+          <Route path="/bank-statements/:id/review" element={<BankStatementReviewPage />} />
           <Route path="/warranties" element={<WarrantiesPage />} />
           <Route path="/settings" element={<SettingsPage />}>
             <Route index element={<GeneralSettings />} />
             <Route path="marchands" element={<MerchantsPage />} />
+            <Route path="creanciers" element={<CreditorsPage />} />
             <Route path="lieux" element={<LocationsPage />} />
             <Route path="cartes" element={<CardsPage />} />
             <Route path="coffres" element={<VaultsPage onSwitchVault={handleSwitchVault} />} />

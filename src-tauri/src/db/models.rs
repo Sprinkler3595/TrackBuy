@@ -65,6 +65,14 @@ pub struct PaymentCard {
     pub is_credit_card: bool,
     pub extended_warranty_months: i32,
     pub extended_warranty_description: Option<String>,
+    /// 'card' | 'bank_account' | 'cash' | 'qr_bill' | 'other'.
+    /// Lets a single table model both physical cards and bank accounts
+    /// (used for LSV/SEPA/standing orders/QR-bills on engagements).
+    pub account_kind: String,
+    pub iban: Option<String>,
+    pub bic: Option<String>,
+    pub account_holder: Option<String>,
+    pub institution: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -91,6 +99,12 @@ pub struct Attachment {
     pub item_id: Option<String>,
     pub order_id: Option<String>,
     pub subscription_id: Option<String>,
+    pub engagement_id: Option<String>,
+    pub engagement_charge_id: Option<String>,
+    pub engagement_revision_id: Option<String>,
+    pub income_id: Option<String>,
+    pub income_receipt_id: Option<String>,
+    pub reimbursement_id: Option<String>,
     pub original_name: String,
     pub display_name: String,
     pub mime_type: String,
@@ -157,17 +171,23 @@ pub struct CreateItemRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Reminder {
-    /// Source entity row id. Either an items.id or a subscriptions.id depending
-    /// on `entity_type` — kept as `item_id` for backward-compat with existing
-    /// frontend code that already keys on this field.
+    /// Source entity row id. Depends on `entity_type`:
+    /// - 'item'         → items.id
+    /// - 'subscription' → subscriptions.id
+    /// - 'engagement'   → engagements.id
+    /// - 'charge'       → engagements.id (the parent of the scheduled
+    ///                    charge, not the charge_id, so the dashboard can
+    ///                    link to /engagements/:id without an extra hop)
+    /// Kept as `item_id` for backward-compat with existing frontend code.
     pub item_id: String,
-    /// "item" for purchase-derived reminders, "subscription" for renewals.
     pub entity_type: String,
     pub description: String,
     /// For items this is the item_kind ("ticket", "voucher", "license"); for
-    /// subscriptions it carries the billing_cycle so the UI can colour-code.
+    /// subscriptions it carries the billing_cycle so the UI can colour-code;
+    /// for engagements/charges it carries the canonical engagement_type.
     pub item_kind: String,
-    pub reminder_type: String, // "event" | "expiration" | "renewal"
+    /// "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
+    pub reminder_type: String,
     pub target_date: String,
     pub days_until: i64,
     pub merchant_name: Option<String>,
@@ -231,6 +251,11 @@ pub struct CreateCardRequest {
     pub is_credit_card: bool,
     pub extended_warranty_months: Option<i32>,
     pub extended_warranty_description: Option<String>,
+    pub account_kind: Option<String>,
+    pub iban: Option<String>,
+    pub bic: Option<String>,
+    pub account_holder: Option<String>,
+    pub institution: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -264,6 +289,10 @@ pub struct Subscription {
     /// 'active' | 'paused' | 'cancelled'
     pub status: String,
     pub notes: Option<String>,
+    /// Discriminator for the subscription scope. 'online' covers streaming,
+    /// SaaS, cloud, hosting, gaming. Real-world recurring charges (insurance,
+    /// rent, utilities…) belong in the separate `engagements` domain.
+    pub kind: String,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -291,6 +320,7 @@ pub struct CreateSubscriptionRequest {
     pub cancellation_url: Option<String>,
     pub status: Option<String>,
     pub notes: Option<String>,
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -334,5 +364,413 @@ pub struct CreateSubscriptionMemberRequest {
     pub name: String,
     pub share_amount: Option<f64>,
     pub share_percent: Option<f64>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Creditors & Engagements (recurring real-world charges)
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Creditor {
+    pub id: String,
+    pub name: String,
+    /// 'insurer' | 'landlord' | 'utility' | 'telco' | 'tax_office'
+    /// 'leasing_company' | 'employer' | 'bank' | 'other'
+    pub creditor_type: String,
+    pub contact_email: Option<String>,
+    pub contact_phone: Option<String>,
+    pub address: Option<String>,
+    pub iban: Option<String>,
+    pub reference_prefix: Option<String>,
+    pub notes: Option<String>,
+    pub logo_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateCreditorRequest {
+    pub name: String,
+    pub creditor_type: Option<String>,
+    pub contact_email: Option<String>,
+    pub contact_phone: Option<String>,
+    pub address: Option<String>,
+    pub iban: Option<String>,
+    pub reference_prefix: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Engagement {
+    pub id: String,
+    pub name: String,
+    /// One of the canonical engagement_type values (insurance_health, rent,
+    /// electricity, tax_federal, …). See plan §3.1.d for the full list.
+    pub engagement_type: String,
+    pub parent_engagement_id: Option<String>,
+    pub creditor_id: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub contract_reference: Option<String>,
+    pub contract_start_date: Option<String>,
+    pub contract_end_date: Option<String>,
+    pub notice_period_days: Option<i32>,
+    /// 'monthly' | 'quarterly' | 'semiannual' | 'yearly' | 'one_shot' | 'custom'
+    pub billing_cycle: String,
+    pub cycle_interval: i32,
+    pub next_due_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: String,
+    /// 'direct_debit' | 'qr_bill' | 'bvr' | 'manual_transfer'
+    /// 'standing_order' | 'cash' | 'card_auto' | 'other'
+    pub payment_method: Option<String>,
+    pub auto_pay: bool,
+    /// 'active' | 'suspended' | 'ended'
+    pub status: String,
+    pub ended_on: Option<String>,
+    pub notes: Option<String>,
+    /// Free-form JSON for franchises, caps, options; not parsed by the
+    /// backend.
+    pub clauses_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    // Joined fields
+    #[serde(skip_deserializing)]
+    pub creditor_name: Option<String>,
+    #[serde(skip_deserializing)]
+    pub card_name: Option<String>,
+    #[serde(skip_deserializing)]
+    pub parent_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateEngagementRequest {
+    pub name: String,
+    pub engagement_type: String,
+    pub parent_engagement_id: Option<String>,
+    pub creditor_id: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub contract_reference: Option<String>,
+    pub contract_start_date: Option<String>,
+    pub contract_end_date: Option<String>,
+    pub notice_period_days: Option<i32>,
+    pub billing_cycle: String,
+    pub cycle_interval: Option<i32>,
+    pub next_due_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: Option<String>,
+    pub payment_method: Option<String>,
+    pub auto_pay: Option<bool>,
+    pub status: Option<String>,
+    pub notes: Option<String>,
+    pub clauses_json: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EngagementCharge {
+    pub id: String,
+    pub engagement_id: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub due_date: String,
+    pub amount: f64,
+    pub currency: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub unit_price: Option<f64>,
+    pub paid_on: Option<String>,
+    /// 'scheduled' | 'paid' | 'late' | 'disputed' | 'waived'
+    pub status: String,
+    pub payment_card_id: Option<String>,
+    pub reference_number: Option<String>,
+    pub invoice_number: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_deserializing)]
+    pub card_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateEngagementChargeRequest {
+    pub engagement_id: String,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub due_date: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub unit_price: Option<f64>,
+    pub paid_on: Option<String>,
+    pub status: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub reference_number: Option<String>,
+    pub invoice_number: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EngagementRevision {
+    pub id: String,
+    pub engagement_id: String,
+    pub effective_date: String,
+    pub amount: f64,
+    pub currency: String,
+    pub change_reason: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateEngagementRevisionRequest {
+    pub engagement_id: String,
+    pub effective_date: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub change_reason: Option<String>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Incomes (salaries, bonuses, allowances, dividends, …)
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Income {
+    pub id: String,
+    pub name: String,
+    /// 'salary' | 'bonus' | 'thirteenth' | 'pension' | 'unemployment'
+    /// 'family_allowance' | 'dividend' | 'rental' | 'gift' | 'reimbursement'
+    /// 'other'
+    pub income_type: String,
+    pub source_name: Option<String>,
+    pub payment_card_id: Option<String>,
+    /// 'monthly' | 'quarterly' | 'yearly' | 'one_shot' | 'custom'
+    pub billing_cycle: String,
+    pub cycle_interval: i32,
+    pub next_expected_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: String,
+    /// 'active' | 'ended'
+    pub status: String,
+    pub started_on: Option<String>,
+    pub ended_on: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_deserializing)]
+    pub card_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateIncomeRequest {
+    pub name: String,
+    pub income_type: String,
+    pub source_name: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub billing_cycle: String,
+    pub cycle_interval: Option<i32>,
+    pub next_expected_date: Option<String>,
+    pub current_amount: Option<f64>,
+    pub currency: Option<String>,
+    pub status: Option<String>,
+    pub started_on: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IncomeReceipt {
+    pub id: String,
+    pub income_id: String,
+    pub received_on: String,
+    /// Net amount that actually landed in the account.
+    pub amount: f64,
+    pub currency: String,
+    pub period_label: Option<String>,
+    // Optional payslip detail — populated for salaries, left NULL for
+    // allocations / dividends / refunds.
+    pub gross_amount: Option<f64>,
+    pub social_charges_amount: Option<f64>,
+    pub pension_amount: Option<f64>,
+    pub tax_at_source_amount: Option<f64>,
+    pub other_deductions_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateIncomeReceiptRequest {
+    pub income_id: String,
+    pub received_on: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub period_label: Option<String>,
+    pub gross_amount: Option<f64>,
+    pub social_charges_amount: Option<f64>,
+    pub pension_amount: Option<f64>,
+    pub tax_at_source_amount: Option<f64>,
+    pub other_deductions_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Pending reimbursements (money to recover)
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingReimbursement {
+    pub id: String,
+    pub label: String,
+    /// 'expense_report' | 'insurance_claim' | 'warranty_return'
+    /// 'product_return' | 'deposit' | 'tax_refund' | 'other'
+    pub reimbursement_type: String,
+    pub expected_amount: Option<f64>,
+    pub received_amount: Option<f64>,
+    pub currency: String,
+    pub debtor_name: Option<String>,
+    pub debtor_creditor_id: Option<String>,
+    pub item_id: Option<String>,
+    pub engagement_charge_id: Option<String>,
+    pub source_description: Option<String>,
+    pub requested_on: Option<String>,
+    pub expected_by: Option<String>,
+    pub received_on: Option<String>,
+    /// 'pending' | 'claimed' | 'partial' | 'settled' | 'rejected' | 'cancelled'
+    pub status: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_deserializing)]
+    pub debtor_creditor_name: Option<String>,
+    #[serde(skip_deserializing)]
+    pub item_description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateReimbursementRequest {
+    pub label: String,
+    pub reimbursement_type: Option<String>,
+    pub expected_amount: Option<f64>,
+    pub currency: Option<String>,
+    pub debtor_name: Option<String>,
+    pub debtor_creditor_id: Option<String>,
+    pub item_id: Option<String>,
+    pub engagement_charge_id: Option<String>,
+    pub source_description: Option<String>,
+    pub requested_on: Option<String>,
+    pub expected_by: Option<String>,
+    pub status: Option<String>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Bank statements: monthly PDF imported, parsed by AI, then each line
+// matched to an engagement_charge / subscription_payment / item /
+// income_receipt / reimbursement. Patterns learned during review live in
+// `bank_match_rules` to auto-suggest matches on the next month.
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankStatement {
+    pub id: String,
+    pub label: Option<String>,
+    pub bank_name: Option<String>,
+    pub account_iban: Option<String>,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub statement_date: Option<String>,
+    pub opening_balance: Option<f64>,
+    pub closing_balance: Option<f64>,
+    pub currency: String,
+    pub file_path: String,
+    pub original_name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    /// 'pending' | 'extracted' | 'reviewed' | 'archived'
+    pub status: String,
+    pub extracted_at: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankStatementTransaction {
+    pub id: String,
+    pub statement_id: String,
+    pub transaction_date: String,
+    pub booking_date: Option<String>,
+    pub raw_description: String,
+    pub cleaned_description: Option<String>,
+    /// Always positive — direction tells whether it's a debit or credit.
+    pub amount: f64,
+    pub currency: String,
+    /// 'debit' | 'credit'
+    pub direction: String,
+    pub reference_number: Option<String>,
+    pub counterparty_iban: Option<String>,
+    /// 'engagement_charge' | 'subscription_payment' | 'income_receipt'
+    /// | 'item' | 'reimbursement' | NULL
+    pub match_target_kind: Option<String>,
+    pub match_target_id: Option<String>,
+    pub match_confidence: Option<f64>,
+    pub match_rule_id: Option<String>,
+    /// 'unmatched' | 'suggested' | 'confirmed' | 'created' | 'ignored'
+    pub match_status: String,
+    pub review_notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Display name of the matched target, joined for the review screen.
+    #[serde(skip_deserializing)]
+    pub match_target_label: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExtractedTransactionInput {
+    pub transaction_date: String,
+    pub booking_date: Option<String>,
+    pub raw_description: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub direction: String,
+    pub reference_number: Option<String>,
+    pub counterparty_iban: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankMatchRule {
+    pub id: String,
+    pub pattern: String,
+    /// 'substring' | 'regex'
+    pub pattern_kind: String,
+    /// 'debit' | 'credit' | NULL
+    pub direction: Option<String>,
+    pub amount_min: Option<f64>,
+    pub amount_max: Option<f64>,
+    /// 'engagement' | 'subscription' | 'income' | 'merchant' | 'reimbursement'
+    pub target_kind: String,
+    pub target_id: String,
+    pub learned: bool,
+    pub enabled: bool,
+    pub hit_count: i64,
+    pub last_hit_at: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateBankMatchRuleRequest {
+    pub pattern: String,
+    pub pattern_kind: Option<String>,
+    pub direction: Option<String>,
+    pub amount_min: Option<f64>,
+    pub amount_max: Option<f64>,
+    pub target_kind: String,
+    pub target_id: String,
+    pub learned: Option<bool>,
     pub notes: Option<String>,
 }

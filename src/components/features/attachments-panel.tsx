@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -16,9 +16,14 @@ import {
 import * as api from "@/lib/tauri"
 
 interface AttachmentsPanelProps {
-  /// Target entity. Exactly one of itemId / subscriptionId must be set.
+  /// Target entity. Exactly one of itemId / subscriptionId / engagementId /
+  /// engagementChargeId / incomeId / reimbursementId must be set.
   itemId?: string
   subscriptionId?: string
+  engagementId?: string
+  engagementChargeId?: string
+  incomeId?: string
+  reimbursementId?: string
   itemDescription: string
   orderId?: string | null
   /// Optional richer context (merchant, purchase_date, invoice_number…) used
@@ -31,6 +36,10 @@ const ATTACHMENT_TYPES = [
   { slug: "invoice", label: "Ticket / Facture", Icon: Receipt },
   { slug: "warranty", label: "Garantie", Icon: Shield },
   { slug: "purchase_order", label: "Bon de commande", Icon: ClipboardList },
+  { slug: "contract", label: "Contrat / police", Icon: ScrollText },
+  { slug: "qrbill", label: "QR-facture / BVR", Icon: Banknote },
+  { slug: "payslip", label: "Bulletin de salaire", Icon: Wallet },
+  { slug: "claim", label: "Justificatif remb.", Icon: HandCoins },
   { slug: "photo", label: "Image", Icon: ImageIcon },
   { slug: "other", label: "Autre", Icon: File },
 ] as const
@@ -118,7 +127,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -132,6 +141,14 @@ export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orde
     try {
       if (subscriptionId) {
         setAttachments(await api.getSubscriptionAttachments(subscriptionId))
+      } else if (engagementId) {
+        setAttachments(await api.getEngagementAttachments(engagementId))
+      } else if (engagementChargeId) {
+        setAttachments(await api.getEngagementChargeAttachments(engagementChargeId))
+      } else if (incomeId) {
+        setAttachments(await api.getIncomeAttachments(incomeId))
+      } else if (reimbursementId) {
+        setAttachments(await api.getReimbursementAttachments(reimbursementId))
       } else if (itemId) {
         setAttachments(await api.getAttachments(itemId))
       }
@@ -142,7 +159,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orde
     }
   }
 
-  useEffect(() => { load() }, [itemId, subscriptionId])
+  useEffect(() => { load() }, [itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId])
 
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -193,6 +210,14 @@ export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orde
         const harmonized = await harmonize(type, name)
         if (subscriptionId) {
           await api.addSubscriptionAttachment(subscriptionId, filePath, harmonized, typeSlug)
+        } else if (engagementId) {
+          await api.addEngagementAttachment(engagementId, filePath, harmonized, typeSlug)
+        } else if (engagementChargeId) {
+          await api.addEngagementChargeAttachment(engagementChargeId, filePath, harmonized, typeSlug)
+        } else if (incomeId) {
+          await api.addIncomeAttachment(incomeId, filePath, harmonized, typeSlug)
+        } else if (reimbursementId) {
+          await api.addReimbursementAttachment(reimbursementId, filePath, harmonized, typeSlug)
         } else if (itemId) {
           await api.addAttachment(itemId, filePath, harmonized, typeSlug, shareWithOrder)
         }
@@ -364,7 +389,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, itemDescription, orde
         {pending && (
           <TypePicker
             count={pending.paths.length}
-            canShare={!!orderId && !subscriptionId}
+            canShare={!!orderId && !subscriptionId && !engagementId && !engagementChargeId && !incomeId && !reimbursementId}
             onPick={handleConfirmType}
             onCancel={() => setPending(null)}
           />

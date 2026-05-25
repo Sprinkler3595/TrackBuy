@@ -37,13 +37,15 @@ export interface Item {
 }
 
 export interface Reminder {
-  /// Source row id — items.id for entity_type='item', subscriptions.id for 'subscription'.
+  /// Source row id. items.id for 'item', subscriptions.id for 'subscription',
+  /// engagements.id for both 'engagement' and 'charge' (parent, not charge_id).
   item_id: string
-  entity_type: "item" | "subscription"
+  entity_type: "item" | "subscription" | "engagement" | "charge"
   description: string
-  /// Item kind for items, billing cycle for subscriptions.
+  /// item_kind for items, billing cycle for subscriptions, engagement_type
+  /// for engagements/charges.
   item_kind: string
-  reminder_type: "event" | "expiration" | "renewal"
+  reminder_type: "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
   target_date: string
   days_until: number
   merchant_name: string | null
@@ -68,12 +70,19 @@ export interface Location {
   updated_at: string
 }
 
+export type AccountKind = "card" | "bank_account" | "cash" | "qr_bill" | "other"
+
 export interface PaymentCard {
   id: string
   name: string
   is_credit_card: boolean
   extended_warranty_months: number
   extended_warranty_description: string | null
+  account_kind: AccountKind
+  iban: string | null
+  bic: string | null
+  account_holder: string | null
+  institution: string | null
   created_at: string
   updated_at: string
 }
@@ -95,6 +104,12 @@ export interface Attachment {
   item_id: string | null
   order_id: string | null
   subscription_id: string | null
+  engagement_id: string | null
+  engagement_charge_id: string | null
+  engagement_revision_id: string | null
+  income_id: string | null
+  income_receipt_id: string | null
+  reimbursement_id: string | null
   original_name: string
   display_name: string
   mime_type: string
@@ -118,6 +133,7 @@ export interface PendingInvoice {
 
 export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
 export type SubscriptionStatus = "active" | "paused" | "cancelled"
+export type SubscriptionKind = "online"
 
 export interface Subscription {
   id: string
@@ -137,6 +153,7 @@ export interface Subscription {
   cancellation_url: string | null
   status: SubscriptionStatus
   notes: string | null
+  kind: SubscriptionKind
   created_at: string
   updated_at: string
   merchant_name?: string | null
@@ -423,6 +440,17 @@ export const restoreBackup = (source: string, targetName: string | null, overwri
   invoke<string>("restore_backup", { source, targetName, overwrite })
 
 export const exportItemsCsv = () => invoke<string>("export_items_csv")
+export const exportEngagementsCsv = () => invoke<string>("export_engagements_csv")
+export const exportEngagementChargesCsv = () => invoke<string>("export_engagement_charges_csv")
+export const exportIncomesCsv = () => invoke<string>("export_incomes_csv")
+export const exportIncomeReceiptsCsv = () => invoke<string>("export_income_receipts_csv")
+export const exportReimbursementsCsv = () => invoke<string>("export_reimbursements_csv")
+
+export interface YoyEngagement {
+  engagement_id: string
+  name: string
+  series: Array<{ year: string; total: number; months: number }>
+}
 
 export interface Stats {
   total_items: number
@@ -432,8 +460,16 @@ export interface Stats {
   total_warranties: number
   total_attachments: number
   monthly_spending: Array<{ month: string; total: number }>
+  monthly_engagements: Array<{ month: string; total: number }>
+  monthly_subscriptions: Array<{ month: string; total: number }>
+  monthly_incomes: Array<{ month: string; total: number }>
+  engagements_by_type: Array<{ type: string; total: number; count: number }>
+  incomes_by_type: Array<{ type: string; total: number; count: number }>
+  top_creditors: Array<{ name: string; total: number }>
+  yoy_by_engagement: YoyEngagement[]
+  window_months: number
 }
-export const getStats = () => invoke<Stats>("get_stats")
+export const getStats = (months?: number) => invoke<Stats>("get_stats", { months })
 
 // File I/O commands (path-validated, replace direct plugin-fs usage)
 export const writeTextFile = (destination: string, content: string) =>
@@ -510,6 +546,7 @@ export const createSubscription = (subscription: {
   cancellation_url?: string | null
   status?: SubscriptionStatus
   notes?: string | null
+  kind?: SubscriptionKind
 }) => invoke<Subscription>("create_subscription", { subscription })
 
 export const updateSubscription = (subscription: Subscription) =>
@@ -558,3 +595,682 @@ export const updateSubscriptionMember = (member: SubscriptionMember) =>
 
 export const deleteSubscriptionMember = (id: string) =>
   invoke<void>("delete_subscription_member", { id })
+
+// ============================================================================
+// Engagements & creditors (recurring real-world charges)
+// ============================================================================
+
+export type CreditorType =
+  | "insurer" | "landlord" | "utility" | "telco" | "tax_office"
+  | "leasing_company" | "employer" | "bank" | "other"
+
+export interface Creditor {
+  id: string
+  name: string
+  creditor_type: CreditorType
+  contact_email: string | null
+  contact_phone: string | null
+  address: string | null
+  iban: string | null
+  reference_prefix: string | null
+  notes: string | null
+  logo_path: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type EngagementType =
+  | "insurance_health" | "insurance_household" | "insurance_car"
+  | "insurance_life" | "insurance_legal" | "insurance_other"
+  | "rent" | "parking" | "leasing" | "mortgage"
+  | "electricity" | "gas" | "water" | "fuel" | "heating"
+  | "phone" | "internet" | "tv_radio"
+  | "tax_federal" | "tax_cantonal" | "tax_communal" | "tax_other"
+  | "fine" | "fee" | "membership" | "other"
+
+export type EngagementBillingCycle =
+  | "monthly" | "quarterly" | "semiannual" | "yearly" | "one_shot" | "custom"
+
+export type EngagementStatus = "active" | "suspended" | "ended"
+
+export type EngagementPaymentMethod =
+  | "direct_debit" | "qr_bill" | "bvr" | "manual_transfer"
+  | "standing_order" | "cash" | "card_auto" | "other"
+
+export type ChargeStatus = "scheduled" | "paid" | "late" | "disputed" | "waived"
+
+export interface Engagement {
+  id: string
+  name: string
+  engagement_type: EngagementType
+  parent_engagement_id: string | null
+  creditor_id: string | null
+  payment_card_id: string | null
+  contract_reference: string | null
+  contract_start_date: string | null
+  contract_end_date: string | null
+  notice_period_days: number | null
+  billing_cycle: EngagementBillingCycle
+  cycle_interval: number
+  next_due_date: string | null
+  current_amount: number | null
+  currency: string
+  payment_method: EngagementPaymentMethod | null
+  auto_pay: boolean
+  status: EngagementStatus
+  ended_on: string | null
+  notes: string | null
+  clauses_json: string | null
+  created_at: string
+  updated_at: string
+  creditor_name?: string | null
+  card_name?: string | null
+  parent_name?: string | null
+}
+
+export interface EngagementCharge {
+  id: string
+  engagement_id: string
+  period_start: string | null
+  period_end: string | null
+  due_date: string
+  amount: number
+  currency: string
+  quantity: number | null
+  unit: string | null
+  unit_price: number | null
+  paid_on: string | null
+  status: ChargeStatus
+  payment_card_id: string | null
+  reference_number: string | null
+  invoice_number: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface EngagementRevision {
+  id: string
+  engagement_id: string
+  effective_date: string
+  amount: number
+  currency: string
+  change_reason: string | null
+  notes: string | null
+  created_at: string
+}
+
+// Creditors CRUD
+export const getCreditors = (params?: { creditor_type?: string }) =>
+  invoke<Creditor[]>("get_creditors", params ?? {})
+
+export const createCreditor = (creditor: {
+  name: string
+  creditor_type?: CreditorType
+  contact_email?: string | null
+  contact_phone?: string | null
+  address?: string | null
+  iban?: string | null
+  reference_prefix?: string | null
+  notes?: string | null
+}) => invoke<Creditor>("create_creditor", { creditor })
+
+export const updateCreditor = (creditor: Creditor) =>
+  invoke<void>("update_creditor", { creditor })
+
+export const deleteCreditor = (id: string) =>
+  invoke<void>("delete_creditor", { id })
+
+// Engagements CRUD
+export const getEngagements = (params?: {
+  status?: string
+  engagement_type?: string
+  parent_id?: string
+}) => invoke<Engagement[]>("get_engagements", params ?? {})
+
+export const getEngagement = (id: string) =>
+  invoke<Engagement>("get_engagement", { id })
+
+export const getEngagementChildren = (parentId: string) =>
+  invoke<Engagement[]>("get_engagement_children", { parentId })
+
+export const createEngagement = (engagement: {
+  name: string
+  engagement_type: EngagementType
+  parent_engagement_id?: string | null
+  creditor_id?: string | null
+  payment_card_id?: string | null
+  contract_reference?: string | null
+  contract_start_date?: string | null
+  contract_end_date?: string | null
+  notice_period_days?: number | null
+  billing_cycle: EngagementBillingCycle
+  cycle_interval?: number
+  next_due_date?: string | null
+  current_amount?: number | null
+  currency?: string
+  payment_method?: EngagementPaymentMethod | null
+  auto_pay?: boolean
+  status?: EngagementStatus
+  notes?: string | null
+  clauses_json?: string | null
+}) => invoke<Engagement>("create_engagement", { engagement })
+
+export const updateEngagement = (engagement: Engagement) =>
+  invoke<void>("update_engagement", { engagement })
+
+export const deleteEngagement = (id: string) =>
+  invoke<void>("delete_engagement", { id })
+
+export const rollForwardDueEngagements = () =>
+  invoke<number>("roll_forward_due_engagements")
+
+export const getUpcomingEngagementCharges = (days?: number) =>
+  invoke<EngagementCharge[]>("get_upcoming_engagement_charges", { days })
+
+// Engagement charges (occurrences/factures)
+export const getEngagementCharges = (engagementId: string) =>
+  invoke<EngagementCharge[]>("get_engagement_charges", { engagementId })
+
+export const addEngagementCharge = (charge: {
+  engagement_id: string
+  period_start?: string | null
+  period_end?: string | null
+  due_date: string
+  amount: number
+  currency?: string
+  quantity?: number | null
+  unit?: string | null
+  unit_price?: number | null
+  paid_on?: string | null
+  status?: ChargeStatus
+  payment_card_id?: string | null
+  reference_number?: string | null
+  invoice_number?: string | null
+  notes?: string | null
+}) => invoke<EngagementCharge>("add_engagement_charge", { charge })
+
+export const updateEngagementCharge = (charge: EngagementCharge) =>
+  invoke<void>("update_engagement_charge", { charge })
+
+export const markChargePaid = (
+  id: string,
+  paidOn: string,
+  paymentCardId?: string | null
+) => invoke<EngagementCharge>("mark_charge_paid", { id, paidOn, paymentCardId })
+
+export const deleteEngagementCharge = (id: string) =>
+  invoke<void>("delete_engagement_charge", { id })
+
+// Engagement revisions (contract amendments)
+export const getEngagementRevisions = (engagementId: string) =>
+  invoke<EngagementRevision[]>("get_engagement_revisions", { engagementId })
+
+export const addEngagementRevision = (revision: {
+  engagement_id: string
+  effective_date: string
+  amount: number
+  currency?: string
+  change_reason?: string | null
+  notes?: string | null
+}) => invoke<EngagementRevision>("add_engagement_revision", { revision })
+
+export const deleteEngagementRevision = (id: string) =>
+  invoke<void>("delete_engagement_revision", { id })
+
+export const migrateSubscriptionToEngagement = (
+  subscriptionId: string,
+  engagementType: EngagementType,
+  creditorId?: string | null
+) =>
+  invoke<Engagement>("migrate_subscription_to_engagement", {
+    subscriptionId,
+    engagementType,
+    creditorId,
+  })
+
+// Polymorphic attachments
+export const getEngagementAttachments = (engagementId: string) =>
+  invoke<Attachment[]>("get_engagement_attachments", { engagementId })
+
+export const getEngagementChargeAttachments = (chargeId: string) =>
+  invoke<Attachment[]>("get_engagement_charge_attachments", { chargeId })
+
+export const addEngagementAttachment = (
+  engagementId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_attachment", {
+    engagementId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addEngagementChargeAttachment = (
+  chargeId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_charge_attachment", {
+    chargeId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addEngagementRevisionAttachment = (
+  revisionId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_engagement_revision_attachment", {
+    revisionId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+// ============================================================================
+// Incomes (salaries, bonuses, allowances, dividends, …)
+// ============================================================================
+
+export type IncomeType =
+  | "salary" | "bonus" | "thirteenth" | "pension"
+  | "unemployment" | "family_allowance" | "dividend"
+  | "rental" | "gift" | "reimbursement" | "other"
+
+export type IncomeBillingCycle =
+  | "monthly" | "quarterly" | "yearly" | "one_shot" | "custom"
+
+export type IncomeStatus = "active" | "ended"
+
+export interface Income {
+  id: string
+  name: string
+  income_type: IncomeType
+  source_name: string | null
+  payment_card_id: string | null
+  billing_cycle: IncomeBillingCycle
+  cycle_interval: number
+  next_expected_date: string | null
+  current_amount: number | null
+  currency: string
+  status: IncomeStatus
+  started_on: string | null
+  ended_on: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface IncomeReceipt {
+  id: string
+  income_id: string
+  received_on: string
+  amount: number
+  currency: string
+  period_label: string | null
+  gross_amount: number | null
+  social_charges_amount: number | null
+  pension_amount: number | null
+  tax_at_source_amount: number | null
+  other_deductions_amount: number | null
+  bonus_amount: number | null
+  notes: string | null
+  created_at: string
+}
+
+// Incomes CRUD
+export const getIncomes = (params?: { status?: string; income_type?: string }) =>
+  invoke<Income[]>("get_incomes", params ?? {})
+
+export const getIncome = (id: string) =>
+  invoke<Income>("get_income", { id })
+
+export const createIncome = (income: {
+  name: string
+  income_type: IncomeType
+  source_name?: string | null
+  payment_card_id?: string | null
+  billing_cycle: IncomeBillingCycle
+  cycle_interval?: number
+  next_expected_date?: string | null
+  current_amount?: number | null
+  currency?: string
+  status?: IncomeStatus
+  started_on?: string | null
+  notes?: string | null
+}) => invoke<Income>("create_income", { income })
+
+export const updateIncome = (income: Income) =>
+  invoke<void>("update_income", { income })
+
+export const deleteIncome = (id: string) =>
+  invoke<void>("delete_income", { id })
+
+// Income receipts (each reception, with optional payslip detail)
+export const getIncomeReceipts = (incomeId: string) =>
+  invoke<IncomeReceipt[]>("get_income_receipts", { incomeId })
+
+export const logIncomeReceipt = (receipt: {
+  income_id: string
+  received_on: string
+  amount: number
+  currency?: string
+  period_label?: string | null
+  gross_amount?: number | null
+  social_charges_amount?: number | null
+  pension_amount?: number | null
+  tax_at_source_amount?: number | null
+  other_deductions_amount?: number | null
+  bonus_amount?: number | null
+  notes?: string | null
+}) => invoke<IncomeReceipt>("log_income_receipt", { receipt })
+
+export const updateIncomeReceipt = (receipt: IncomeReceipt) =>
+  invoke<void>("update_income_receipt", { receipt })
+
+export const deleteIncomeReceipt = (id: string) =>
+  invoke<void>("delete_income_receipt", { id })
+
+// Polymorphic attachments
+export const getIncomeAttachments = (incomeId: string) =>
+  invoke<Attachment[]>("get_income_attachments", { incomeId })
+
+export const getIncomeReceiptAttachments = (receiptId: string) =>
+  invoke<Attachment[]>("get_income_receipt_attachments", { receiptId })
+
+export const addIncomeAttachment = (
+  incomeId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_income_attachment", {
+    incomeId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+export const addIncomeReceiptAttachment = (
+  receiptId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_income_receipt_attachment", {
+    receiptId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+// ============================================================================
+// Pending reimbursements (money to recover)
+// ============================================================================
+
+export type ReimbursementType =
+  | "expense_report" | "insurance_claim" | "warranty_return"
+  | "product_return" | "deposit" | "tax_refund" | "other"
+
+export type ReimbursementStatus =
+  | "pending" | "claimed" | "partial" | "settled" | "rejected" | "cancelled"
+
+export interface PendingReimbursement {
+  id: string
+  label: string
+  reimbursement_type: ReimbursementType
+  expected_amount: number | null
+  received_amount: number | null
+  currency: string
+  debtor_name: string | null
+  debtor_creditor_id: string | null
+  item_id: string | null
+  engagement_charge_id: string | null
+  source_description: string | null
+  requested_on: string | null
+  expected_by: string | null
+  received_on: string | null
+  status: ReimbursementStatus
+  notes: string | null
+  created_at: string
+  updated_at: string
+  debtor_creditor_name?: string | null
+  item_description?: string | null
+}
+
+export const listPendingReimbursements = (params?: { status?: string }) =>
+  invoke<PendingReimbursement[]>("list_pending_reimbursements", params ?? {})
+
+export const getPendingReimbursement = (id: string) =>
+  invoke<PendingReimbursement>("get_pending_reimbursement", { id })
+
+export const createPendingReimbursement = (reimb: {
+  label: string
+  reimbursement_type?: ReimbursementType
+  expected_amount?: number | null
+  currency?: string
+  debtor_name?: string | null
+  debtor_creditor_id?: string | null
+  item_id?: string | null
+  engagement_charge_id?: string | null
+  source_description?: string | null
+  requested_on?: string | null
+  expected_by?: string | null
+  status?: ReimbursementStatus
+  notes?: string | null
+}) => invoke<PendingReimbursement>("create_pending_reimbursement", { reimb })
+
+export const updatePendingReimbursement = (reimb: PendingReimbursement) =>
+  invoke<void>("update_pending_reimbursement", { reimb })
+
+export const markReimbursementClaimed = (id: string, requestedOn?: string) =>
+  invoke<PendingReimbursement>("mark_reimbursement_claimed", { id, requestedOn })
+
+export const markReimbursementSettled = (
+  id: string,
+  receivedOn: string,
+  receivedAmount: number
+) =>
+  invoke<PendingReimbursement>("mark_reimbursement_settled", {
+    id,
+    receivedOn,
+    receivedAmount,
+  })
+
+export const deletePendingReimbursement = (id: string) =>
+  invoke<void>("delete_pending_reimbursement", { id })
+
+export const getReimbursementAttachments = (reimbursementId: string) =>
+  invoke<Attachment[]>("get_reimbursement_attachments", { reimbursementId })
+
+export const addReimbursementAttachment = (
+  reimbursementId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_reimbursement_attachment", {
+    reimbursementId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+// ============================================================================
+// Bank statements: PDF/image import → AI extraction → match review →
+// learned rules. Companion of `ai_extract_bank_statement` on the Rust side.
+// ============================================================================
+
+export type BankStatementStatus = "pending" | "extracted" | "reviewed" | "archived"
+
+export interface BankStatement {
+  id: string
+  label: string | null
+  bank_name: string | null
+  account_iban: string | null
+  period_start: string | null
+  period_end: string | null
+  statement_date: string | null
+  opening_balance: number | null
+  closing_balance: number | null
+  currency: string
+  file_path: string
+  original_name: string
+  mime_type: string
+  size_bytes: number
+  status: BankStatementStatus
+  extracted_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type BankTxDirection = "debit" | "credit"
+export type BankTxMatchStatus = "unmatched" | "suggested" | "confirmed" | "created" | "ignored"
+export type BankTxTargetKind =
+  | "engagement" | "engagement_charge"
+  | "subscription" | "subscription_payment"
+  | "income" | "income_receipt"
+  | "item" | "merchant" | "reimbursement"
+
+export interface BankStatementTransaction {
+  id: string
+  statement_id: string
+  transaction_date: string
+  booking_date: string | null
+  raw_description: string
+  cleaned_description: string | null
+  amount: number
+  currency: string
+  direction: BankTxDirection
+  reference_number: string | null
+  counterparty_iban: string | null
+  match_target_kind: BankTxTargetKind | null
+  match_target_id: string | null
+  match_confidence: number | null
+  match_rule_id: string | null
+  match_status: BankTxMatchStatus
+  review_notes: string | null
+  created_at: string
+  updated_at: string
+  match_target_label?: string | null
+}
+
+export interface ExtractedTransactionInput {
+  transaction_date: string
+  booking_date?: string | null
+  raw_description: string
+  amount: number
+  currency?: string
+  direction: BankTxDirection
+  reference_number?: string | null
+  counterparty_iban?: string | null
+}
+
+export interface BankMatchRule {
+  id: string
+  pattern: string
+  pattern_kind: "substring" | "regex"
+  direction: BankTxDirection | null
+  amount_min: number | null
+  amount_max: number | null
+  target_kind: BankTxTargetKind
+  target_id: string
+  learned: boolean
+  enabled: boolean
+  hit_count: number
+  last_hit_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ExtractedTransaction {
+  date: string
+  booking_date: string | null
+  description: string
+  amount: number
+  currency: string
+  direction: BankTxDirection
+  reference: string | null
+  counterparty_iban: string | null
+}
+
+export const addBankStatement = (
+  sourcePath: string,
+  label?: string,
+  bankName?: string
+) => invoke<BankStatement>("add_bank_statement", { sourcePath, label, bankName })
+
+export const listBankStatements = (params?: { status?: string }) =>
+  invoke<BankStatement[]>("list_bank_statements", params ?? {})
+
+export const getBankStatement = (id: string) =>
+  invoke<BankStatement>("get_bank_statement", { id })
+
+export const deleteBankStatement = (id: string) =>
+  invoke<void>("delete_bank_statement", { id })
+
+export const getBankStatementData = (id: string) =>
+  invoke<string>("get_bank_statement_data", { id })
+
+export const saveExtractedTransactions = (
+  statementId: string,
+  transactions: ExtractedTransactionInput[]
+) =>
+  invoke<number>("save_extracted_transactions", { statementId, transactions })
+
+export const listStatementTransactions = (statementId: string) =>
+  invoke<BankStatementTransaction[]>("list_statement_transactions", { statementId })
+
+export const suggestMatchesForStatement = (statementId: string) =>
+  invoke<number>("suggest_matches_for_statement", { statementId })
+
+export const applyTransactionMatch = (
+  txId: string,
+  targetKind: BankTxTargetKind,
+  targetId: string,
+  learnRule?: boolean
+) =>
+  invoke<BankStatementTransaction>("apply_transaction_match", {
+    txId,
+    targetKind,
+    targetId,
+    learnRule,
+  })
+
+export const ignoreTransaction = (txId: string) =>
+  invoke<void>("ignore_transaction", { txId })
+
+export const listMatchRules = (enabled?: boolean) =>
+  invoke<BankMatchRule[]>("list_match_rules", { enabled })
+
+export const createMatchRule = (rule: {
+  pattern: string
+  pattern_kind?: "substring" | "regex"
+  direction?: BankTxDirection | null
+  amount_min?: number | null
+  amount_max?: number | null
+  target_kind: BankTxTargetKind
+  target_id: string
+  learned?: boolean
+  notes?: string | null
+}) => invoke<BankMatchRule>("create_match_rule", { rule })
+
+export const updateMatchRule = (rule: BankMatchRule) =>
+  invoke<void>("update_match_rule", { rule })
+
+export const deleteMatchRule = (id: string) =>
+  invoke<void>("delete_match_rule", { id })
+
+export const aiExtractBankStatement = (text: string, config: unknown) =>
+  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config })

@@ -12,7 +12,7 @@ const SUB_SELECT_COLUMNS: &str =
     "s.id, s.name, s.category, s.merchant_id, s.payment_card_id, s.start_date,
      s.next_renewal_date, s.billing_cycle, s.cycle_interval, s.price, s.currency,
      s.auto_renewal, s.trial_end_date, s.cancel_by_date, s.cancellation_url,
-     s.status, s.notes, s.created_at, s.updated_at,
+     s.status, s.notes, s.kind, s.created_at, s.updated_at,
      m.name as merchant_name, pc.name as card_name";
 
 fn row_to_subscription(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription> {
@@ -34,10 +34,11 @@ fn row_to_subscription(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subscription
         cancellation_url: row.get(14)?,
         status: row.get(15)?,
         notes: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
-        merchant_name: row.get(19)?,
-        card_name: row.get(20)?,
+        kind: row.get(17)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
+        merchant_name: row.get(20)?,
+        card_name: row.get(21)?,
     })
 }
 
@@ -154,7 +155,7 @@ pub fn get_subscriptions(
         "SELECT {} FROM subscriptions s
          LEFT JOIN merchants m ON s.merchant_id = m.id
          LEFT JOIN payment_cards pc ON s.payment_card_id = pc.id
-         WHERE 1=1",
+         WHERE s.kind = 'online'",
         SUB_SELECT_COLUMNS
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -214,16 +215,17 @@ pub fn create_subscription(
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     let id = Uuid::new_v4().to_string();
-    let currency = subscription.currency.unwrap_or_else(|| "CAD".to_string());
+    let currency = subscription.currency.unwrap_or_else(|| "CHF".to_string());
     let status = subscription.status.unwrap_or_else(|| "active".to_string());
+    let kind = subscription.kind.unwrap_or_else(|| "online".to_string());
     let auto_renewal = subscription.auto_renewal.unwrap_or(true);
     let cycle_interval = subscription.cycle_interval.unwrap_or(1).max(1);
 
     conn.execute(
         "INSERT INTO subscriptions (id, name, category, merchant_id, payment_card_id, start_date,
          next_renewal_date, billing_cycle, cycle_interval, price, currency,
-         auto_renewal, trial_end_date, cancel_by_date, cancellation_url, status, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+         auto_renewal, trial_end_date, cancel_by_date, cancellation_url, status, notes, kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         rusqlite::params![
             id,
             subscription.name,
@@ -242,6 +244,7 @@ pub fn create_subscription(
             subscription.cancellation_url,
             status,
             subscription.notes,
+            kind,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -271,9 +274,9 @@ pub fn update_subscription(
          payment_card_id = ?4, start_date = ?5, next_renewal_date = ?6,
          billing_cycle = ?7, cycle_interval = ?8, price = ?9, currency = ?10,
          auto_renewal = ?11, trial_end_date = ?12, cancel_by_date = ?13,
-         cancellation_url = ?14, status = ?15, notes = ?16,
+         cancellation_url = ?14, status = ?15, notes = ?16, kind = ?17,
          updated_at = datetime('now')
-         WHERE id = ?17",
+         WHERE id = ?18",
         rusqlite::params![
             subscription.name,
             subscription.category,
@@ -291,6 +294,7 @@ pub fn update_subscription(
             subscription.cancellation_url,
             subscription.status,
             subscription.notes,
+            subscription.kind,
             subscription.id,
         ],
     )
@@ -477,7 +481,7 @@ pub fn log_subscription_payment(
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     let id = Uuid::new_v4().to_string();
-    let currency = payment.currency.unwrap_or_else(|| "CAD".to_string());
+    let currency = payment.currency.unwrap_or_else(|| "CHF".to_string());
 
     conn.execute(
         "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, payment_card_id, notes)

@@ -21,6 +21,11 @@ export type AttachmentTypeKey =
   | "voucher_code"
   | "license_key"
   | "warranty"
+  | "contract"
+  | "qrbill"
+  | "payslip"
+  | "claim"
+  | "bank_statement"
   | "other"
 
 export const ATTACHMENT_TYPE_KEYS: AttachmentTypeKey[] = [
@@ -31,6 +36,11 @@ export const ATTACHMENT_TYPE_KEYS: AttachmentTypeKey[] = [
   "voucher_code",
   "license_key",
   "warranty",
+  "contract",
+  "qrbill",
+  "payslip",
+  "claim",
+  "bank_statement",
   "other",
 ]
 
@@ -42,6 +52,11 @@ export const ATTACHMENT_TYPE_LABELS: Record<AttachmentTypeKey, string> = {
   voucher_code:   "Code voucher",
   license_key:    "Clé licence",
   warranty:       "Garantie",
+  contract:       "Contrat / police",
+  qrbill:         "QR-facture / BVR",
+  payslip:        "Bulletin de salaire",
+  claim:          "Justificatif remboursement",
+  bank_statement: "Relevé bancaire",
   other:          "Autre",
 }
 
@@ -55,6 +70,15 @@ export const DEFAULT_TEMPLATES: Record<AttachmentTypeKey, string> = {
   voucher_code:   "{date|YYYY-MM-DD}_{merchant|slug}_voucher.{ext}",
   license_key:    "{date|YYYY-MM-DD}_{description|slug|truncate:30}_licence.{ext}",
   warranty:       "{date|YYYY-MM-DD}_{description|slug|truncate:40}_garantie.{ext}",
+  // Engagement-centric templates: use `merchant` to carry the creditor name
+  // (AttachmentsPanel callers pass `creditor_name` under the `merchant` key
+  // for engagement-level attachments so a single context shape works for
+  // both vendors and creditors).
+  contract:       "{date|YYYY-MM-DD}_{merchant|slug}_{description|slug|truncate:30}_contrat.{ext}",
+  qrbill:         "{date|YYYY-MM-DD}_{merchant|slug}_{invoice_number|or:'qrbill'}.{ext}",
+  payslip:        "{date|YYYY-MM}_{merchant|slug}_bulletin.{ext}",
+  claim:          "{date|YYYY-MM-DD}_{description|slug|truncate:30}_justif.{ext}",
+  bank_statement: "{date|YYYY-MM}_{merchant|slug|or:'banque'}_releve.{ext}",
   other:          "{date|YYYY-MM-DD}_{description|slug|truncate:40}.{ext}",
 }
 

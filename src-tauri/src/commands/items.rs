@@ -138,7 +138,7 @@ pub fn create_item(
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     let id = Uuid::new_v4().to_string();
-    let currency = item.currency.unwrap_or_else(|| "CAD".to_string());
+    let currency = item.currency.unwrap_or_else(|| "CHF".to_string());
     let status = item.status.unwrap_or_else(|| "active".to_string());
     let quantity = item.quantity.unwrap_or(1);
     let item_kind = item.item_kind.unwrap_or_else(|| "physical".to_string());
@@ -288,7 +288,7 @@ pub fn create_order_with_items(
     };
 
     let order_id = Uuid::new_v4().to_string();
-    let currency = order.currency.clone().unwrap_or_else(|| "CAD".to_string());
+    let currency = order.currency.clone().unwrap_or_else(|| "CHF".to_string());
     let status = order.status.clone().unwrap_or_else(|| "active".to_string());
 
     let vault_dir_guard = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;

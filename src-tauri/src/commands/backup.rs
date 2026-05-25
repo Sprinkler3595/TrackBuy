@@ -375,14 +375,370 @@ pub fn export_items_csv(state: State<'_, AppState>) -> Result<String, String> {
     Ok(csv)
 }
 
+/// CSV export of engagements with their cumulative paid amount. A single
+/// flat file is easier to open in Excel/Numbers than two related tables.
 #[tauri::command]
-pub fn get_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+pub fn export_engagements_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.name, e.engagement_type, cr.name, e.contract_reference,
+                    e.billing_cycle, e.cycle_interval, e.current_amount, e.currency,
+                    e.status, e.next_due_date, e.contract_start_date, e.contract_end_date,
+                    e.payment_method, e.auto_pay, p.name as parent_name,
+                    (SELECT COALESCE(SUM(amount), 0) FROM engagement_charges
+                     WHERE engagement_id = e.id AND status = 'paid') as total_paid,
+                    e.notes
+             FROM engagements e
+             LEFT JOIN creditors cr ON e.creditor_id = cr.id
+             LEFT JOIN engagements p ON e.parent_engagement_id = p.id
+             ORDER BY e.name",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Nom,Type,Créancier,N° contrat,Périodicité,Intervalle,Montant courant,Devise,\
+         Statut,Prochaine échéance,Début contrat,Fin contrat,Mode de paiement,Auto-paiement,\
+         Parent,Total payé,Notes\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i32>(5)?,
+                row.get::<_, Option<f64>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, bool>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, f64>(15)?,
+                row.get::<_, Option<String>>(16)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let (name, typ, creditor, contract_ref, cycle, interval, current_amount, currency,
+             status, next_due, start_date, end_date, payment_method, auto_pay, parent,
+             total_paid, notes) = row.map_err(|e| e.to_string())?;
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2},{}\n",
+            escape_csv(&name),
+            typ,
+            escape_csv(&creditor.unwrap_or_default()),
+            escape_csv(&contract_ref.unwrap_or_default()),
+            cycle, interval,
+            current_amount.map(|a| format!("{:.2}", a)).unwrap_or_default(),
+            currency, status,
+            next_due.unwrap_or_default(),
+            start_date.unwrap_or_default(),
+            end_date.unwrap_or_default(),
+            payment_method.unwrap_or_default(),
+            if auto_pay { "oui" } else { "non" },
+            escape_csv(&parent.unwrap_or_default()),
+            total_paid,
+            escape_csv(&notes.unwrap_or_default()),
+        ));
+    }
+
+    Ok(csv)
+}
+
+/// Full charges history across all engagements, sorted chronologically.
+/// Useful to reconcile against bank exports outside the app.
+#[tauri::command]
+pub fn export_engagement_charges_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.due_date, e.name, e.engagement_type, c.amount, c.currency,
+                    c.status, c.paid_on, c.reference_number, c.invoice_number,
+                    c.quantity, c.unit, c.unit_price, c.notes
+             FROM engagement_charges c
+             JOIN engagements e ON c.engagement_id = e.id
+             ORDER BY c.due_date DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Échéance,Engagement,Type,Montant,Devise,Statut,Payée le,Référence BVR,\
+         N° facture,Quantité,Unité,Prix unitaire,Notes\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<f64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<f64>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let (due_date, name, typ, amount, currency, status, paid_on, ref_num, invoice,
+             qty, unit, unit_price, notes) = row.map_err(|e| e.to_string())?;
+        csv.push_str(&format!(
+            "{},{},{},{:.2},{},{},{},{},{},{},{},{},{}\n",
+            due_date,
+            escape_csv(&name),
+            typ, amount, currency, status,
+            paid_on.unwrap_or_default(),
+            escape_csv(&ref_num.unwrap_or_default()),
+            escape_csv(&invoice.unwrap_or_default()),
+            qty.map(|q| format!("{:.3}", q)).unwrap_or_default(),
+            unit.unwrap_or_default(),
+            unit_price.map(|p| format!("{:.4}", p)).unwrap_or_default(),
+            escape_csv(&notes.unwrap_or_default()),
+        ));
+    }
+
+    Ok(csv)
+}
+
+/// Incomes: header + cumulative received per income. Payslip breakdown
+/// lives in the separate receipts export to keep the table width sane.
+#[tauri::command]
+pub fn export_incomes_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.name, i.income_type, i.source_name, i.billing_cycle, i.cycle_interval,
+                    i.current_amount, i.currency, i.status, i.next_expected_date,
+                    i.started_on, i.ended_on,
+                    (SELECT COALESCE(SUM(amount), 0) FROM income_receipts WHERE income_id = i.id) as total_received,
+                    (SELECT COUNT(*) FROM income_receipts WHERE income_id = i.id) as receipt_count,
+                    i.notes
+             FROM incomes i
+             ORDER BY i.name",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Nom,Type,Source,Périodicité,Intervalle,Montant courant,Devise,Statut,\
+         Prochain versement,Début,Fin,Total reçu,Nb versements,Notes\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)?,
+                row.get::<_, Option<f64>>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, f64>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, Option<String>>(13)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let (name, typ, source, cycle, interval, current_amount, currency, status,
+             next_expected, started, ended, total, count, notes) =
+            row.map_err(|e| e.to_string())?;
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{:.2},{},{}\n",
+            escape_csv(&name), typ,
+            escape_csv(&source.unwrap_or_default()),
+            cycle, interval,
+            current_amount.map(|a| format!("{:.2}", a)).unwrap_or_default(),
+            currency, status,
+            next_expected.unwrap_or_default(),
+            started.unwrap_or_default(),
+            ended.unwrap_or_default(),
+            total, count,
+            escape_csv(&notes.unwrap_or_default()),
+        ));
+    }
+
+    Ok(csv)
+}
+
+/// Detailed income receipts with full payslip breakdown — useful for
+/// year-end fiscal review and cross-checking employer summaries.
+#[tauri::command]
+pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.received_on, i.name, i.income_type, r.period_label,
+                    r.amount, r.currency, r.gross_amount, r.social_charges_amount,
+                    r.pension_amount, r.tax_at_source_amount, r.other_deductions_amount,
+                    r.bonus_amount, r.notes
+             FROM income_receipts r
+             JOIN incomes i ON r.income_id = i.id
+             ORDER BY r.received_on DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Reçu le,Revenu,Type,Période,Net,Devise,Brut,AVS/AI,2e pilier,Impôt source,\
+         Autres retenues,Bonus,Notes\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<f64>>(6)?,
+                row.get::<_, Option<f64>>(7)?,
+                row.get::<_, Option<f64>>(8)?,
+                row.get::<_, Option<f64>>(9)?,
+                row.get::<_, Option<f64>>(10)?,
+                row.get::<_, Option<f64>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let fmt_opt = |v: Option<f64>| v.map(|x| format!("{:.2}", x)).unwrap_or_default();
+
+    for row in rows {
+        let (received_on, name, typ, period, amount, currency, gross, social, pension,
+             tax_source, other, bonus, notes) = row.map_err(|e| e.to_string())?;
+        csv.push_str(&format!(
+            "{},{},{},{},{:.2},{},{},{},{},{},{},{},{}\n",
+            received_on,
+            escape_csv(&name), typ,
+            escape_csv(&period.unwrap_or_default()),
+            amount, currency,
+            fmt_opt(gross), fmt_opt(social), fmt_opt(pension),
+            fmt_opt(tax_source), fmt_opt(other), fmt_opt(bonus),
+            escape_csv(&notes.unwrap_or_default()),
+        ));
+    }
+
+    Ok(csv)
+}
+
+#[tauri::command]
+pub fn export_reimbursements_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.label, r.reimbursement_type, r.status, r.expected_amount,
+                    r.received_amount, r.currency,
+                    COALESCE(cr.name, r.debtor_name) as debtor,
+                    i.description as linked_item, r.source_description,
+                    r.requested_on, r.expected_by, r.received_on, r.notes
+             FROM pending_reimbursements r
+             LEFT JOIN creditors cr ON r.debtor_creditor_id = cr.id
+             LEFT JOIN items i ON r.item_id = i.id
+             ORDER BY r.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Intitulé,Type,Statut,Montant attendu,Montant reçu,Devise,Débiteur,\
+         Achat lié,Description source,Demandé le,Attendu pour,Reçu le,Notes\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<f64>>(3)?,
+                row.get::<_, Option<f64>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let fmt_opt = |v: Option<f64>| v.map(|x| format!("{:.2}", x)).unwrap_or_default();
+
+    for row in rows {
+        let (label, typ, status, expected, received, currency, debtor, linked_item,
+             source_desc, requested, expected_by, received_on, notes) =
+            row.map_err(|e| e.to_string())?;
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            escape_csv(&label), typ, status,
+            fmt_opt(expected), fmt_opt(received), currency,
+            escape_csv(&debtor.unwrap_or_default()),
+            escape_csv(&linked_item.unwrap_or_default()),
+            escape_csv(&source_desc.unwrap_or_default()),
+            requested.unwrap_or_default(),
+            expected_by.unwrap_or_default(),
+            received_on.unwrap_or_default(),
+            escape_csv(&notes.unwrap_or_default()),
+        ));
+    }
+
+    Ok(csv)
+}
+
+#[tauri::command]
+pub fn get_stats(
+    state: State<'_, AppState>,
+    months: Option<i32>,
+) -> Result<serde_json::Value, String> {
     let db_guard = state
         .db
         .lock()
         .map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Clamp to a sensible range so a malicious caller can't force a year-long
+    // scan of every table on every dashboard load. 24 months covers YoY
+    // comparison, which is the heaviest the analytics page asks for.
+    let months = months.unwrap_or(12).clamp(1, 24);
 
     let total_items: i64 = conn
         .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -416,25 +772,204 @@ pub fn get_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String
         .query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0))
         .unwrap_or(0);
 
-    let mut monthly_stmt = conn
-        .prepare(
-            "SELECT strftime('%Y-%m', purchase_date) as month, SUM(purchase_price) as total
-             FROM items
-             WHERE purchase_date >= date('now', '-12 months')
-             GROUP BY month
-             ORDER BY month",
-        )
-        .map_err(|e| e.to_string())?;
+    let cutoff = format!("-{} months", months);
 
-    let monthly: Vec<serde_json::Value> = monthly_stmt
-        .query_map([], |row| {
+    // -------- Per-month aggregates (timeline charts) --------
+
+    let monthly_items: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT strftime('%Y-%m', purchase_date) as month, SUM(purchase_price) as total
+                 FROM items
+                 WHERE date(purchase_date) >= date('now', ?1)
+                 GROUP BY month ORDER BY month",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
             let month: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"month": month, "total": total}))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect()
+    };
+
+    let monthly_engagements: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT strftime('%Y-%m', due_date) as month, SUM(amount) as total
+                 FROM engagement_charges
+                 WHERE date(due_date) >= date('now', ?1)
+                 GROUP BY month ORDER BY month",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let month: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            Ok(serde_json::json!({"month": month, "total": total}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let monthly_subscriptions: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT strftime('%Y-%m', paid_on) as month, SUM(amount) as total
+                 FROM subscription_payments
+                 WHERE date(paid_on) >= date('now', ?1)
+                 GROUP BY month ORDER BY month",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let month: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            Ok(serde_json::json!({"month": month, "total": total}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let monthly_incomes: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT strftime('%Y-%m', received_on) as month, SUM(amount) as total
+                 FROM income_receipts
+                 WHERE date(received_on) >= date('now', ?1)
+                 GROUP BY month ORDER BY month",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let month: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            Ok(serde_json::json!({"month": month, "total": total}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    // -------- Breakdown by category --------
+
+    let engagements_by_type: Vec<serde_json::Value> = {
+        // Use the snapshot in engagement_charges so the breakdown reflects
+        // what was actually paid in the window — not the contractual
+        // current_amount on the parent, which can include suspended rows.
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.engagement_type, SUM(c.amount) as total, COUNT(*) as count
+                 FROM engagement_charges c
+                 JOIN engagements e ON c.engagement_id = e.id
+                 WHERE date(c.due_date) >= date('now', ?1)
+                 GROUP BY e.engagement_type
+                 ORDER BY total DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let typ: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok(serde_json::json!({"type": typ, "total": total, "count": count}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let incomes_by_type: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.income_type, SUM(r.amount) as total, COUNT(*) as count
+                 FROM income_receipts r
+                 JOIN incomes i ON r.income_id = i.id
+                 WHERE date(r.received_on) >= date('now', ?1)
+                 GROUP BY i.income_type
+                 ORDER BY total DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let typ: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok(serde_json::json!({"type": typ, "total": total, "count": count}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    // -------- Top creditors (where the money goes) --------
+
+    let top_creditors: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT cr.name, SUM(c.amount) as total
+                 FROM engagement_charges c
+                 JOIN engagements e ON c.engagement_id = e.id
+                 JOIN creditors cr ON e.creditor_id = cr.id
+                 WHERE date(c.due_date) >= date('now', ?1)
+                 GROUP BY cr.id
+                 ORDER BY total DESC
+                 LIMIT 8",
+            )
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([&cutoff], |row| {
+            let name: String = row.get(0)?;
+            let total: f64 = row.get(1)?;
+            Ok(serde_json::json!({"name": name, "total": total}))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    // -------- Year-over-year by engagement (price evolution) --------
+    // For each engagement, sum per calendar year over the requested window.
+    // Useful for "ma prime d'assurance qui passe de 280 à 305 CHF/mois" once
+    // there are enough months of data.
+    let yoy_by_engagement: Vec<serde_json::Value> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.id, e.name, strftime('%Y', c.due_date) as year,
+                        SUM(c.amount) as total, COUNT(*) as months
+                 FROM engagement_charges c
+                 JOIN engagements e ON c.engagement_id = e.id
+                 WHERE date(c.due_date) >= date('now', ?1)
+                 GROUP BY e.id, year
+                 ORDER BY e.name, year",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, String, f64, i64)> = stmt
+            .query_map([&cutoff], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Group flat rows into { engagement_id, name, series: [{year, total, months}] }.
+        use std::collections::BTreeMap;
+        let mut by_engagement: BTreeMap<String, (String, Vec<serde_json::Value>)> = BTreeMap::new();
+        for (id, name, year, total, mths) in rows {
+            let entry = by_engagement.entry(id).or_insert_with(|| (name, Vec::new()));
+            entry.1.push(serde_json::json!({"year": year, "total": total, "months": mths}));
+        }
+        by_engagement
+            .into_iter()
+            .map(|(id, (name, series))| {
+                serde_json::json!({"engagement_id": id, "name": name, "series": series})
+            })
+            .collect()
+    };
 
     Ok(serde_json::json!({
         "total_items": total_items,
@@ -443,7 +978,17 @@ pub fn get_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String
         "total_merchants": total_merchants,
         "total_warranties": total_warranties,
         "total_attachments": total_attachments,
-        "monthly_spending": monthly,
+        // Kept under the historical name for backward-compatibility with the
+        // existing dashboard widget.
+        "monthly_spending": monthly_items,
+        "monthly_engagements": monthly_engagements,
+        "monthly_subscriptions": monthly_subscriptions,
+        "monthly_incomes": monthly_incomes,
+        "engagements_by_type": engagements_by_type,
+        "incomes_by_type": incomes_by_type,
+        "top_creditors": top_creditors,
+        "yoy_by_engagement": yoy_by_engagement,
+        "window_months": months,
     }))
 }
 

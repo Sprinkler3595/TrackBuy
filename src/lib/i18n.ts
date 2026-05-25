@@ -2,7 +2,7 @@ import { createContext, useContext } from "react"
 
 export type Locale = "fr" | "en"
 
-type TranslationKeys = {
+export type TranslationKeys = {
   // Navigation
   "nav.dashboard": string
   "nav.items": string
@@ -265,6 +265,256 @@ type TranslationKeys = {
   "subscriptions.deleted": string
   "subscriptions.inTrial": string
   "subscriptions.renewsIn": string
+
+  // Engagements (recurring real-world charges)
+  "nav.engagements": string
+  "nav.creditors": string
+  "engagements.title": string
+  "engagements.subtitle": string
+  "engagements.new": string
+  "engagements.edit": string
+  "engagements.name": string
+  "engagements.type": string
+  "engagements.creditor": string
+  "engagements.card": string
+  "engagements.parent": string
+  "engagements.contractRef": string
+  "engagements.contractStart": string
+  "engagements.contractEnd": string
+  "engagements.noticePeriod": string
+  "engagements.billingCycle": string
+  "engagements.cycleInterval": string
+  "engagements.nextDue": string
+  "engagements.currentAmount": string
+  "engagements.currency": string
+  "engagements.paymentMethod": string
+  "engagements.autoPay": string
+  "engagements.status": string
+  "engagements.notes": string
+  "engagements.clauses": string
+  "engagements.monthlyEquivalent": string
+  "engagements.totalMonthlyCost": string
+  "engagements.noEngagements": string
+  "engagements.deleteConfirm": string
+  "engagements.created": string
+  "engagements.updated": string
+  "engagements.deleted": string
+  "engagements.dueIn": string
+  "engagements.statusActive": string
+  "engagements.statusSuspended": string
+  "engagements.statusEnded": string
+  "engagements.cycleMonthly": string
+  "engagements.cycleQuarterly": string
+  "engagements.cycleSemiannual": string
+  "engagements.cycleYearly": string
+  "engagements.cycleOneShot": string
+  "engagements.cycleCustom": string
+  "engagements.methodDirectDebit": string
+  "engagements.methodQrBill": string
+  "engagements.methodBvr": string
+  "engagements.methodManualTransfer": string
+  "engagements.methodStandingOrder": string
+  "engagements.methodCash": string
+  "engagements.methodCardAuto": string
+  "engagements.methodOther": string
+  "engagements.children": string
+  "engagements.addChild": string
+  "engagements.revisions": string
+  "engagements.addRevision": string
+  "engagements.charges": string
+  "engagements.addCharge": string
+  "engagements.markPaid": string
+  "engagements.tabOverview": string
+  "engagements.tabCharges": string
+  "engagements.tabRevisions": string
+  "engagements.tabAttachments": string
+  "engagements.tabChildren": string
+  "engagements.allCategories": string
+  "engagements.catInsurance": string
+  "engagements.catHousing": string
+  "engagements.catVehicle": string
+  "engagements.catUtilities": string
+  "engagements.catTelecom": string
+  "engagements.catTaxes": string
+  "engagements.catOther": string
+
+  // Engagement type labels (canonical 27 values)
+  "engagements.type.insurance_health": string
+  "engagements.type.insurance_household": string
+  "engagements.type.insurance_car": string
+  "engagements.type.insurance_life": string
+  "engagements.type.insurance_legal": string
+  "engagements.type.insurance_other": string
+  "engagements.type.rent": string
+  "engagements.type.parking": string
+  "engagements.type.leasing": string
+  "engagements.type.mortgage": string
+  "engagements.type.electricity": string
+  "engagements.type.gas": string
+  "engagements.type.water": string
+  "engagements.type.fuel": string
+  "engagements.type.heating": string
+  "engagements.type.phone": string
+  "engagements.type.internet": string
+  "engagements.type.tv_radio": string
+  "engagements.type.tax_federal": string
+  "engagements.type.tax_cantonal": string
+  "engagements.type.tax_communal": string
+  "engagements.type.tax_other": string
+  "engagements.type.fine": string
+  "engagements.type.fee": string
+  "engagements.type.membership": string
+  "engagements.type.other": string
+
+  // Charges
+  "charges.dueDate": string
+  "charges.amount": string
+  "charges.periodStart": string
+  "charges.periodEnd": string
+  "charges.quantity": string
+  "charges.unit": string
+  "charges.unitPrice": string
+  "charges.reference": string
+  "charges.invoiceNumber": string
+  "charges.paidOn": string
+  "charges.statusScheduled": string
+  "charges.statusPaid": string
+  "charges.statusLate": string
+  "charges.statusDisputed": string
+  "charges.statusWaived": string
+  "charges.noCharges": string
+
+  // Revisions
+  "revisions.effectiveDate": string
+  "revisions.amount": string
+  "revisions.changeReason": string
+  "revisions.noRevisions": string
+
+  // Creditors
+  "creditors.title": string
+  "creditors.subtitle": string
+  "creditors.new": string
+  "creditors.name": string
+  "creditors.type": string
+  "creditors.iban": string
+  "creditors.referencePrefix": string
+  "creditors.contactEmail": string
+  "creditors.contactPhone": string
+  "creditors.address": string
+  "creditors.notes": string
+  "creditors.typeInsurer": string
+  "creditors.typeLandlord": string
+  "creditors.typeUtility": string
+  "creditors.typeTelco": string
+  "creditors.typeTaxOffice": string
+  "creditors.typeLeasingCompany": string
+  "creditors.typeEmployer": string
+  "creditors.typeBank": string
+  "creditors.typeOther": string
+
+  // Incomes
+  "nav.incomes": string
+  "incomes.title": string
+  "incomes.subtitle": string
+  "incomes.new": string
+  "incomes.edit": string
+  "incomes.name": string
+  "incomes.type": string
+  "incomes.source": string
+  "incomes.card": string
+  "incomes.cycle": string
+  "incomes.cycleInterval": string
+  "incomes.nextExpected": string
+  "incomes.currentAmount": string
+  "incomes.currency": string
+  "incomes.status": string
+  "incomes.startedOn": string
+  "incomes.endedOn": string
+  "incomes.notes": string
+  "incomes.statusActive": string
+  "incomes.statusEnded": string
+  "incomes.deleteConfirm": string
+  "incomes.created": string
+  "incomes.updated": string
+  "incomes.deleted": string
+  "incomes.noIncomes": string
+  "incomes.monthlyTotal": string
+  "incomes.showAmounts": string
+  "incomes.hideAmounts": string
+  "incomes.receipts": string
+  "incomes.logReceipt": string
+  "incomes.receivedOn": string
+  "incomes.amount": string
+  "incomes.periodLabel": string
+  "incomes.payslipDetail": string
+  "incomes.grossAmount": string
+  "incomes.socialCharges": string
+  "incomes.pension": string
+  "incomes.taxAtSource": string
+  "incomes.otherDeductions": string
+  "incomes.bonus": string
+  "incomes.deductionCheck": string
+  "incomes.noReceipts": string
+  "incomes.totalYTD": string
+  "incomes.attachments": string
+
+  // Income type labels
+  "incomes.type.salary": string
+  "incomes.type.bonus": string
+  "incomes.type.thirteenth": string
+  "incomes.type.pension": string
+  "incomes.type.unemployment": string
+  "incomes.type.family_allowance": string
+  "incomes.type.dividend": string
+  "incomes.type.rental": string
+  "incomes.type.gift": string
+  "incomes.type.reimbursement": string
+  "incomes.type.other": string
+
+  // Pending reimbursements
+  "nav.reimbursements": string
+  "reimbursements.title": string
+  "reimbursements.subtitle": string
+  "reimbursements.new": string
+  "reimbursements.edit": string
+  "reimbursements.label": string
+  "reimbursements.type": string
+  "reimbursements.expectedAmount": string
+  "reimbursements.receivedAmount": string
+  "reimbursements.debtor": string
+  "reimbursements.debtorCreditor": string
+  "reimbursements.linkedItem": string
+  "reimbursements.sourceDescription": string
+  "reimbursements.requestedOn": string
+  "reimbursements.expectedBy": string
+  "reimbursements.receivedOn": string
+  "reimbursements.status": string
+  "reimbursements.notes": string
+  "reimbursements.markClaimed": string
+  "reimbursements.markSettled": string
+  "reimbursements.totalPending": string
+  "reimbursements.noReimbursements": string
+  "reimbursements.created": string
+  "reimbursements.updated": string
+  "reimbursements.deleted": string
+  "reimbursements.deleteConfirm": string
+  "reimbursements.tabPending": string
+  "reimbursements.tabClaimed": string
+  "reimbursements.tabSettled": string
+  "reimbursements.tabClosed": string
+  "reimbursements.statusPending": string
+  "reimbursements.statusClaimed": string
+  "reimbursements.statusPartial": string
+  "reimbursements.statusSettled": string
+  "reimbursements.statusRejected": string
+  "reimbursements.statusCancelled": string
+  "reimbursements.type.expense_report": string
+  "reimbursements.type.insurance_claim": string
+  "reimbursements.type.warranty_return": string
+  "reimbursements.type.product_return": string
+  "reimbursements.type.deposit": string
+  "reimbursements.type.tax_refund": string
+  "reimbursements.type.other": string
 }
 
 const translations: Record<Locale, TranslationKeys> = {
@@ -465,9 +715,9 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.expiration": "Expiration",
     "reminders.renewal": "Renouvellement",
 
-    "nav.subscriptions": "Abonnements",
-    "subscriptions.title": "Abonnements",
-    "subscriptions.subtitle": "Vos paiements récurrents",
+    "nav.subscriptions": "Abonnements en ligne",
+    "subscriptions.title": "Abonnements en ligne",
+    "subscriptions.subtitle": "Streaming, SaaS, cloud, hébergement, gaming",
     "subscriptions.new": "Nouvel abonnement",
     "subscriptions.edit": "Modifier l'abonnement",
     "subscriptions.name": "Nom",
@@ -514,6 +764,248 @@ const translations: Record<Locale, TranslationKeys> = {
     "subscriptions.deleted": "Abonnement supprimé",
     "subscriptions.inTrial": "Période d'essai",
     "subscriptions.renewsIn": "Renouvelle dans",
+
+    "nav.engagements": "Engagements",
+    "nav.creditors": "Créanciers",
+    "engagements.title": "Engagements",
+    "engagements.subtitle": "Charges récurrentes : assurances, loyer, fluides, télécom, fiscalité",
+    "engagements.new": "Nouvel engagement",
+    "engagements.edit": "Modifier l'engagement",
+    "engagements.name": "Nom",
+    "engagements.type": "Catégorie",
+    "engagements.creditor": "Créancier",
+    "engagements.card": "Moyen de paiement",
+    "engagements.parent": "Engagement parent",
+    "engagements.contractRef": "N° de contrat / police",
+    "engagements.contractStart": "Début de contrat",
+    "engagements.contractEnd": "Fin de contrat",
+    "engagements.noticePeriod": "Préavis (jours)",
+    "engagements.billingCycle": "Périodicité",
+    "engagements.cycleInterval": "Intervalle",
+    "engagements.nextDue": "Prochaine échéance",
+    "engagements.currentAmount": "Montant courant",
+    "engagements.currency": "Devise",
+    "engagements.paymentMethod": "Mode de paiement",
+    "engagements.autoPay": "Paiement automatique",
+    "engagements.status": "Statut",
+    "engagements.notes": "Notes",
+    "engagements.clauses": "Clauses (JSON libre)",
+    "engagements.monthlyEquivalent": "Équivalent mensuel",
+    "engagements.totalMonthlyCost": "Coût mensuel total",
+    "engagements.noEngagements": "Aucun engagement enregistré.",
+    "engagements.deleteConfirm": "Cet engagement, ses échéances, ses révisions et ses pièces jointes seront supprimés définitivement.",
+    "engagements.created": "Engagement créé",
+    "engagements.updated": "Engagement modifié",
+    "engagements.deleted": "Engagement supprimé",
+    "engagements.dueIn": "Échéance dans",
+    "engagements.statusActive": "Actif",
+    "engagements.statusSuspended": "Suspendu",
+    "engagements.statusEnded": "Terminé",
+    "engagements.cycleMonthly": "Mensuel",
+    "engagements.cycleQuarterly": "Trimestriel",
+    "engagements.cycleSemiannual": "Semestriel",
+    "engagements.cycleYearly": "Annuel",
+    "engagements.cycleOneShot": "Ponctuel",
+    "engagements.cycleCustom": "Personnalisé (jours)",
+    "engagements.methodDirectDebit": "Prélèvement (LSV/SEPA)",
+    "engagements.methodQrBill": "QR-facture",
+    "engagements.methodBvr": "BVR",
+    "engagements.methodManualTransfer": "Virement manuel",
+    "engagements.methodStandingOrder": "Ordre permanent",
+    "engagements.methodCash": "Espèces",
+    "engagements.methodCardAuto": "Carte (auto)",
+    "engagements.methodOther": "Autre",
+    "engagements.children": "Sous-engagements",
+    "engagements.addChild": "Ajouter un sous-engagement",
+    "engagements.revisions": "Révisions de contrat",
+    "engagements.addRevision": "Ajouter une révision",
+    "engagements.charges": "Échéances",
+    "engagements.addCharge": "Ajouter une échéance",
+    "engagements.markPaid": "Marquer payée",
+    "engagements.tabOverview": "Aperçu",
+    "engagements.tabCharges": "Échéances",
+    "engagements.tabRevisions": "Révisions",
+    "engagements.tabAttachments": "Pièces jointes",
+    "engagements.tabChildren": "Sous-engagements",
+    "engagements.allCategories": "Toutes",
+    "engagements.catInsurance": "Assurances",
+    "engagements.catHousing": "Logement",
+    "engagements.catVehicle": "Véhicule",
+    "engagements.catUtilities": "Fluides",
+    "engagements.catTelecom": "Télécom",
+    "engagements.catTaxes": "Fiscalité",
+    "engagements.catOther": "Autres",
+
+    "engagements.type.insurance_health": "Assurance maladie",
+    "engagements.type.insurance_household": "Assurance RC ménage",
+    "engagements.type.insurance_car": "Assurance auto",
+    "engagements.type.insurance_life": "Assurance vie",
+    "engagements.type.insurance_legal": "Protection juridique",
+    "engagements.type.insurance_other": "Autre assurance",
+    "engagements.type.rent": "Loyer",
+    "engagements.type.parking": "Place de parc",
+    "engagements.type.leasing": "Leasing",
+    "engagements.type.mortgage": "Hypothèque",
+    "engagements.type.electricity": "Électricité",
+    "engagements.type.gas": "Gaz",
+    "engagements.type.water": "Eau",
+    "engagements.type.fuel": "Carburant / recharge",
+    "engagements.type.heating": "Chauffage",
+    "engagements.type.phone": "Téléphone",
+    "engagements.type.internet": "Internet",
+    "engagements.type.tv_radio": "Redevance TV/radio",
+    "engagements.type.tax_federal": "Impôt fédéral",
+    "engagements.type.tax_cantonal": "Impôt cantonal",
+    "engagements.type.tax_communal": "Impôt communal",
+    "engagements.type.tax_other": "Autre taxe",
+    "engagements.type.fine": "Amende",
+    "engagements.type.fee": "Frais administratifs",
+    "engagements.type.membership": "Cotisation",
+    "engagements.type.other": "Autre",
+
+    "charges.dueDate": "Échéance",
+    "charges.amount": "Montant",
+    "charges.periodStart": "Début période",
+    "charges.periodEnd": "Fin période",
+    "charges.quantity": "Quantité",
+    "charges.unit": "Unité",
+    "charges.unitPrice": "Prix unitaire",
+    "charges.reference": "Référence BVR / QR",
+    "charges.invoiceNumber": "N° de facture",
+    "charges.paidOn": "Payée le",
+    "charges.statusScheduled": "Prévue",
+    "charges.statusPaid": "Payée",
+    "charges.statusLate": "En retard",
+    "charges.statusDisputed": "Contestée",
+    "charges.statusWaived": "Annulée",
+    "charges.noCharges": "Aucune échéance pour le moment.",
+
+    "revisions.effectiveDate": "Date d'effet",
+    "revisions.amount": "Nouveau montant",
+    "revisions.changeReason": "Motif",
+    "revisions.noRevisions": "Aucune révision enregistrée.",
+
+    "creditors.title": "Créanciers",
+    "creditors.subtitle": "Assureurs, bailleurs, fournisseurs, administrations",
+    "creditors.new": "Nouveau créancier",
+    "creditors.name": "Nom",
+    "creditors.type": "Type",
+    "creditors.iban": "IBAN",
+    "creditors.referencePrefix": "Préfixe de référence BVR",
+    "creditors.contactEmail": "E-mail",
+    "creditors.contactPhone": "Téléphone",
+    "creditors.address": "Adresse",
+    "creditors.notes": "Notes",
+    "creditors.typeInsurer": "Assureur",
+    "creditors.typeLandlord": "Bailleur",
+    "creditors.typeUtility": "Fournisseur d'énergie",
+    "creditors.typeTelco": "Opérateur télécom",
+    "creditors.typeTaxOffice": "Administration fiscale",
+    "creditors.typeLeasingCompany": "Société de leasing",
+    "creditors.typeEmployer": "Employeur",
+    "creditors.typeBank": "Banque",
+    "creditors.typeOther": "Autre",
+
+    "nav.incomes": "Revenus",
+    "incomes.title": "Revenus",
+    "incomes.subtitle": "Salaires, primes, allocations, rentes, dividendes",
+    "incomes.new": "Nouveau revenu",
+    "incomes.edit": "Modifier le revenu",
+    "incomes.name": "Nom",
+    "incomes.type": "Type",
+    "incomes.source": "Source / employeur",
+    "incomes.card": "Compte de destination",
+    "incomes.cycle": "Périodicité",
+    "incomes.cycleInterval": "Intervalle",
+    "incomes.nextExpected": "Prochain versement attendu",
+    "incomes.currentAmount": "Montant net courant",
+    "incomes.currency": "Devise",
+    "incomes.status": "Statut",
+    "incomes.startedOn": "Début",
+    "incomes.endedOn": "Fin",
+    "incomes.notes": "Notes",
+    "incomes.statusActive": "Actif",
+    "incomes.statusEnded": "Terminé",
+    "incomes.deleteConfirm": "Ce revenu, son historique et les bulletins associés seront supprimés définitivement.",
+    "incomes.created": "Revenu créé",
+    "incomes.updated": "Revenu modifié",
+    "incomes.deleted": "Revenu supprimé",
+    "incomes.noIncomes": "Aucun revenu enregistré.",
+    "incomes.monthlyTotal": "Revenu mensuel total",
+    "incomes.showAmounts": "Afficher les montants",
+    "incomes.hideAmounts": "Masquer les montants",
+    "incomes.receipts": "Versements",
+    "incomes.logReceipt": "Enregistrer un versement",
+    "incomes.receivedOn": "Reçu le",
+    "incomes.amount": "Montant net",
+    "incomes.periodLabel": "Période",
+    "incomes.payslipDetail": "Détail du bulletin",
+    "incomes.grossAmount": "Brut",
+    "incomes.socialCharges": "AVS / AI / APG",
+    "incomes.pension": "2e pilier",
+    "incomes.taxAtSource": "Impôt à la source",
+    "incomes.otherDeductions": "Autres retenues",
+    "incomes.bonus": "Prime / bonus",
+    "incomes.deductionCheck": "Brut − retenues",
+    "incomes.noReceipts": "Aucun versement enregistré.",
+    "incomes.totalYTD": "Cumul versé",
+    "incomes.attachments": "Bulletins de salaire",
+
+    "incomes.type.salary": "Salaire",
+    "incomes.type.bonus": "Prime / bonus",
+    "incomes.type.thirteenth": "13e salaire",
+    "incomes.type.pension": "Rente / pension",
+    "incomes.type.unemployment": "Indemnités chômage",
+    "incomes.type.family_allowance": "Allocations familiales",
+    "incomes.type.dividend": "Dividendes",
+    "incomes.type.rental": "Revenus locatifs",
+    "incomes.type.gift": "Don / cadeau",
+    "incomes.type.reimbursement": "Remboursement",
+    "incomes.type.other": "Autre",
+
+    "nav.reimbursements": "Remboursements",
+    "reimbursements.title": "Remboursements en attente",
+    "reimbursements.subtitle": "Notes de frais, sinistres, retours, dépôts à récupérer",
+    "reimbursements.new": "Nouveau remboursement",
+    "reimbursements.edit": "Modifier",
+    "reimbursements.label": "Intitulé",
+    "reimbursements.type": "Type",
+    "reimbursements.expectedAmount": "Montant attendu",
+    "reimbursements.receivedAmount": "Montant reçu",
+    "reimbursements.debtor": "Débiteur",
+    "reimbursements.debtorCreditor": "Débiteur (créancier référencé)",
+    "reimbursements.linkedItem": "Achat lié",
+    "reimbursements.sourceDescription": "Description / origine",
+    "reimbursements.requestedOn": "Demandé le",
+    "reimbursements.expectedBy": "Échéance attendue",
+    "reimbursements.receivedOn": "Reçu le",
+    "reimbursements.status": "Statut",
+    "reimbursements.notes": "Notes",
+    "reimbursements.markClaimed": "Marquer comme demandé",
+    "reimbursements.markSettled": "Marquer comme reçu",
+    "reimbursements.totalPending": "Total en attente",
+    "reimbursements.noReimbursements": "Aucun remboursement enregistré.",
+    "reimbursements.created": "Remboursement créé",
+    "reimbursements.updated": "Remboursement modifié",
+    "reimbursements.deleted": "Remboursement supprimé",
+    "reimbursements.deleteConfirm": "Ce remboursement et ses pièces jointes seront supprimés définitivement.",
+    "reimbursements.tabPending": "À demander",
+    "reimbursements.tabClaimed": "Demandés",
+    "reimbursements.tabSettled": "Reçus",
+    "reimbursements.tabClosed": "Refusés / annulés",
+    "reimbursements.statusPending": "À demander",
+    "reimbursements.statusClaimed": "Demandé",
+    "reimbursements.statusPartial": "Partiel",
+    "reimbursements.statusSettled": "Reçu",
+    "reimbursements.statusRejected": "Refusé",
+    "reimbursements.statusCancelled": "Annulé",
+    "reimbursements.type.expense_report": "Note de frais",
+    "reimbursements.type.insurance_claim": "Sinistre assurance",
+    "reimbursements.type.warranty_return": "Garantie",
+    "reimbursements.type.product_return": "Retour produit",
+    "reimbursements.type.deposit": "Caution / dépôt",
+    "reimbursements.type.tax_refund": "Restitution fiscale",
+    "reimbursements.type.other": "Autre",
   },
 
   en: {
@@ -713,9 +1205,9 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.expiration": "Expiration",
     "reminders.renewal": "Renewal",
 
-    "nav.subscriptions": "Subscriptions",
-    "subscriptions.title": "Subscriptions",
-    "subscriptions.subtitle": "Your recurring payments",
+    "nav.subscriptions": "Online subscriptions",
+    "subscriptions.title": "Online subscriptions",
+    "subscriptions.subtitle": "Streaming, SaaS, cloud, hosting, gaming",
     "subscriptions.new": "New subscription",
     "subscriptions.edit": "Edit subscription",
     "subscriptions.name": "Name",
@@ -762,6 +1254,248 @@ const translations: Record<Locale, TranslationKeys> = {
     "subscriptions.deleted": "Subscription deleted",
     "subscriptions.inTrial": "Trial period",
     "subscriptions.renewsIn": "Renews in",
+
+    "nav.engagements": "Engagements",
+    "nav.creditors": "Creditors",
+    "engagements.title": "Engagements",
+    "engagements.subtitle": "Recurring real-world charges: insurance, rent, utilities, telecom, taxes",
+    "engagements.new": "New engagement",
+    "engagements.edit": "Edit engagement",
+    "engagements.name": "Name",
+    "engagements.type": "Category",
+    "engagements.creditor": "Creditor",
+    "engagements.card": "Payment method",
+    "engagements.parent": "Parent engagement",
+    "engagements.contractRef": "Contract / policy number",
+    "engagements.contractStart": "Contract start",
+    "engagements.contractEnd": "Contract end",
+    "engagements.noticePeriod": "Notice period (days)",
+    "engagements.billingCycle": "Billing cycle",
+    "engagements.cycleInterval": "Interval",
+    "engagements.nextDue": "Next due",
+    "engagements.currentAmount": "Current amount",
+    "engagements.currency": "Currency",
+    "engagements.paymentMethod": "Payment method",
+    "engagements.autoPay": "Auto-pay",
+    "engagements.status": "Status",
+    "engagements.notes": "Notes",
+    "engagements.clauses": "Clauses (free JSON)",
+    "engagements.monthlyEquivalent": "Monthly equivalent",
+    "engagements.totalMonthlyCost": "Total monthly cost",
+    "engagements.noEngagements": "No engagements recorded yet.",
+    "engagements.deleteConfirm": "This engagement, its charges, revisions and attachments will be permanently deleted.",
+    "engagements.created": "Engagement created",
+    "engagements.updated": "Engagement updated",
+    "engagements.deleted": "Engagement deleted",
+    "engagements.dueIn": "Due in",
+    "engagements.statusActive": "Active",
+    "engagements.statusSuspended": "Suspended",
+    "engagements.statusEnded": "Ended",
+    "engagements.cycleMonthly": "Monthly",
+    "engagements.cycleQuarterly": "Quarterly",
+    "engagements.cycleSemiannual": "Semiannual",
+    "engagements.cycleYearly": "Yearly",
+    "engagements.cycleOneShot": "One-shot",
+    "engagements.cycleCustom": "Custom (days)",
+    "engagements.methodDirectDebit": "Direct debit (LSV/SEPA)",
+    "engagements.methodQrBill": "QR-bill",
+    "engagements.methodBvr": "BVR",
+    "engagements.methodManualTransfer": "Manual transfer",
+    "engagements.methodStandingOrder": "Standing order",
+    "engagements.methodCash": "Cash",
+    "engagements.methodCardAuto": "Card (auto)",
+    "engagements.methodOther": "Other",
+    "engagements.children": "Sub-engagements",
+    "engagements.addChild": "Add a sub-engagement",
+    "engagements.revisions": "Contract revisions",
+    "engagements.addRevision": "Add a revision",
+    "engagements.charges": "Charges",
+    "engagements.addCharge": "Add a charge",
+    "engagements.markPaid": "Mark paid",
+    "engagements.tabOverview": "Overview",
+    "engagements.tabCharges": "Charges",
+    "engagements.tabRevisions": "Revisions",
+    "engagements.tabAttachments": "Attachments",
+    "engagements.tabChildren": "Sub-engagements",
+    "engagements.allCategories": "All",
+    "engagements.catInsurance": "Insurance",
+    "engagements.catHousing": "Housing",
+    "engagements.catVehicle": "Vehicle",
+    "engagements.catUtilities": "Utilities",
+    "engagements.catTelecom": "Telecom",
+    "engagements.catTaxes": "Taxes",
+    "engagements.catOther": "Other",
+
+    "engagements.type.insurance_health": "Health insurance",
+    "engagements.type.insurance_household": "Household liability insurance",
+    "engagements.type.insurance_car": "Car insurance",
+    "engagements.type.insurance_life": "Life insurance",
+    "engagements.type.insurance_legal": "Legal protection",
+    "engagements.type.insurance_other": "Other insurance",
+    "engagements.type.rent": "Rent",
+    "engagements.type.parking": "Parking spot",
+    "engagements.type.leasing": "Leasing",
+    "engagements.type.mortgage": "Mortgage",
+    "engagements.type.electricity": "Electricity",
+    "engagements.type.gas": "Gas",
+    "engagements.type.water": "Water",
+    "engagements.type.fuel": "Fuel / charging",
+    "engagements.type.heating": "Heating",
+    "engagements.type.phone": "Phone",
+    "engagements.type.internet": "Internet",
+    "engagements.type.tv_radio": "TV / radio licence",
+    "engagements.type.tax_federal": "Federal tax",
+    "engagements.type.tax_cantonal": "Cantonal tax",
+    "engagements.type.tax_communal": "Communal tax",
+    "engagements.type.tax_other": "Other tax",
+    "engagements.type.fine": "Fine",
+    "engagements.type.fee": "Administrative fee",
+    "engagements.type.membership": "Membership",
+    "engagements.type.other": "Other",
+
+    "charges.dueDate": "Due date",
+    "charges.amount": "Amount",
+    "charges.periodStart": "Period start",
+    "charges.periodEnd": "Period end",
+    "charges.quantity": "Quantity",
+    "charges.unit": "Unit",
+    "charges.unitPrice": "Unit price",
+    "charges.reference": "BVR / QR reference",
+    "charges.invoiceNumber": "Invoice number",
+    "charges.paidOn": "Paid on",
+    "charges.statusScheduled": "Scheduled",
+    "charges.statusPaid": "Paid",
+    "charges.statusLate": "Late",
+    "charges.statusDisputed": "Disputed",
+    "charges.statusWaived": "Waived",
+    "charges.noCharges": "No charges yet.",
+
+    "revisions.effectiveDate": "Effective date",
+    "revisions.amount": "New amount",
+    "revisions.changeReason": "Reason",
+    "revisions.noRevisions": "No revisions recorded.",
+
+    "creditors.title": "Creditors",
+    "creditors.subtitle": "Insurers, landlords, utilities, tax offices",
+    "creditors.new": "New creditor",
+    "creditors.name": "Name",
+    "creditors.type": "Type",
+    "creditors.iban": "IBAN",
+    "creditors.referencePrefix": "BVR reference prefix",
+    "creditors.contactEmail": "Email",
+    "creditors.contactPhone": "Phone",
+    "creditors.address": "Address",
+    "creditors.notes": "Notes",
+    "creditors.typeInsurer": "Insurer",
+    "creditors.typeLandlord": "Landlord",
+    "creditors.typeUtility": "Utility",
+    "creditors.typeTelco": "Telco",
+    "creditors.typeTaxOffice": "Tax office",
+    "creditors.typeLeasingCompany": "Leasing company",
+    "creditors.typeEmployer": "Employer",
+    "creditors.typeBank": "Bank",
+    "creditors.typeOther": "Other",
+
+    "nav.incomes": "Incomes",
+    "incomes.title": "Incomes",
+    "incomes.subtitle": "Salaries, bonuses, allowances, pensions, dividends",
+    "incomes.new": "New income",
+    "incomes.edit": "Edit income",
+    "incomes.name": "Name",
+    "incomes.type": "Type",
+    "incomes.source": "Source / employer",
+    "incomes.card": "Destination account",
+    "incomes.cycle": "Frequency",
+    "incomes.cycleInterval": "Interval",
+    "incomes.nextExpected": "Next expected receipt",
+    "incomes.currentAmount": "Current net amount",
+    "incomes.currency": "Currency",
+    "incomes.status": "Status",
+    "incomes.startedOn": "Started",
+    "incomes.endedOn": "Ended",
+    "incomes.notes": "Notes",
+    "incomes.statusActive": "Active",
+    "incomes.statusEnded": "Ended",
+    "incomes.deleteConfirm": "This income, its history and the associated payslips will be permanently deleted.",
+    "incomes.created": "Income created",
+    "incomes.updated": "Income updated",
+    "incomes.deleted": "Income deleted",
+    "incomes.noIncomes": "No income recorded yet.",
+    "incomes.monthlyTotal": "Total monthly income",
+    "incomes.showAmounts": "Show amounts",
+    "incomes.hideAmounts": "Hide amounts",
+    "incomes.receipts": "Receipts",
+    "incomes.logReceipt": "Log a receipt",
+    "incomes.receivedOn": "Received on",
+    "incomes.amount": "Net amount",
+    "incomes.periodLabel": "Period",
+    "incomes.payslipDetail": "Payslip detail",
+    "incomes.grossAmount": "Gross",
+    "incomes.socialCharges": "Social charges (AVS/AI)",
+    "incomes.pension": "Pension (2nd pillar)",
+    "incomes.taxAtSource": "Tax at source",
+    "incomes.otherDeductions": "Other deductions",
+    "incomes.bonus": "Bonus",
+    "incomes.deductionCheck": "Gross − deductions",
+    "incomes.noReceipts": "No receipts recorded.",
+    "incomes.totalYTD": "YTD total",
+    "incomes.attachments": "Payslips",
+
+    "incomes.type.salary": "Salary",
+    "incomes.type.bonus": "Bonus",
+    "incomes.type.thirteenth": "13th month",
+    "incomes.type.pension": "Pension",
+    "incomes.type.unemployment": "Unemployment",
+    "incomes.type.family_allowance": "Family allowance",
+    "incomes.type.dividend": "Dividends",
+    "incomes.type.rental": "Rental income",
+    "incomes.type.gift": "Gift",
+    "incomes.type.reimbursement": "Reimbursement",
+    "incomes.type.other": "Other",
+
+    "nav.reimbursements": "Reimbursements",
+    "reimbursements.title": "Pending reimbursements",
+    "reimbursements.subtitle": "Expense reports, claims, returns, deposits to recover",
+    "reimbursements.new": "New reimbursement",
+    "reimbursements.edit": "Edit",
+    "reimbursements.label": "Label",
+    "reimbursements.type": "Type",
+    "reimbursements.expectedAmount": "Expected amount",
+    "reimbursements.receivedAmount": "Received amount",
+    "reimbursements.debtor": "Debtor",
+    "reimbursements.debtorCreditor": "Debtor (linked creditor)",
+    "reimbursements.linkedItem": "Linked purchase",
+    "reimbursements.sourceDescription": "Description / source",
+    "reimbursements.requestedOn": "Requested on",
+    "reimbursements.expectedBy": "Expected by",
+    "reimbursements.receivedOn": "Received on",
+    "reimbursements.status": "Status",
+    "reimbursements.notes": "Notes",
+    "reimbursements.markClaimed": "Mark as claimed",
+    "reimbursements.markSettled": "Mark as settled",
+    "reimbursements.totalPending": "Total pending",
+    "reimbursements.noReimbursements": "No reimbursement recorded.",
+    "reimbursements.created": "Reimbursement created",
+    "reimbursements.updated": "Reimbursement updated",
+    "reimbursements.deleted": "Reimbursement deleted",
+    "reimbursements.deleteConfirm": "This reimbursement and its attachments will be permanently deleted.",
+    "reimbursements.tabPending": "To claim",
+    "reimbursements.tabClaimed": "Claimed",
+    "reimbursements.tabSettled": "Received",
+    "reimbursements.tabClosed": "Rejected / cancelled",
+    "reimbursements.statusPending": "To claim",
+    "reimbursements.statusClaimed": "Claimed",
+    "reimbursements.statusPartial": "Partial",
+    "reimbursements.statusSettled": "Received",
+    "reimbursements.statusRejected": "Rejected",
+    "reimbursements.statusCancelled": "Cancelled",
+    "reimbursements.type.expense_report": "Expense report",
+    "reimbursements.type.insurance_claim": "Insurance claim",
+    "reimbursements.type.warranty_return": "Warranty return",
+    "reimbursements.type.product_return": "Product return",
+    "reimbursements.type.deposit": "Deposit",
+    "reimbursements.type.tax_refund": "Tax refund",
+    "reimbursements.type.other": "Other",
   },
 }
 
