@@ -26,8 +26,13 @@ import { BankStatementReviewPage } from "@/pages/bank-statement-review"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
+import { HouseholdSettings } from "@/pages/settings-household"
 import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
+import { CeMoisPage } from "@/pages/ce-mois"
+import { InboxPage } from "@/pages/inbox"
+import { TaxesPage } from "@/pages/taxes"
+import { BanquePage } from "@/pages/banque"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
 import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
@@ -144,6 +149,10 @@ function AppContent() {
     <BrowserRouter>
       <Routes>
         <Route element={<AppLayout onLock={handleLock} vaultName={vaultName} />}>
+          <Route path="/ce-mois" element={<CeMoisPage />} />
+          <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/impots" element={<TaxesPage />} />
+          <Route path="/banque" element={<BanquePage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/scan-review" element={<ScanReviewPage />} />
@@ -163,6 +172,7 @@ function AppContent() {
           <Route path="/warranties" element={<WarrantiesPage />} />
           <Route path="/settings" element={<SettingsPage />}>
             <Route index element={<GeneralSettings />} />
+            <Route path="menage" element={<HouseholdSettings />} />
             <Route path="marchands" element={<MerchantsPage />} />
             <Route path="creanciers" element={<CreditorsPage />} />
             <Route path="lieux" element={<LocationsPage />} />
@@ -174,7 +184,7 @@ function AppContent() {
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />
           <Route path="/cards" element={<Navigate to="/settings/cartes" replace />} />
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/ce-mois" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

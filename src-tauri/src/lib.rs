@@ -169,6 +169,20 @@ pub fn run() {
             commands::ai::ai_extract_receipt,
             commands::ai::ai_extract_bank_statement,
             commands::ai::ai_test_connection,
+            commands::household::list_household_members,
+            commands::household::create_household_member,
+            commands::household::update_household_member,
+            commands::household::delete_household_member,
+            commands::household::set_item_attribution,
+            commands::household::set_engagement_attribution,
+            commands::taxes::set_item_tax_category,
+            commands::taxes::set_charge_tax_category,
+            commands::taxes::get_tax_buckets,
+            commands::taxes::list_tax_lines,
+            commands::qrbill::decode_qrbill,
+            commands::camt053::parse_camt053_text,
+            commands::swiss_seed::seed_swiss_creditors,
+            commands::this_month::get_this_month,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TrackBuy");

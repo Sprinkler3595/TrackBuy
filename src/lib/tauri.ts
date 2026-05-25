@@ -1330,3 +1330,179 @@ export const deleteMatchRule = (id: string) =>
 
 export const aiExtractBankStatement = (text: string, config: unknown) =>
   invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config })
+
+// ===========================================================================
+// Swiss workflow (v14): household members, tax categories, QR-bill / CamT.053
+// ===========================================================================
+
+export type HouseholdRelation = "self" | "spouse" | "child" | "parent" | "other"
+
+export interface HouseholdMember {
+  id: string
+  name: string
+  relation: HouseholdRelation
+  birth_date: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export const listHouseholdMembers = () =>
+  invoke<HouseholdMember[]>("list_household_members")
+
+export const createHouseholdMember = (member: {
+  name: string
+  relation?: HouseholdRelation
+  birth_date?: string | null
+  notes?: string | null
+}) => invoke<HouseholdMember>("create_household_member", { member })
+
+export const updateHouseholdMember = (member: HouseholdMember) =>
+  invoke<void>("update_household_member", { member })
+
+export const deleteHouseholdMember = (id: string) =>
+  invoke<void>("delete_household_member", { id })
+
+export const setItemAttribution = (itemId: string, memberId: string | null) =>
+  invoke<void>("set_item_attribution", { itemId, memberId })
+
+export const setEngagementAttribution = (engagementId: string, memberId: string | null) =>
+  invoke<void>("set_engagement_attribution", { engagementId, memberId })
+
+// Tax categories used by the annual declaration view.
+export type TaxCategory =
+  | "pro"
+  | "medical"
+  | "don"
+  | "entretien"
+  | "3a"
+  | "formation"
+  | "garde_enfant"
+
+export interface TaxBucket {
+  category: TaxCategory
+  total_chf: number
+  count: number
+  total_other_currencies: number
+}
+
+export interface TaxLine {
+  source: "item" | "charge"
+  source_id: string
+  category: TaxCategory
+  date: string
+  amount: number
+  currency: string
+  label: string
+  member_id: string | null
+  member_name: string | null
+}
+
+export const setItemTaxCategory = (itemId: string, category: TaxCategory | null) =>
+  invoke<void>("set_item_tax_category", { itemId, category })
+
+export const setChargeTaxCategory = (chargeId: string, category: TaxCategory | null) =>
+  invoke<void>("set_charge_tax_category", { chargeId, category })
+
+export const getTaxBuckets = (year: number) =>
+  invoke<TaxBucket[]>("get_tax_buckets", { year })
+
+export const listTaxLines = (year: number, category: TaxCategory) =>
+  invoke<TaxLine[]>("list_tax_lines", { year, category })
+
+// Swiss QR-bill decoder. Payload is the raw decoded QR text (multi-line SPC).
+export interface QrBillCreditor {
+  address_type: string
+  name: string
+  street_or_addr1: string
+  house_no_or_addr2: string
+  postal_code: string
+  city: string
+  country: string
+}
+
+export interface QrBillDecoded {
+  iban: string
+  creditor: QrBillCreditor
+  amount: number | null
+  currency: "CHF" | "EUR"
+  reference_type: "QRR" | "SCOR" | "NON"
+  reference: string
+  unstructured_message: string
+  bill_information: string
+  suggested_creditor_id: string | null
+  suggested_engagement_id: string | null
+}
+
+export const decodeQrbill = (payload: string) =>
+  invoke<QrBillDecoded>("decode_qrbill", { payload })
+
+// CamT.053 (ISO 20022) bank statement parser.
+export interface CamtTransaction {
+  booking_date: string | null
+  value_date: string | null
+  amount: number
+  currency: string
+  direction: "debit" | "credit"
+  description: string
+  reference: string | null
+  counterparty_iban: string | null
+  counterparty_name: string | null
+}
+
+export interface CamtStatement {
+  account_iban: string | null
+  account_currency: string | null
+  transactions: CamtTransaction[]
+}
+
+export const parseCamt053 = (xml: string) =>
+  invoke<CamtStatement>("parse_camt053_text", { xml })
+
+// Bulk seed common Swiss creditors into the active vault.
+export interface SeedSummary {
+  inserted: number
+  skipped: number
+}
+
+export const seedSwissCreditors = () =>
+  invoke<SeedSummary>("seed_swiss_creditors")
+
+// "Ce mois" landing aggregation.
+export interface ToPayLine {
+  charge_id: string
+  engagement_id: string
+  engagement_name: string
+  engagement_type: string
+  creditor_name: string | null
+  due_date: string
+  amount: number
+  currency: string
+  payment_method: string | null
+  reference_number: string | null
+  days_until: number
+}
+
+export interface ToReceiveLine {
+  income_id: string
+  name: string
+  income_type: string
+  source: string | null
+  next_expected: string
+  amount: number
+  currency: string
+  days_until: number
+}
+
+export interface ThisMonthSummary {
+  to_pay_total_chf: number
+  to_pay_lines: ToPayLine[]
+  to_receive_total_chf: number
+  to_receive_lines: ToReceiveLine[]
+  inbox_pending_transactions: number
+  inbox_pending_invoices: number
+  net_estimate_chf: number
+}
+
+export const getThisMonth = () =>
+  invoke<ThisMonthSummary>("get_this_month")
