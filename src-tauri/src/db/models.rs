@@ -104,6 +104,7 @@ pub struct Attachment {
     pub engagement_revision_id: Option<String>,
     pub income_id: Option<String>,
     pub income_receipt_id: Option<String>,
+    pub reimbursement_id: Option<String>,
     pub original_name: String,
     pub display_name: String,
     pub mime_type: String,
@@ -612,5 +613,55 @@ pub struct CreateIncomeReceiptRequest {
     pub tax_at_source_amount: Option<f64>,
     pub other_deductions_amount: Option<f64>,
     pub bonus_amount: Option<f64>,
+    pub notes: Option<String>,
+}
+
+// =====================================================================
+// Pending reimbursements (money to recover)
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PendingReimbursement {
+    pub id: String,
+    pub label: String,
+    /// 'expense_report' | 'insurance_claim' | 'warranty_return'
+    /// 'product_return' | 'deposit' | 'tax_refund' | 'other'
+    pub reimbursement_type: String,
+    pub expected_amount: Option<f64>,
+    pub received_amount: Option<f64>,
+    pub currency: String,
+    pub debtor_name: Option<String>,
+    pub debtor_creditor_id: Option<String>,
+    pub item_id: Option<String>,
+    pub engagement_charge_id: Option<String>,
+    pub source_description: Option<String>,
+    pub requested_on: Option<String>,
+    pub expected_by: Option<String>,
+    pub received_on: Option<String>,
+    /// 'pending' | 'claimed' | 'partial' | 'settled' | 'rejected' | 'cancelled'
+    pub status: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_deserializing)]
+    pub debtor_creditor_name: Option<String>,
+    #[serde(skip_deserializing)]
+    pub item_description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateReimbursementRequest {
+    pub label: String,
+    pub reimbursement_type: Option<String>,
+    pub expected_amount: Option<f64>,
+    pub currency: Option<String>,
+    pub debtor_name: Option<String>,
+    pub debtor_creditor_id: Option<String>,
+    pub item_id: Option<String>,
+    pub engagement_charge_id: Option<String>,
+    pub source_description: Option<String>,
+    pub requested_on: Option<String>,
+    pub expected_by: Option<String>,
+    pub status: Option<String>,
     pub notes: Option<String>,
 }

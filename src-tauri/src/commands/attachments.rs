@@ -10,10 +10,11 @@ use crate::util::path::{validate_read_source, validate_write_target};
 /// SELECT clause shared by every attachment fetch — keeps column order aligned
 /// with `row_to_attachment` so adding new polymorphic targets only touches one
 /// place. Current targets: item / order / subscription / engagement /
-/// engagement_charge / engagement_revision / income / income_receipt.
+/// engagement_charge / engagement_revision / income / income_receipt /
+/// pending_reimbursement.
 const ATTACHMENT_SELECT_COLUMNS: &str =
     "id, item_id, order_id, subscription_id, engagement_id, engagement_charge_id, engagement_revision_id,
-     income_id, income_receipt_id,
+     income_id, income_receipt_id, reimbursement_id,
      original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at";
 
 /// Polymorphic target for `insert_polymorphic_attachment` — every CHECK-allowed
@@ -29,6 +30,7 @@ enum AttachmentTarget<'a> {
     EngagementRevision(&'a str),
     Income(&'a str),
     IncomeReceipt(&'a str),
+    Reimbursement(&'a str),
 }
 
 #[tauri::command]
@@ -92,13 +94,14 @@ fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Attachment> {
         engagement_revision_id: row.get(6)?,
         income_id: row.get(7)?,
         income_receipt_id: row.get(8)?,
-        original_name: row.get(9)?,
-        display_name: row.get(10)?,
-        mime_type: row.get(11)?,
-        file_path: row.get(12)?,
-        size_bytes: row.get(13)?,
-        attachment_type: row.get(14)?,
-        created_at: row.get(15)?,
+        reimbursement_id: row.get(9)?,
+        original_name: row.get(10)?,
+        display_name: row.get(11)?,
+        mime_type: row.get(12)?,
+        file_path: row.get(13)?,
+        size_bytes: row.get(14)?,
+        attachment_type: row.get(15)?,
+        created_at: row.get(16)?,
     })
 }
 
@@ -144,27 +147,28 @@ fn insert_polymorphic_attachment(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    let (item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id): (
+    let (item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id): (
         Option<&str>, Option<&str>, Option<&str>, Option<&str>,
-        Option<&str>, Option<&str>, Option<&str>, Option<&str>,
+        Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&str>,
     ) = match target {
-        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None),
-        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None),
-        AttachmentTarget::Subscription(id) => (None, None, Some(id), None, None, None, None, None),
-        AttachmentTarget::Engagement(id) => (None, None, None, Some(id), None, None, None, None),
-        AttachmentTarget::EngagementCharge(id) => (None, None, None, None, Some(id), None, None, None),
-        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, None, Some(id), None, None),
-        AttachmentTarget::Income(id) => (None, None, None, None, None, None, Some(id), None),
-        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, None, Some(id)),
+        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None, None),
+        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None, None),
+        AttachmentTarget::Subscription(id) => (None, None, Some(id), None, None, None, None, None, None),
+        AttachmentTarget::Engagement(id) => (None, None, None, Some(id), None, None, None, None, None),
+        AttachmentTarget::EngagementCharge(id) => (None, None, None, None, Some(id), None, None, None, None),
+        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, None, Some(id), None, None, None),
+        AttachmentTarget::Income(id) => (None, None, None, None, None, None, Some(id), None, None),
+        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, None, Some(id), None),
+        AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, None, Some(id)),
     };
 
     conn.execute(
         "INSERT INTO attachments (id, item_id, order_id, subscription_id, engagement_id,
-         engagement_charge_id, engagement_revision_id, income_id, income_receipt_id,
+         engagement_charge_id, engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
          original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         rusqlite::params![
-            id, item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id,
+            id, item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id,
             original_name, display, mime_type, file_path, size_bytes, att_type
         ],
     ).map_err(|e| e.to_string())?;
@@ -348,6 +352,45 @@ pub fn add_income_receipt_attachment(
     insert_polymorphic_attachment(
         &state,
         AttachmentTarget::IncomeReceipt(&receipt_id),
+        &source_path,
+        display_name,
+        attachment_type,
+    )
+}
+
+#[tauri::command]
+pub fn get_reimbursement_attachments(
+    state: State<'_, AppState>,
+    reimbursement_id: String,
+) -> Result<Vec<Attachment>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let sql = format!(
+        "SELECT {} FROM attachments WHERE reimbursement_id = ?1 ORDER BY created_at",
+        ATTACHMENT_SELECT_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let attachments = stmt
+        .query_map([&reimbursement_id], row_to_attachment)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(attachments)
+}
+
+#[tauri::command]
+pub fn add_reimbursement_attachment(
+    state: State<'_, AppState>,
+    reimbursement_id: String,
+    source_path: String,
+    display_name: Option<String>,
+    attachment_type: Option<String>,
+) -> Result<Attachment, String> {
+    insert_polymorphic_attachment(
+        &state,
+        AttachmentTarget::Reimbursement(&reimbursement_id),
         &source_path,
         display_name,
         attachment_type,

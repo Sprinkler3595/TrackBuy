@@ -470,6 +470,51 @@ export type TranslationKeys = {
   "incomes.type.gift": string
   "incomes.type.reimbursement": string
   "incomes.type.other": string
+
+  // Pending reimbursements
+  "nav.reimbursements": string
+  "reimbursements.title": string
+  "reimbursements.subtitle": string
+  "reimbursements.new": string
+  "reimbursements.edit": string
+  "reimbursements.label": string
+  "reimbursements.type": string
+  "reimbursements.expectedAmount": string
+  "reimbursements.receivedAmount": string
+  "reimbursements.debtor": string
+  "reimbursements.debtorCreditor": string
+  "reimbursements.linkedItem": string
+  "reimbursements.sourceDescription": string
+  "reimbursements.requestedOn": string
+  "reimbursements.expectedBy": string
+  "reimbursements.receivedOn": string
+  "reimbursements.status": string
+  "reimbursements.notes": string
+  "reimbursements.markClaimed": string
+  "reimbursements.markSettled": string
+  "reimbursements.totalPending": string
+  "reimbursements.noReimbursements": string
+  "reimbursements.created": string
+  "reimbursements.updated": string
+  "reimbursements.deleted": string
+  "reimbursements.deleteConfirm": string
+  "reimbursements.tabPending": string
+  "reimbursements.tabClaimed": string
+  "reimbursements.tabSettled": string
+  "reimbursements.tabClosed": string
+  "reimbursements.statusPending": string
+  "reimbursements.statusClaimed": string
+  "reimbursements.statusPartial": string
+  "reimbursements.statusSettled": string
+  "reimbursements.statusRejected": string
+  "reimbursements.statusCancelled": string
+  "reimbursements.type.expense_report": string
+  "reimbursements.type.insurance_claim": string
+  "reimbursements.type.warranty_return": string
+  "reimbursements.type.product_return": string
+  "reimbursements.type.deposit": string
+  "reimbursements.type.tax_refund": string
+  "reimbursements.type.other": string
 }
 
 const translations: Record<Locale, TranslationKeys> = {
@@ -917,6 +962,50 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.type.gift": "Don / cadeau",
     "incomes.type.reimbursement": "Remboursement",
     "incomes.type.other": "Autre",
+
+    "nav.reimbursements": "Remboursements",
+    "reimbursements.title": "Remboursements en attente",
+    "reimbursements.subtitle": "Notes de frais, sinistres, retours, dépôts à récupérer",
+    "reimbursements.new": "Nouveau remboursement",
+    "reimbursements.edit": "Modifier",
+    "reimbursements.label": "Intitulé",
+    "reimbursements.type": "Type",
+    "reimbursements.expectedAmount": "Montant attendu",
+    "reimbursements.receivedAmount": "Montant reçu",
+    "reimbursements.debtor": "Débiteur",
+    "reimbursements.debtorCreditor": "Débiteur (créancier référencé)",
+    "reimbursements.linkedItem": "Achat lié",
+    "reimbursements.sourceDescription": "Description / origine",
+    "reimbursements.requestedOn": "Demandé le",
+    "reimbursements.expectedBy": "Échéance attendue",
+    "reimbursements.receivedOn": "Reçu le",
+    "reimbursements.status": "Statut",
+    "reimbursements.notes": "Notes",
+    "reimbursements.markClaimed": "Marquer comme demandé",
+    "reimbursements.markSettled": "Marquer comme reçu",
+    "reimbursements.totalPending": "Total en attente",
+    "reimbursements.noReimbursements": "Aucun remboursement enregistré.",
+    "reimbursements.created": "Remboursement créé",
+    "reimbursements.updated": "Remboursement modifié",
+    "reimbursements.deleted": "Remboursement supprimé",
+    "reimbursements.deleteConfirm": "Ce remboursement et ses pièces jointes seront supprimés définitivement.",
+    "reimbursements.tabPending": "À demander",
+    "reimbursements.tabClaimed": "Demandés",
+    "reimbursements.tabSettled": "Reçus",
+    "reimbursements.tabClosed": "Refusés / annulés",
+    "reimbursements.statusPending": "À demander",
+    "reimbursements.statusClaimed": "Demandé",
+    "reimbursements.statusPartial": "Partiel",
+    "reimbursements.statusSettled": "Reçu",
+    "reimbursements.statusRejected": "Refusé",
+    "reimbursements.statusCancelled": "Annulé",
+    "reimbursements.type.expense_report": "Note de frais",
+    "reimbursements.type.insurance_claim": "Sinistre assurance",
+    "reimbursements.type.warranty_return": "Garantie",
+    "reimbursements.type.product_return": "Retour produit",
+    "reimbursements.type.deposit": "Caution / dépôt",
+    "reimbursements.type.tax_refund": "Restitution fiscale",
+    "reimbursements.type.other": "Autre",
   },
 
   en: {
@@ -1363,6 +1452,50 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.type.gift": "Gift",
     "incomes.type.reimbursement": "Reimbursement",
     "incomes.type.other": "Other",
+
+    "nav.reimbursements": "Reimbursements",
+    "reimbursements.title": "Pending reimbursements",
+    "reimbursements.subtitle": "Expense reports, claims, returns, deposits to recover",
+    "reimbursements.new": "New reimbursement",
+    "reimbursements.edit": "Edit",
+    "reimbursements.label": "Label",
+    "reimbursements.type": "Type",
+    "reimbursements.expectedAmount": "Expected amount",
+    "reimbursements.receivedAmount": "Received amount",
+    "reimbursements.debtor": "Debtor",
+    "reimbursements.debtorCreditor": "Debtor (linked creditor)",
+    "reimbursements.linkedItem": "Linked purchase",
+    "reimbursements.sourceDescription": "Description / source",
+    "reimbursements.requestedOn": "Requested on",
+    "reimbursements.expectedBy": "Expected by",
+    "reimbursements.receivedOn": "Received on",
+    "reimbursements.status": "Status",
+    "reimbursements.notes": "Notes",
+    "reimbursements.markClaimed": "Mark as claimed",
+    "reimbursements.markSettled": "Mark as settled",
+    "reimbursements.totalPending": "Total pending",
+    "reimbursements.noReimbursements": "No reimbursement recorded.",
+    "reimbursements.created": "Reimbursement created",
+    "reimbursements.updated": "Reimbursement updated",
+    "reimbursements.deleted": "Reimbursement deleted",
+    "reimbursements.deleteConfirm": "This reimbursement and its attachments will be permanently deleted.",
+    "reimbursements.tabPending": "To claim",
+    "reimbursements.tabClaimed": "Claimed",
+    "reimbursements.tabSettled": "Received",
+    "reimbursements.tabClosed": "Rejected / cancelled",
+    "reimbursements.statusPending": "To claim",
+    "reimbursements.statusClaimed": "Claimed",
+    "reimbursements.statusPartial": "Partial",
+    "reimbursements.statusSettled": "Received",
+    "reimbursements.statusRejected": "Rejected",
+    "reimbursements.statusCancelled": "Cancelled",
+    "reimbursements.type.expense_report": "Expense report",
+    "reimbursements.type.insurance_claim": "Insurance claim",
+    "reimbursements.type.warranty_return": "Warranty return",
+    "reimbursements.type.product_return": "Product return",
+    "reimbursements.type.deposit": "Deposit",
+    "reimbursements.type.tax_refund": "Tax refund",
+    "reimbursements.type.other": "Other",
   },
 }
 

@@ -109,6 +109,7 @@ export interface Attachment {
   engagement_revision_id: string | null
   income_id: string | null
   income_receipt_id: string | null
+  reimbursement_id: string | null
   original_name: string
   display_name: string
   mime_type: string
@@ -977,6 +978,98 @@ export const addIncomeReceiptAttachment = (
 ) =>
   invoke<Attachment>("add_income_receipt_attachment", {
     receiptId,
+    sourcePath,
+    displayName,
+    attachmentType,
+  })
+
+// ============================================================================
+// Pending reimbursements (money to recover)
+// ============================================================================
+
+export type ReimbursementType =
+  | "expense_report" | "insurance_claim" | "warranty_return"
+  | "product_return" | "deposit" | "tax_refund" | "other"
+
+export type ReimbursementStatus =
+  | "pending" | "claimed" | "partial" | "settled" | "rejected" | "cancelled"
+
+export interface PendingReimbursement {
+  id: string
+  label: string
+  reimbursement_type: ReimbursementType
+  expected_amount: number | null
+  received_amount: number | null
+  currency: string
+  debtor_name: string | null
+  debtor_creditor_id: string | null
+  item_id: string | null
+  engagement_charge_id: string | null
+  source_description: string | null
+  requested_on: string | null
+  expected_by: string | null
+  received_on: string | null
+  status: ReimbursementStatus
+  notes: string | null
+  created_at: string
+  updated_at: string
+  debtor_creditor_name?: string | null
+  item_description?: string | null
+}
+
+export const listPendingReimbursements = (params?: { status?: string }) =>
+  invoke<PendingReimbursement[]>("list_pending_reimbursements", params ?? {})
+
+export const getPendingReimbursement = (id: string) =>
+  invoke<PendingReimbursement>("get_pending_reimbursement", { id })
+
+export const createPendingReimbursement = (reimb: {
+  label: string
+  reimbursement_type?: ReimbursementType
+  expected_amount?: number | null
+  currency?: string
+  debtor_name?: string | null
+  debtor_creditor_id?: string | null
+  item_id?: string | null
+  engagement_charge_id?: string | null
+  source_description?: string | null
+  requested_on?: string | null
+  expected_by?: string | null
+  status?: ReimbursementStatus
+  notes?: string | null
+}) => invoke<PendingReimbursement>("create_pending_reimbursement", { reimb })
+
+export const updatePendingReimbursement = (reimb: PendingReimbursement) =>
+  invoke<void>("update_pending_reimbursement", { reimb })
+
+export const markReimbursementClaimed = (id: string, requestedOn?: string) =>
+  invoke<PendingReimbursement>("mark_reimbursement_claimed", { id, requestedOn })
+
+export const markReimbursementSettled = (
+  id: string,
+  receivedOn: string,
+  receivedAmount: number
+) =>
+  invoke<PendingReimbursement>("mark_reimbursement_settled", {
+    id,
+    receivedOn,
+    receivedAmount,
+  })
+
+export const deletePendingReimbursement = (id: string) =>
+  invoke<void>("delete_pending_reimbursement", { id })
+
+export const getReimbursementAttachments = (reimbursementId: string) =>
+  invoke<Attachment[]>("get_reimbursement_attachments", { reimbursementId })
+
+export const addReimbursementAttachment = (
+  reimbursementId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string
+) =>
+  invoke<Attachment>("add_reimbursement_attachment", {
+    reimbursementId,
     sourcePath,
     displayName,
     attachmentType,

@@ -13,6 +13,7 @@ import {
   Repeat,
   FileText,
   TrendingUp,
+  HandCoins,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -41,6 +42,7 @@ const navSections: NavSection[] = [
       { to: "/engagements", icon: FileText, label: "Engagements" },
       { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
       { to: "/incomes", icon: TrendingUp, label: "Revenus" },
+      { to: "/reimbursements", icon: HandCoins, label: "Remboursements" },
     ],
   },
   {

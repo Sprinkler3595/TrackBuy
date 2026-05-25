@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ShoppingBag, Shield, DollarSign, TrendingUp, Bell, Calendar, Tag, Repeat, FileText, Receipt, AlertCircle } from "lucide-react"
+import { ShoppingBag, Shield, DollarSign, TrendingUp, Bell, Calendar, Tag, Repeat, FileText, Receipt, AlertCircle, HandCoins } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -32,12 +32,13 @@ export function DashboardPage() {
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [upcomingCharges, setUpcomingCharges] = useState<api.EngagementCharge[]>([])
   const [incomes, setIncomes] = useState<api.Income[]>([])
+  const [reimbursements, setReimbursements] = useState<api.PendingReimbursement[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       try {
-        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData, engData, chargesData, incomesData] = await Promise.all([
+        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData, engData, chargesData, incomesData, reimbsData] = await Promise.all([
           api.getItems(),
           api.getExpiringWarranties(30),
           api.getUpcomingReminders(30),
@@ -47,6 +48,7 @@ export function DashboardPage() {
           api.getEngagements({ status: "active" }),
           api.getUpcomingEngagementCharges(30),
           api.getIncomes({ status: "active" }),
+          api.listPendingReimbursements(),
         ])
         setItems(itemsData)
         setExpiring(expiringData)
@@ -57,6 +59,7 @@ export function DashboardPage() {
         setEngagements(engData)
         setUpcomingCharges(chargesData)
         setIncomes(incomesData)
+        setReimbursements(reimbsData)
       } catch (err) {
         console.error("Failed to load dashboard:", err)
       } finally {
@@ -88,6 +91,18 @@ export function DashboardPage() {
   const totalMonthlyExpense = monthlyCost + engagementMonthly
   const expenseRatio = monthlyIncome > 0 ? (totalMonthlyExpense / monthlyIncome) * 100 : 0
   const remaining = monthlyIncome - totalMonthlyExpense
+  // Sum of pending + claimed + (partial - already received) — the actual
+  // amount we're still waiting to recover.
+  const pendingReimb = reimbursements
+    .filter((r) => r.status === "pending" || r.status === "claimed" || r.status === "partial")
+    .reduce((acc, r) => {
+      if (r.expected_amount == null) return acc
+      const remaining = r.status === "partial" && r.received_amount != null
+        ? Math.max(0, r.expected_amount - r.received_amount)
+        : r.expected_amount
+      return acc + remaining
+    }, 0)
+  const pendingReimbCount = reimbursements.filter((r) => r.status === "pending" || r.status === "claimed" || r.status === "partial").length
 
   return (
     <div className="space-y-6">
@@ -163,6 +178,19 @@ export function DashboardPage() {
             <p className="text-xs text-muted-foreground">{upcomingCharges.length} facture(s) à régler</p>
           </CardContent>
         </Card>
+
+        {pendingReimbCount > 0 && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Remboursements à récupérer</CardTitle>
+              <HandCoins className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{formatPrice(pendingReimb)}</div>
+              <p className="text-xs text-muted-foreground">{pendingReimbCount} en attente</p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Finances : revenus mensuels nets + ratio dépenses/revenus + reste à vivre.

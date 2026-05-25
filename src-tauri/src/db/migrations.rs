@@ -47,6 +47,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 10 {
         migrate_v10(conn)?;
     }
+    if current_version < 11 {
+        migrate_v11(conn)?;
+    }
 
     Ok(())
 }
@@ -785,6 +788,119 @@ fn migrate_v10(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (10);
         "
     ).map_err(|e| format!("Migration v10 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Pending reimbursements: amounts the user is waiting to recover from
+/// someone (employer expense reports, insurance claims, warranty returns,
+/// product returns, deposits, tax refunds…). Distinct from `pending_invoices`
+/// which is a "file to classify" queue — here the queue tracks a *monetary*
+/// claim with a workflow:
+///   pending → claimed → settled / partial / rejected / cancelled.
+///
+/// Origin is optional and polymorphic: an item, an engagement_charge, or a
+/// free-text description. None of the three is required (a user can log
+/// "deposit at landlord" without referencing any existing record), so no
+/// CHECK constraint is added.
+///
+/// `attachments` is rebuilt one more time (same pattern as v3/v5/v9/v10) to
+/// add `reimbursement_id` for justificatifs (note de frais PDF, courrier
+/// d'assurance, accusé de réception…).
+fn migrate_v11(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE pending_reimbursements (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            reimbursement_type TEXT NOT NULL DEFAULT 'other',
+            expected_amount REAL,
+            received_amount REAL,
+            currency TEXT NOT NULL DEFAULT 'CHF',
+            debtor_name TEXT,
+            debtor_creditor_id TEXT,
+            item_id TEXT,
+            engagement_charge_id TEXT,
+            source_description TEXT,
+            requested_on TEXT,
+            expected_by TEXT,
+            received_on TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (debtor_creditor_id) REFERENCES creditors(id),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE SET NULL
+        );
+        CREATE INDEX idx_reimb_status ON pending_reimbursements(status);
+        CREATE INDEX idx_reimb_expected ON pending_reimbursements(expected_by);
+        CREATE INDEX idx_reimb_item ON pending_reimbursements(item_id);
+        CREATE INDEX idx_reimb_charge ON pending_reimbursements(engagement_charge_id);
+
+        -- Widen attachments once more: add reimbursement_id.
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            subscription_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            income_id TEXT,
+            income_receipt_id TEXT,
+            reimbursement_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL OR subscription_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL
+                   OR income_id IS NOT NULL OR income_receipt_id IS NOT NULL
+                   OR reimbursement_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE,
+            FOREIGN KEY (reimbursement_id) REFERENCES pending_reimbursements(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, subscription_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             income_id, income_receipt_id, reimbursement_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, subscription_id, engagement_id,
+               engagement_charge_id, engagement_revision_id,
+               income_id, income_receipt_id, NULL,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_subscription ON attachments(subscription_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+        CREATE INDEX idx_attachments_income ON attachments(income_id);
+        CREATE INDEX idx_attachments_income_receipt ON attachments(income_receipt_id);
+        CREATE INDEX idx_attachments_reimbursement ON attachments(reimbursement_id);
+
+        INSERT INTO schema_version (version) VALUES (11);
+        "
+    ).map_err(|e| format!("Migration v11 failed: {}", e))?;
 
     Ok(())
 }
