@@ -168,17 +168,23 @@ pub struct CreateItemRequest {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Reminder {
-    /// Source entity row id. Either an items.id or a subscriptions.id depending
-    /// on `entity_type` — kept as `item_id` for backward-compat with existing
-    /// frontend code that already keys on this field.
+    /// Source entity row id. Depends on `entity_type`:
+    /// - 'item'         → items.id
+    /// - 'subscription' → subscriptions.id
+    /// - 'engagement'   → engagements.id
+    /// - 'charge'       → engagements.id (the parent of the scheduled
+    ///                    charge, not the charge_id, so the dashboard can
+    ///                    link to /engagements/:id without an extra hop)
+    /// Kept as `item_id` for backward-compat with existing frontend code.
     pub item_id: String,
-    /// "item" for purchase-derived reminders, "subscription" for renewals.
     pub entity_type: String,
     pub description: String,
     /// For items this is the item_kind ("ticket", "voucher", "license"); for
-    /// subscriptions it carries the billing_cycle so the UI can colour-code.
+    /// subscriptions it carries the billing_cycle so the UI can colour-code;
+    /// for engagements/charges it carries the canonical engagement_type.
     pub item_kind: String,
-    pub reminder_type: String, // "event" | "expiration" | "renewal"
+    /// "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
+    pub reminder_type: String,
     pub target_date: String,
     pub days_until: i64,
     pub merchant_name: Option<String>,

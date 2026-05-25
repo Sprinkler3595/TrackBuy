@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
-import { ShoppingBag, Shield, DollarSign, TrendingUp, Bell, Calendar, Tag, Repeat } from "lucide-react"
+import { ShoppingBag, Shield, DollarSign, TrendingUp, Bell, Calendar, Tag, Repeat, FileText, Receipt, AlertCircle } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatPrice, formatDate, daysUntil } from "@/lib/utils"
+import { monthlyEquivalent as engagementMonthlyEquivalent } from "@/lib/finance"
 import * as api from "@/lib/tauri"
 
 /// Normalise a subscription's price to its per-month equivalent so the
@@ -26,18 +27,22 @@ export function DashboardPage() {
   const [stats, setStats] = useState<api.Stats | null>(null)
   const [renewals, setRenewals] = useState<api.Subscription[]>([])
   const [subs, setSubs] = useState<api.Subscription[]>([])
+  const [engagements, setEngagements] = useState<api.Engagement[]>([])
+  const [upcomingCharges, setUpcomingCharges] = useState<api.EngagementCharge[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       try {
-        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData] = await Promise.all([
+        const [itemsData, expiringData, remindersData, statsData, renewalsData, subsData, engData, chargesData] = await Promise.all([
           api.getItems(),
           api.getExpiringWarranties(30),
           api.getUpcomingReminders(30),
           api.getStats(),
           api.getUpcomingRenewals(30),
           api.getSubscriptions({ status: "active" }),
+          api.getEngagements({ status: "active" }),
+          api.getUpcomingEngagementCharges(30),
         ])
         setItems(itemsData)
         setExpiring(expiringData)
@@ -45,6 +50,8 @@ export function DashboardPage() {
         setStats(statsData)
         setRenewals(renewalsData)
         setSubs(subsData)
+        setEngagements(engData)
+        setUpcomingCharges(chargesData)
       } catch (err) {
         console.error("Failed to load dashboard:", err)
       } finally {
@@ -66,6 +73,10 @@ export function DashboardPage() {
   const totalValue = activeItems.reduce((sum, i) => sum + i.purchase_price, 0)
   const recentItems = [...items].slice(0, 5)
   const monthlyCost = subs.reduce((sum, s) => sum + monthlyEquivalent(s), 0)
+  const engagementMonthly = engagements
+    .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot")
+    .reduce((acc, e) => acc + engagementMonthlyEquivalent(e.current_amount as number, e.billing_cycle, e.cycle_interval), 0)
+  const dueIn30 = upcomingCharges.reduce((acc, c) => acc + c.amount, 0)
 
   return (
     <div className="space-y-6">
@@ -75,7 +86,7 @@ export function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Total articles</CardTitle>
@@ -100,23 +111,45 @@ export function DashboardPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Coût mensuel abos</CardTitle>
-            <Repeat className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{formatPrice(monthlyCost)}</div>
-            <p className="text-xs text-muted-foreground">{subs.length} abonnement(s) actif(s)</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Garanties expirantes</CardTitle>
             <Shield className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{expiring.length > 0 ? expiring.length : "0"}</div>
             <p className="text-xs text-muted-foreground">Dans 30 jours · {expiring.filter((w) => daysUntil(w.end_date!) <= 7).length} urgent(es)</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Coût mensuel abos</CardTitle>
+            <Repeat className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{formatPrice(monthlyCost)}</div>
+            <p className="text-xs text-muted-foreground">{subs.length} abonnement(s) en ligne</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Coût mensuel engagements</CardTitle>
+            <FileText className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{formatPrice(engagementMonthly)}</div>
+            <p className="text-xs text-muted-foreground">{engagements.length} engagement(s) actif(s)</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">À payer dans 30j</CardTitle>
+            <Receipt className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{formatPrice(dueIn30)}</div>
+            <p className="text-xs text-muted-foreground">{upcomingCharges.length} facture(s) à régler</p>
           </CardContent>
         </Card>
       </div>
@@ -269,6 +302,52 @@ export function DashboardPage() {
         </CardContent>
       </Card>
 
+      {/* Upcoming engagement charges — manual-pay bills awaiting settlement */}
+      {upcomingCharges.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Receipt className="h-5 w-5" />
+              Charges à payer dans 30 jours
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {upcomingCharges.map((c) => {
+                const days = daysUntil(c.due_date)
+                const variant = days <= 7 ? "destructive" : days <= 30 ? "warning" : "success"
+                return (
+                  <Link
+                    key={c.id}
+                    to={`/engagements/${c.engagement_id}`}
+                    className="flex items-center justify-between rounded-lg border p-3 hover:bg-accent transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Receipt className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">
+                          {engagements.find((e) => e.id === c.engagement_id)?.name ?? "Engagement"}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          Échéance {formatDate(c.due_date)}
+                          {c.reference_number && <> · {c.reference_number}</>}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-sm font-semibold">{formatPrice(c.amount, c.currency)}</span>
+                      <Badge variant={variant}>
+                        {days === 0 ? "Aujourd'hui" : `${days}j`}
+                      </Badge>
+                    </div>
+                  </Link>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Upcoming reminders: events + voucher/license expirations */}
       <Card>
         <CardHeader>
@@ -285,18 +364,27 @@ export function DashboardPage() {
               {reminders.map((r) => {
                 const days = r.days_until
                 const variant = days <= 7 ? "destructive" : days <= 30 ? "warning" : "success"
-                const Icon = r.reminder_type === "event" ? Calendar : r.reminder_type === "renewal" ? Repeat : Tag
-                const label = r.reminder_type === "event"
-                  ? "Événement"
-                  : r.reminder_type === "renewal"
-                  ? "Renouvellement"
-                  : "Expiration"
-                const href = r.entity_type === "subscription"
-                  ? `/subscriptions/${r.item_id}`
-                  : "/tickets"
+                const Icon =
+                  r.reminder_type === "event" ? Calendar :
+                  r.reminder_type === "renewal" ? Repeat :
+                  r.reminder_type === "charge_due" ? Receipt :
+                  r.reminder_type === "due" ? FileText :
+                  r.reminder_type === "notice" ? AlertCircle :
+                  Tag
+                const label =
+                  r.reminder_type === "event" ? "Événement" :
+                  r.reminder_type === "renewal" ? "Renouvellement" :
+                  r.reminder_type === "charge_due" ? "Facture à payer" :
+                  r.reminder_type === "due" ? "Échéance" :
+                  r.reminder_type === "notice" ? "Préavis résiliation" :
+                  "Expiration"
+                const href =
+                  r.entity_type === "subscription" ? `/subscriptions/${r.item_id}` :
+                  r.entity_type === "engagement" || r.entity_type === "charge" ? `/engagements/${r.item_id}` :
+                  "/tickets"
                 return (
                   <Link
-                    key={`${r.entity_type}-${r.item_id}-${r.reminder_type}`}
+                    key={`${r.entity_type}-${r.item_id}-${r.reminder_type}-${r.target_date}`}
                     to={href}
                     className="flex items-center justify-between rounded-lg border p-3 hover:bg-accent transition-colors"
                   >

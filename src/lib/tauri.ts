@@ -37,13 +37,15 @@ export interface Item {
 }
 
 export interface Reminder {
-  /// Source row id — items.id for entity_type='item', subscriptions.id for 'subscription'.
+  /// Source row id. items.id for 'item', subscriptions.id for 'subscription',
+  /// engagements.id for both 'engagement' and 'charge' (parent, not charge_id).
   item_id: string
-  entity_type: "item" | "subscription"
+  entity_type: "item" | "subscription" | "engagement" | "charge"
   description: string
-  /// Item kind for items, billing cycle for subscriptions.
+  /// item_kind for items, billing cycle for subscriptions, engagement_type
+  /// for engagements/charges.
   item_kind: string
-  reminder_type: "event" | "expiration" | "renewal"
+  reminder_type: "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
   target_date: string
   days_until: number
   merchant_name: string | null

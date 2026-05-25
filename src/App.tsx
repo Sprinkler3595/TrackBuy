@@ -24,6 +24,7 @@ import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
+import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
 import { useIdleLock, useIdleLockMinutes } from "@/hooks/use-idle-lock"
 import { I18nContext, getTranslation, type Locale } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -38,9 +39,10 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
 
-  // Activate warranty + subscription notifications when unlocked
+  // Activate warranty + subscription + engagement notifications when unlocked
   useWarrantyNotifications()
   useSubscriptionNotifications()
+  useEngagementNotifications()
 
   useEffect(() => {
     async function check() {

@@ -7,14 +7,26 @@ use crate::db::models::Reminder;
 ///   - "event"      : ticket event dates (items.event_datetime)
 ///   - "expiration" : voucher / license / ticket expirations (items.expiration_date)
 ///   - "renewal"    : subscription renewals (subscriptions.next_renewal_date)
+///   - "due"        : engagements whose `next_due_date` is approaching and that
+///                    won't auto-pay (so the user still has to act). Skipped if
+///                    a `scheduled` charge already covers that date — the
+///                    `charge_due` row below is then the source of truth.
+///   - "charge_due" : engagement charges still in `status='scheduled'` (e.g.
+///                    QR-bill received, not yet paid manually).
+///   - "notice"     : contract resignation deadlines, computed as
+///                    `contract_end_date − notice_period_days`. Surfaces the
+///                    last moment to send a cancellation letter before the
+///                    contract auto-renews.
 ///
-/// The dashboard and notification hook share the same threshold pattern
+/// The dashboard and notification hooks share the same threshold pattern
 /// (7 days = urgent, 30 days = warning). Each row carries `entity_type`
-/// ("item" | "subscription") so the front can route the click to the right
-/// detail page.
+/// ("item" | "subscription" | "engagement" | "charge") so the front routes
+/// the click to the right detail page. For both 'engagement' and 'charge'
+/// rows, `item_id` carries the parent `engagements.id` so the dashboard
+/// can always link to `/engagements/:id`.
 ///
 /// Items that have already been used (`redeemed_at IS NOT NULL`) and
-/// subscriptions that are paused/cancelled are excluded.
+/// subscriptions/engagements that are paused/cancelled/ended are excluded.
 #[tauri::command]
 pub fn get_upcoming_reminders(
     state: State<'_, AppState>,
@@ -63,8 +75,74 @@ pub fn get_upcoming_reminders(
         FROM subscriptions s
         LEFT JOIN merchants m ON s.merchant_id = m.id
         WHERE s.status = 'active'
+          AND s.kind = 'online'
           AND date(s.next_renewal_date) >= date('now')
           AND date(s.next_renewal_date) <= date('now', '+' || ?1 || ' days')
+
+        UNION ALL
+
+        -- Engagements with an upcoming due date that won't auto-settle. Skip
+        -- rows where a scheduled charge already materialises that date (the
+        -- charge_due block covers it).
+        SELECT e.id, 'engagement' as entity_type, e.name as description,
+               e.engagement_type as item_kind, 'due' as reminder_type,
+               e.next_due_date as target_date,
+               CAST(julianday(date(e.next_due_date)) - julianday(date('now')) AS INTEGER) as days_until,
+               cr.name as merchant_name
+        FROM engagements e
+        LEFT JOIN creditors cr ON e.creditor_id = cr.id
+        WHERE e.status = 'active'
+          AND e.auto_pay = 0
+          AND e.next_due_date IS NOT NULL
+          AND e.billing_cycle != 'one_shot'
+          AND date(e.next_due_date) >= date('now')
+          AND date(e.next_due_date) <= date('now', '+' || ?1 || ' days')
+          AND NOT EXISTS (
+              SELECT 1 FROM engagement_charges ec
+              WHERE ec.engagement_id = e.id
+                AND ec.due_date = e.next_due_date
+                AND ec.status = 'scheduled'
+          )
+
+        UNION ALL
+
+        -- Scheduled (unpaid) engagement charges within the window. The
+        -- description prefixes the engagement name with a facture marker so
+        -- the dashboard can distinguish them from the parent engagement.
+        -- `item_id` carries the parent engagement_id (not the charge_id) so
+        -- the dashboard click can route directly to `/engagements/:id`.
+        SELECT e.id, 'charge' as entity_type,
+               e.name || ' — facture' as description,
+               e.engagement_type as item_kind, 'charge_due' as reminder_type,
+               c.due_date as target_date,
+               CAST(julianday(date(c.due_date)) - julianday(date('now')) AS INTEGER) as days_until,
+               cr.name as merchant_name
+        FROM engagement_charges c
+        JOIN engagements e ON c.engagement_id = e.id
+        LEFT JOIN creditors cr ON e.creditor_id = cr.id
+        WHERE c.status = 'scheduled'
+          AND date(c.due_date) >= date('now')
+          AND date(c.due_date) <= date('now', '+' || ?1 || ' days')
+
+        UNION ALL
+
+        -- Contract resignation notice: surfaces the latest date the user can
+        -- send a cancellation letter before the contract auto-renews. Only
+        -- when contract_end_date and notice_period_days are both set.
+        SELECT e.id, 'engagement' as entity_type,
+               e.name as description,
+               e.engagement_type as item_kind, 'notice' as reminder_type,
+               date(e.contract_end_date, '-' || e.notice_period_days || ' days') as target_date,
+               CAST(julianday(date(e.contract_end_date, '-' || e.notice_period_days || ' days'))
+                    - julianday(date('now')) AS INTEGER) as days_until,
+               cr.name as merchant_name
+        FROM engagements e
+        LEFT JOIN creditors cr ON e.creditor_id = cr.id
+        WHERE e.status = 'active'
+          AND e.contract_end_date IS NOT NULL
+          AND e.notice_period_days IS NOT NULL
+          AND date(e.contract_end_date, '-' || e.notice_period_days || ' days') >= date('now')
+          AND date(e.contract_end_date, '-' || e.notice_period_days || ' days') <= date('now', '+' || ?1 || ' days')
 
         ORDER BY target_date
     ";
