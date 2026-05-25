@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { Plus, Search, Trash2, Edit, Filter, Download, Upload, ChevronDown, ShoppingBag, ChevronRight, Layers, X, FileText, Camera, ClipboardList, Paperclip } from "lucide-react"
+import { Plus, Search, Trash2, Edit, Filter, Download, Upload, ChevronDown, ShoppingBag, ChevronRight, Layers, X, FileText, Camera, ClipboardList, Paperclip, Landmark } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -1207,6 +1207,12 @@ export function ItemsPage() {
                       <Badge variant="outline" className="text-[10px] shrink-0 gap-1">
                         <Layers className="h-2.5 w-2.5" />
                         Achat groupé
+                      </Badge>
+                    )}
+                    {item.bank_transaction_id && (
+                      <Badge variant="outline" className="text-[10px] shrink-0 gap-1" title="Rapproché d'une transaction bancaire">
+                        <Landmark className="h-2.5 w-2.5" />
+                        Rapproché
                       </Badge>
                     )}
                   </div>

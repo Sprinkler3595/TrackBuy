@@ -26,6 +26,10 @@ pub struct Item {
     pub expiration_date: Option<String>,
     pub redemption_url: Option<String>,
     pub redeemed_at: Option<String>,
+    /// Back-link to the bank line that paid this item, once the user has
+    /// confirmed the match in the bank-statement review. NULL means the
+    /// item has not been reconciled (or no statement was imported yet).
+    pub bank_transaction_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -121,8 +125,18 @@ pub struct PendingInvoice {
     pub notes: Option<String>,
     pub original_name: String,
     pub mime_type: String,
-    pub file_path: String,
+    /// NULL when the row was created from an orphan bank transaction (no
+    /// PDF/image yet — user will attach it later via the pending-invoices
+    /// page). Populated for rows that came from a real file upload.
+    pub file_path: Option<String>,
     pub size_bytes: i64,
+    /// Set when the row was materialized from a bank-statement line that
+    /// didn't match any item. Lets the UI show "facture à fournir pour
+    /// cette transaction" and back-link to the originating statement.
+    pub source_bank_tx_id: Option<String>,
+    pub expected_amount: Option<f64>,
+    pub expected_date: Option<String>,
+    pub currency: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -712,8 +726,9 @@ pub struct BankStatementTransaction {
     pub direction: String,
     pub reference_number: Option<String>,
     pub counterparty_iban: Option<String>,
-    /// 'engagement_charge' | 'subscription_payment' | 'income_receipt'
-    /// | 'item' | 'reimbursement' | NULL
+    /// 'engagement' | 'engagement_charge' | 'subscription'
+    /// | 'subscription_payment' | 'income' | 'income_receipt'
+    /// | 'item' | 'item_group' | 'merchant' | 'reimbursement' | NULL
     pub match_target_kind: Option<String>,
     pub match_target_id: Option<String>,
     pub match_confidence: Option<f64>,
@@ -721,6 +736,11 @@ pub struct BankStatementTransaction {
     /// 'unmatched' | 'suggested' | 'confirmed' | 'created' | 'ignored'
     pub match_status: String,
     pub review_notes: Option<String>,
+    /// CSV of item ids when the matcher detected a grouped match (single
+    /// debit summing several same-day/same-merchant purchases). NULL for
+    /// single matches. Materialized into a real `order_id` only when the
+    /// user confirms the suggestion.
+    pub match_group_ids: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     /// Display name of the matched target, joined for the review screen.

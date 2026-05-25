@@ -53,6 +53,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 12 {
         migrate_v12(conn)?;
     }
+    if current_version < 13 {
+        migrate_v13(conn)?;
+    }
 
     Ok(())
 }
@@ -1005,6 +1008,75 @@ fn migrate_v12(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (12);
         "
     ).map_err(|e| format!("Migration v12 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Bank ↔ items reconciliation. Three pieces:
+/// 1. `items.bank_transaction_id` — back-link from a purchase to the bank
+///    line that paid it, so `suggest_matches_for_statement` can skip items
+///    already reconciled (idempotent re-runs) and the items list can show
+///    a "rapproché" hint.
+/// 2. `bank_statement_transactions.match_group_ids` — CSV of item ids when
+///    a single debit equals the sum of several same-day/same-merchant
+///    purchases (typical Amazon multi-line order). Stored at the suggestion
+///    stage; promoted to a real `order_id` only when the user confirms.
+/// 3. `pending_invoices` widened to allow rows without a file: useful when
+///    a bank line has no matching item AND no scanned receipt yet — the
+///    user wants to mark "facture à fournir plus tard" and provide the PDF
+///    when it arrives. Same `_new` rebuild pattern as v3/v5/v9/v10/v11.
+fn migrate_v13(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE items ADD COLUMN bank_transaction_id TEXT
+            REFERENCES bank_statement_transactions(id) ON DELETE SET NULL;
+        CREATE INDEX idx_items_bank_tx ON items(bank_transaction_id);
+
+        -- Speeds up the candidate scan in load_item_candidates (active items
+        -- in a date window with a target price). Partial index keeps it tiny.
+        CREATE INDEX idx_items_price_date ON items(purchase_date, purchase_price)
+            WHERE status = 'active';
+
+        ALTER TABLE bank_statement_transactions ADD COLUMN match_group_ids TEXT;
+
+        -- Rebuild pending_invoices to: (a) make file_path nullable for the
+        -- 'expected invoice' flow, (b) add a source bank-transaction link,
+        -- and (c) add optional expected_amount/date/currency carried over
+        -- from the bank line so the user sees what they owe a PDF for.
+        CREATE TABLE pending_invoices_new (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            notes TEXT,
+            original_name TEXT NOT NULL DEFAULT '',
+            mime_type TEXT NOT NULL DEFAULT '',
+            file_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            source_bank_tx_id TEXT,
+            expected_amount REAL,
+            expected_date TEXT,
+            currency TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (source_bank_tx_id)
+                REFERENCES bank_statement_transactions(id) ON DELETE SET NULL
+        );
+
+        INSERT INTO pending_invoices_new
+            (id, label, notes, original_name, mime_type, file_path, size_bytes,
+             created_at, updated_at)
+        SELECT id, label, notes, original_name, mime_type, file_path, size_bytes,
+               created_at, updated_at
+        FROM pending_invoices;
+
+        DROP TABLE pending_invoices;
+        ALTER TABLE pending_invoices_new RENAME TO pending_invoices;
+
+        CREATE INDEX idx_pending_invoices_created ON pending_invoices(created_at);
+        CREATE INDEX idx_pending_invoices_bank_tx ON pending_invoices(source_bank_tx_id);
+
+        INSERT INTO schema_version (version) VALUES (13);
+        "
+    ).map_err(|e| format!("Migration v13 failed: {}", e))?;
 
     Ok(())
 }

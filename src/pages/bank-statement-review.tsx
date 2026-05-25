@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import * as pdfjsLib from "pdfjs-dist"
-import { ArrowLeft, Sparkles, Search, Check, X, Lightbulb, Wand2 } from "lucide-react"
+import { ArrowLeft, Sparkles, Search, Check, X, Lightbulb, Wand2, ShoppingBag, FileQuestion } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { formatPrice, formatDate, cn } from "@/lib/utils"
 import { getAiSettings } from "@/lib/ai-settings"
+import { findMerchantByName } from "@/lib/fuzzy-match"
 import * as api from "@/lib/tauri"
 
 // Use the same pdfjs worker config as scan.tsx — the URL is rewritten by
@@ -48,6 +49,30 @@ interface TargetCandidate {
 
 type SortKey = "date" | "amount" | "status"
 
+/// Local form state for the "Créer un achat depuis cette transaction"
+/// inline mini-form. Pre-filled from the orphan bank line; the user
+/// picks merchant/location and submits.
+interface CreateItemFormState {
+  description: string
+  purchase_date: string
+  purchase_price: string
+  currency: string
+  merchant_id: string
+  location_id: string
+  payment_card_id: string
+  notes: string
+}
+
+/// Add `±days` days to a YYYY-MM-DD string. Used to widen the statement
+/// period when pre-filtering the item candidate pool client-side.
+function shiftIsoDate(iso: string | null, days: number): string | null {
+  if (!iso) return null
+  const d = new Date(iso + "T00:00:00")
+  if (Number.isNaN(d.getTime())) return null
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
 export function BankStatementReviewPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -68,10 +93,19 @@ export function BankStatementReviewPage() {
   const [learnRule, setLearnRule] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>("date")
 
+  // Reference data for the "Créer un achat" inline form on orphan
+  // transactions. Loaded alongside the candidate pool so opening the
+  // form is instant.
+  const [merchants, setMerchants] = useState<api.Merchant[]>([])
+  const [locations, setLocations] = useState<api.Location[]>([])
+  const [cards, setCards] = useState<api.PaymentCard[]>([])
+  const [createItemFor, setCreateItemFor] = useState<api.BankStatementTransaction | null>(null)
+  const [createItemForm, setCreateItemForm] = useState<CreateItemFormState | null>(null)
+
   const load = async () => {
     if (!id) return
     try {
-      const [s, txs, eng, subs, inc, items, reimb] = await Promise.all([
+      const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList] = await Promise.all([
         api.getBankStatement(id),
         api.listStatementTransactions(id),
         api.getEngagements({ status: "active" }),
@@ -79,15 +113,30 @@ export function BankStatementReviewPage() {
         api.getIncomes({ status: "active" }),
         api.getItems(),
         api.listPendingReimbursements({ status: "claimed" }),
+        api.getMerchants(),
+        api.getLocations(),
+        api.getCards(),
       ])
       setStatement(s)
       setTransactions(txs)
+      setMerchants(mList)
+      setLocations(lList)
+      setCards(cList)
+
+      // Restrict the item pool to the statement period ±7 days — outside
+      // that window an item can't reasonably correspond to a line on this
+      // month's statement, and keeping the picker tight makes search fast.
+      const lo = shiftIsoDate(s.period_start, -7)
+      const hi = shiftIsoDate(s.period_end, 7)
+      const filteredItems = lo && hi
+        ? items.filter((it) => it.purchase_date >= lo && it.purchase_date <= hi)
+        : items
 
       const pool: TargetCandidate[] = []
       for (const e of eng) pool.push({ kind: "engagement", id: e.id, label: e.name, hint: e.creditor_name ?? undefined })
-      for (const s of subs) pool.push({ kind: "subscription", id: s.id, label: s.name, hint: s.merchant_name ?? undefined })
+      for (const sub of subs) pool.push({ kind: "subscription", id: sub.id, label: sub.name, hint: sub.merchant_name ?? undefined })
       for (const i of inc) pool.push({ kind: "income", id: i.id, label: i.name, hint: i.source_name ?? undefined })
-      for (const it of items.slice(0, 200)) pool.push({ kind: "item", id: it.id, label: it.description, hint: formatDate(it.purchase_date) })
+      for (const it of filteredItems.slice(0, 500)) pool.push({ kind: "item", id: it.id, label: it.description, hint: formatDate(it.purchase_date) })
       for (const r of reimb) pool.push({ kind: "reimbursement", id: r.id, label: r.label })
       setCandidates(pool)
     } catch (err) {
@@ -172,9 +221,12 @@ export function BankStatementReviewPage() {
 
   const handleConfirm = async (txId: string) => {
     const tx = transactions.find((t) => t.id === txId)
-    if (!tx || !tx.match_target_kind || !tx.match_target_id) return
+    if (!tx || !tx.match_target_kind) return
+    // item_group suggestions carry their item ids in match_group_ids and
+    // expose a NULL match_target_id (the order_id is minted on confirm).
+    if (tx.match_target_kind !== "item_group" && !tx.match_target_id) return
     try {
-      await api.applyTransactionMatch(txId, tx.match_target_kind, tx.match_target_id, learnRule)
+      await api.applyTransactionMatch(txId, tx.match_target_kind, tx.match_target_id ?? "", learnRule)
       await load()
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
@@ -186,10 +238,78 @@ export function BankStatementReviewPage() {
     const suggested = transactions.filter((t) => t.match_status === "suggested" && (t.match_confidence ?? 0) >= 0.7)
     try {
       for (const tx of suggested) {
-        if (!tx.match_target_kind || !tx.match_target_id) continue
-        await api.applyTransactionMatch(tx.id, tx.match_target_kind, tx.match_target_id, learnRule)
+        if (!tx.match_target_kind) continue
+        if (tx.match_target_kind !== "item_group" && !tx.match_target_id) continue
+        await api.applyTransactionMatch(tx.id, tx.match_target_kind, tx.match_target_id ?? "", learnRule)
       }
       toast(`${suggested.length} suggestions confirmées`, "success")
+      await load()
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
+  /// Open the inline "Créer un achat" form pre-filled from the orphan
+  /// transaction. Merchant is guessed via fuzzy match on the libellé;
+  /// location defaults to the first available (user can change).
+  const openCreateItemForm = (tx: api.BankStatementTransaction) => {
+    const guessedMerchant = findMerchantByName(tx.raw_description, merchants)
+    setCreateItemFor(tx)
+    setCreateItemForm({
+      description: tx.raw_description.slice(0, 80),
+      purchase_date: tx.transaction_date,
+      purchase_price: tx.amount.toFixed(2),
+      currency: tx.currency,
+      merchant_id: guessedMerchant?.id ?? "",
+      location_id: locations[0]?.id ?? "",
+      payment_card_id: "",
+      notes: `Créé depuis la transaction bancaire du ${formatDate(tx.transaction_date)}`,
+    })
+  }
+
+  const cancelCreateItemForm = () => {
+    setCreateItemFor(null)
+    setCreateItemForm(null)
+  }
+
+  const submitCreateItemForm = async () => {
+    if (!createItemFor || !createItemForm) return
+    if (!createItemForm.merchant_id) {
+      toast("Marchand requis", "error")
+      return
+    }
+    if (!createItemForm.location_id) {
+      toast("Lieu requis", "error")
+      return
+    }
+    const price = parseFloat(createItemForm.purchase_price)
+    if (Number.isNaN(price) || price <= 0) {
+      toast("Prix invalide", "error")
+      return
+    }
+    try {
+      await api.createItemFromTransaction(createItemFor.id, {
+        description: createItemForm.description.trim() || "Achat",
+        purchase_date: createItemForm.purchase_date,
+        purchase_price: price,
+        currency: createItemForm.currency,
+        merchant_id: createItemForm.merchant_id,
+        location_id: createItemForm.location_id,
+        payment_card_id: createItemForm.payment_card_id || undefined,
+        notes: createItemForm.notes || undefined,
+      })
+      toast("Achat créé et rapproché", "success")
+      cancelCreateItemForm()
+      await load()
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
+  const handleCreatePendingInvoice = async (tx: api.BankStatementTransaction) => {
+    try {
+      await api.createPendingInvoiceFromTransaction(tx.id)
+      toast("Facture en attente créée. Importe le PDF depuis la page Factures.", "success")
       await load()
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
@@ -369,7 +489,16 @@ export function BankStatementReviewPage() {
                       <p className="font-medium text-sm truncate">{t.raw_description}</p>
                       <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                         {matchBadge(t)}
-                        {t.match_target_kind && t.match_target_id && (
+                        {/* Flag for "matched against an existing purchase" —
+                            distinguishes item/item_group suggestions from the
+                            libellé-based engagement/subscription matches. */}
+                        {(t.match_target_kind === "item" || t.match_target_kind === "item_group") &&
+                          (t.match_confidence ?? 0) >= 0.7 && (
+                            <Badge variant="outline" className="text-[10px]">
+                              {t.match_target_kind === "item_group" ? "Achats groupés" : "Achat existant"}
+                            </Badge>
+                          )}
+                        {t.match_target_kind && (t.match_target_id || t.match_target_label) && (
                           <span className="text-xs text-muted-foreground truncate">
                             → {candidateLabel(t.match_target_kind, t.match_target_id, t.match_target_label)}
                             <span className="text-muted-foreground/60 ml-1">({t.match_target_kind})</span>
@@ -390,6 +519,31 @@ export function BankStatementReviewPage() {
                       <Button variant="ghost" size="icon" onClick={() => { setPickerOpenFor(t.id); setPickerSearch(t.raw_description.slice(0, 30)) }} title="Choisir une cible">
                         <Search className="h-4 w-4" />
                       </Button>
+                      {/* Orphan-line actions: appear only for unmatched debit
+                          lines (credits aren't purchases). "Créer un achat"
+                          pre-fills the form with the bank line's data;
+                          "Facture en attente" enqueues a placeholder for a
+                          PDF the user will upload later. */}
+                      {t.match_status === "unmatched" && t.direction === "debit" && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openCreateItemForm(t)}
+                            title="Créer un achat depuis cette transaction"
+                          >
+                            <ShoppingBag className="h-4 w-4 text-blue-600" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleCreatePendingInvoice(t)}
+                            title="Créer une facture en attente"
+                          >
+                            <FileQuestion className="h-4 w-4 text-amber-600" />
+                          </Button>
+                        </>
+                      )}
                       {t.match_status !== "ignored" && (
                         <Button variant="ghost" size="icon" onClick={() => handleIgnore(t.id)} title="Ignorer">
                           <X className="h-4 w-4 text-muted-foreground" />
@@ -426,6 +580,87 @@ export function BankStatementReviewPage() {
                       </div>
                       <div className="flex justify-end">
                         <Button variant="ghost" size="sm" onClick={() => setPickerOpenFor(null)}>Fermer</Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {createItemFor?.id === t.id && createItemForm && (
+                    <div className="mt-3 pt-3 border-t space-y-3">
+                      <p className="text-sm font-medium flex items-center gap-2">
+                        <ShoppingBag className="h-4 w-4 text-blue-600" />
+                        Nouvel achat depuis cette transaction
+                      </p>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-xs font-medium text-muted-foreground">Description</label>
+                          <Input
+                            value={createItemForm.description}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, description: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">Date</label>
+                          <Input
+                            type="date"
+                            value={createItemForm.purchase_date}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, purchase_date: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">Prix</label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={createItemForm.purchase_price}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, purchase_price: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">Marchand</label>
+                          <select
+                            value={createItemForm.merchant_id}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, merchant_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Sélectionner...</option>
+                            {merchants.map((m) => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">Lieu</label>
+                          <select
+                            value={createItemForm.location_id}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, location_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Sélectionner...</option>
+                            {locations.map((l) => (
+                              <option key={l.id} value={l.id}>{l.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-xs font-medium text-muted-foreground">Carte de paiement (optionnel)</label>
+                          <select
+                            value={createItemForm.payment_card_id}
+                            onChange={(e) => setCreateItemForm({ ...createItemForm, payment_card_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Aucune</option>
+                            {cards.map((c) => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={cancelCreateItemForm}>Annuler</Button>
+                        <Button size="sm" onClick={submitCreateItemForm}>
+                          <Check className="h-4 w-4" />
+                          Créer & rapprocher
+                        </Button>
                       </div>
                     </div>
                   )}
