@@ -20,6 +20,7 @@ import { CreditorsPage } from "@/pages/creditors"
 import { IncomesPage } from "@/pages/incomes"
 import { IncomeDetailPage } from "@/pages/income-detail"
 import { ReimbursementsPage } from "@/pages/reimbursements"
+import { FinancesPage } from "@/pages/finances"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
@@ -154,6 +155,7 @@ function AppContent() {
           <Route path="/incomes" element={<IncomesPage />} />
           <Route path="/incomes/:id" element={<IncomeDetailPage />} />
           <Route path="/reimbursements" element={<ReimbursementsPage />} />
+          <Route path="/finances" element={<FinancesPage />} />
           <Route path="/warranties" element={<WarrantiesPage />} />
           <Route path="/settings" element={<SettingsPage />}>
             <Route index element={<GeneralSettings />} />

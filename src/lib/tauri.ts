@@ -441,6 +441,12 @@ export const restoreBackup = (source: string, targetName: string | null, overwri
 
 export const exportItemsCsv = () => invoke<string>("export_items_csv")
 
+export interface YoyEngagement {
+  engagement_id: string
+  name: string
+  series: Array<{ year: string; total: number; months: number }>
+}
+
 export interface Stats {
   total_items: number
   active_items: number
@@ -449,8 +455,16 @@ export interface Stats {
   total_warranties: number
   total_attachments: number
   monthly_spending: Array<{ month: string; total: number }>
+  monthly_engagements: Array<{ month: string; total: number }>
+  monthly_subscriptions: Array<{ month: string; total: number }>
+  monthly_incomes: Array<{ month: string; total: number }>
+  engagements_by_type: Array<{ type: string; total: number; count: number }>
+  incomes_by_type: Array<{ type: string; total: number; count: number }>
+  top_creditors: Array<{ name: string; total: number }>
+  yoy_by_engagement: YoyEngagement[]
+  window_months: number
 }
-export const getStats = () => invoke<Stats>("get_stats")
+export const getStats = (months?: number) => invoke<Stats>("get_stats", { months })
 
 // File I/O commands (path-validated, replace direct plugin-fs usage)
 export const writeTextFile = (destination: string, content: string) =>

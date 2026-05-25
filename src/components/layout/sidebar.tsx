@@ -14,6 +14,7 @@ import {
   FileText,
   TrendingUp,
   HandCoins,
+  BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -39,6 +40,7 @@ const navSections: NavSection[] = [
   {
     label: "Finances",
     items: [
+      { to: "/finances", icon: BarChart3, label: "Tableau financier" },
       { to: "/engagements", icon: FileText, label: "Engagements" },
       { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
       { to: "/incomes", icon: TrendingUp, label: "Revenus" },
