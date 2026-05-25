@@ -120,6 +120,8 @@ pub fn run() {
             commands::bank_statements::suggest_matches_for_statement,
             commands::bank_statements::apply_transaction_match,
             commands::bank_statements::ignore_transaction,
+            commands::bank_statements::create_item_from_transaction,
+            commands::bank_statements::create_pending_invoice_from_transaction,
             commands::bank_statements::list_match_rules,
             commands::bank_statements::create_match_rule,
             commands::bank_statements::update_match_rule,

@@ -727,6 +727,7 @@ pub fn export_reimbursements_csv(state: State<'_, AppState>) -> Result<String, S
 pub fn get_stats(
     state: State<'_, AppState>,
     months: Option<i32>,
+    currency: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let db_guard = state
         .db
@@ -739,6 +740,14 @@ pub fn get_stats(
     // scan of every table on every dashboard load. 24 months covers YoY
     // comparison, which is the heaviest the analytics page asks for.
     let months = months.unwrap_or(12).clamp(1, 24);
+
+    // All monetary aggregates are scoped to one currency. Mixing CHF+EUR+USD
+    // in a single SUM produces a number with no unit; the UI surfaces the
+    // currency it asked for so the user knows what the totals represent.
+    let currency = currency
+        .map(|c| c.trim().to_uppercase())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "CHF".to_string());
 
     let total_items: i64 = conn
         .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -754,8 +763,9 @@ pub fn get_stats(
 
     let total_value: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(purchase_price), 0) FROM items WHERE status = 'active'",
-            [],
+            "SELECT COALESCE(SUM(purchase_price), 0) FROM items
+             WHERE status = 'active' AND currency = ?1",
+            [&currency],
             |r| r.get(0),
         )
         .unwrap_or(0.0);
@@ -781,11 +791,11 @@ pub fn get_stats(
             .prepare(
                 "SELECT strftime('%Y-%m', purchase_date) as month, SUM(purchase_price) as total
                  FROM items
-                 WHERE date(purchase_date) >= date('now', ?1)
+                 WHERE date(purchase_date) >= date('now', ?1) AND currency = ?2
                  GROUP BY month ORDER BY month",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let month: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"month": month, "total": total}))
@@ -800,11 +810,11 @@ pub fn get_stats(
             .prepare(
                 "SELECT strftime('%Y-%m', due_date) as month, SUM(amount) as total
                  FROM engagement_charges
-                 WHERE date(due_date) >= date('now', ?1)
+                 WHERE date(due_date) >= date('now', ?1) AND currency = ?2
                  GROUP BY month ORDER BY month",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let month: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"month": month, "total": total}))
@@ -819,11 +829,11 @@ pub fn get_stats(
             .prepare(
                 "SELECT strftime('%Y-%m', paid_on) as month, SUM(amount) as total
                  FROM subscription_payments
-                 WHERE date(paid_on) >= date('now', ?1)
+                 WHERE date(paid_on) >= date('now', ?1) AND currency = ?2
                  GROUP BY month ORDER BY month",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let month: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"month": month, "total": total}))
@@ -838,11 +848,11 @@ pub fn get_stats(
             .prepare(
                 "SELECT strftime('%Y-%m', received_on) as month, SUM(amount) as total
                  FROM income_receipts
-                 WHERE date(received_on) >= date('now', ?1)
+                 WHERE date(received_on) >= date('now', ?1) AND currency = ?2
                  GROUP BY month ORDER BY month",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let month: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"month": month, "total": total}))
@@ -863,12 +873,12 @@ pub fn get_stats(
                 "SELECT e.engagement_type, SUM(c.amount) as total, COUNT(*) as count
                  FROM engagement_charges c
                  JOIN engagements e ON c.engagement_id = e.id
-                 WHERE date(c.due_date) >= date('now', ?1)
+                 WHERE date(c.due_date) >= date('now', ?1) AND c.currency = ?2
                  GROUP BY e.engagement_type
                  ORDER BY total DESC",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let typ: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             let count: i64 = row.get(2)?;
@@ -885,12 +895,12 @@ pub fn get_stats(
                 "SELECT i.income_type, SUM(r.amount) as total, COUNT(*) as count
                  FROM income_receipts r
                  JOIN incomes i ON r.income_id = i.id
-                 WHERE date(r.received_on) >= date('now', ?1)
+                 WHERE date(r.received_on) >= date('now', ?1) AND r.currency = ?2
                  GROUP BY i.income_type
                  ORDER BY total DESC",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let typ: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             let count: i64 = row.get(2)?;
@@ -910,13 +920,13 @@ pub fn get_stats(
                  FROM engagement_charges c
                  JOIN engagements e ON c.engagement_id = e.id
                  JOIN creditors cr ON e.creditor_id = cr.id
-                 WHERE date(c.due_date) >= date('now', ?1)
+                 WHERE date(c.due_date) >= date('now', ?1) AND c.currency = ?2
                  GROUP BY cr.id
                  ORDER BY total DESC
                  LIMIT 8",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([&cutoff], |row| {
+        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
             let name: String = row.get(0)?;
             let total: f64 = row.get(1)?;
             Ok(serde_json::json!({"name": name, "total": total}))
@@ -937,13 +947,13 @@ pub fn get_stats(
                         SUM(c.amount) as total, COUNT(*) as months
                  FROM engagement_charges c
                  JOIN engagements e ON c.engagement_id = e.id
-                 WHERE date(c.due_date) >= date('now', ?1)
+                 WHERE date(c.due_date) >= date('now', ?1) AND c.currency = ?2
                  GROUP BY e.id, year
                  ORDER BY e.name, year",
             )
             .map_err(|e| e.to_string())?;
         let rows: Vec<(String, String, String, f64, i64)> = stmt
-            .query_map([&cutoff], |row| {
+            .query_map(rusqlite::params![&cutoff, &currency], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -989,6 +999,7 @@ pub fn get_stats(
         "top_creditors": top_creditors,
         "yoy_by_engagement": yoy_by_engagement,
         "window_months": months,
+        "display_currency": currency,
     }))
 }
 

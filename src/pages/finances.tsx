@@ -10,7 +10,7 @@ import {
 import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatPrice } from "@/lib/utils"
+import { formatPrice, DEFAULT_CURRENCY } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
@@ -98,7 +98,7 @@ export function FinancesPage() {
   const load = async () => {
     try {
       const [statsData, incData, engData, subsData, chargesData] = await Promise.all([
-        api.getStats(windowMonths),
+        api.getStats(windowMonths, DEFAULT_CURRENCY),
         api.getIncomes({ status: "active" }),
         api.getEngagements({ status: "active" }),
         api.getSubscriptions({ status: "active" }),
@@ -264,6 +264,12 @@ export function FinancesPage() {
           <p className="text-muted-foreground">
             Analyse {windowMonths} mois — revenus, dépenses, ratios et évolution des prix
           </p>
+          {stats && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Devise affichée : <span className="font-medium">{stats.display_currency}</span>
+              {" — les montants saisis dans une autre devise ne sont pas inclus."}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <VisibilityToggle

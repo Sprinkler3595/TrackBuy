@@ -87,16 +87,16 @@ pub fn get_items(
 
 /// SELECT clause used in every `Item` fetch — keeps columns and indexes
 /// aligned between queries.
-const ITEM_SELECT_COLUMNS: &str =
+pub(crate) const ITEM_SELECT_COLUMNS: &str =
     "i.id, i.description, i.purchase_date, i.purchase_price, i.currency,
      i.status, i.merchant_id, i.location_id, i.payment_card_id, i.notes,
      i.invoice_number, i.product_reference, i.quantity, i.price_excl_tax, i.tax_rate,
      i.order_id, i.item_kind, i.event_datetime, i.event_location,
-     i.expiration_date, i.redemption_url, i.redeemed_at,
+     i.expiration_date, i.redemption_url, i.redeemed_at, i.bank_transaction_id,
      i.created_at, i.updated_at,
      m.name as merchant_name, l.name as location_name, pc.name as card_name";
 
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+pub(crate) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
         id: row.get(0)?,
         description: row.get(1)?,
@@ -120,28 +120,28 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
         expiration_date: row.get(19)?,
         redemption_url: row.get(20)?,
         redeemed_at: row.get(21)?,
-        created_at: row.get(22)?,
-        updated_at: row.get(23)?,
-        merchant_name: row.get(24)?,
-        location_name: row.get(25)?,
-        card_name: row.get(26)?,
+        bank_transaction_id: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
+        merchant_name: row.get(25)?,
+        location_name: row.get(26)?,
+        card_name: row.get(27)?,
     })
 }
 
-#[tauri::command]
-pub fn create_item(
-    state: State<'_, AppState>,
-    item: CreateItemRequest,
-) -> Result<Item, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
+/// Insert a fresh item row from a `CreateItemRequest` and return its id.
+/// Extracted from `create_item` so both the bare-CRUD path and the
+/// "promote-a-bank-transaction-to-an-item" path (in `bank_statements.rs`)
+/// share the exact same insertion logic — no SQL drift between the two.
+pub(crate) fn insert_item_row(
+    conn: &rusqlite::Connection,
+    item: &CreateItemRequest,
+) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
-    let currency = item.currency.unwrap_or_else(|| "CHF".to_string());
-    let status = item.status.unwrap_or_else(|| "active".to_string());
+    let currency = item.currency.clone().unwrap_or_else(|| "CHF".to_string());
+    let status = item.status.clone().unwrap_or_else(|| "active".to_string());
     let quantity = item.quantity.unwrap_or(1);
-    let item_kind = item.item_kind.unwrap_or_else(|| "physical".to_string());
+    let item_kind = item.item_kind.clone().unwrap_or_else(|| "physical".to_string());
 
     conn.execute(
         "INSERT INTO items (id, description, purchase_date, purchase_price, currency, status,
@@ -161,7 +161,16 @@ pub fn create_item(
         ],
     ).map_err(|e| e.to_string())?;
 
-    // Return the created item with joined fields
+    Ok(id)
+}
+
+/// Fetch a single item by id, joined the same way as `get_items` so the
+/// merchant/location/card names are populated. Returned by `create_item`
+/// and `create_item_from_transaction` after their respective inserts.
+pub(crate) fn fetch_item_by_id(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Item, String> {
     let sql = format!(
         "SELECT {} FROM items i
          LEFT JOIN merchants m ON i.merchant_id = m.id
@@ -170,9 +179,20 @@ pub fn create_item(
          WHERE i.id = ?1",
         ITEM_SELECT_COLUMNS
     );
-    let created = conn.query_row(&sql, [&id], row_to_item).map_err(|e| e.to_string())?;
+    conn.query_row(&sql, [id], row_to_item).map_err(|e| e.to_string())
+}
 
-    Ok(created)
+#[tauri::command]
+pub fn create_item(
+    state: State<'_, AppState>,
+    item: CreateItemRequest,
+) -> Result<Item, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let id = insert_item_row(&conn, &item)?;
+    fetch_item_by_id(&conn, &id)
 }
 
 #[tauri::command]

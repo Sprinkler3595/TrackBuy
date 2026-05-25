@@ -29,6 +29,10 @@ export interface Item {
   expiration_date: string | null
   redemption_url: string | null
   redeemed_at: string | null
+  /// Set when the user has confirmed this item against a bank statement
+  /// line. Drives the "rapproché bancairement" chip on the items list and
+  /// excludes the item from future bank-matching suggestions.
+  bank_transaction_id: string | null
   created_at: string
   updated_at: string
   merchant_name?: string
@@ -125,8 +129,16 @@ export interface PendingInvoice {
   notes: string | null
   original_name: string
   mime_type: string
-  file_path: string
+  /// NULL for rows materialized from an orphan bank transaction (no PDF
+  /// uploaded yet); a real path once the user provides the file.
+  file_path: string | null
   size_bytes: number
+  /// Set when this pending invoice was created from a bank line that had
+  /// no matching item — the user committed to providing the PDF later.
+  source_bank_tx_id: string | null
+  expected_amount: number | null
+  expected_date: string | null
+  currency: string | null
   created_at: string
   updated_at: string
 }
@@ -468,8 +480,10 @@ export interface Stats {
   top_creditors: Array<{ name: string; total: number }>
   yoy_by_engagement: YoyEngagement[]
   window_months: number
+  display_currency: string
 }
-export const getStats = (months?: number) => invoke<Stats>("get_stats", { months })
+export const getStats = (months?: number, currency?: string) =>
+  invoke<Stats>("get_stats", { months, currency })
 
 // File I/O commands (path-validated, replace direct plugin-fs usage)
 export const writeTextFile = (destination: string, content: string) =>
@@ -1140,7 +1154,7 @@ export type BankTxTargetKind =
   | "engagement" | "engagement_charge"
   | "subscription" | "subscription_payment"
   | "income" | "income_receipt"
-  | "item" | "merchant" | "reimbursement"
+  | "item" | "item_group" | "merchant" | "reimbursement"
 
 export interface BankStatementTransaction {
   id: string
@@ -1160,6 +1174,10 @@ export interface BankStatementTransaction {
   match_rule_id: string | null
   match_status: BankTxMatchStatus
   review_notes: string | null
+  /// CSV of item ids for `match_target_kind === "item_group"` at the
+  /// suggestion stage. Materialized into a real order_id (and dropped)
+  /// once the user confirms.
+  match_group_ids: string | null
   created_at: string
   updated_at: string
   match_target_label?: string | null
@@ -1250,6 +1268,44 @@ export const applyTransactionMatch = (
 
 export const ignoreTransaction = (txId: string) =>
   invoke<void>("ignore_transaction", { txId })
+
+/// Orphan-tx flow: create a new item pre-filled from a bank line and
+/// stamp the transaction as `created` with a back-link to it.
+export const createItemFromTransaction = (
+  txId: string,
+  item: {
+    description: string
+    purchase_date: string
+    purchase_price: number
+    currency?: string
+    status?: string
+    merchant_id: string
+    location_id: string
+    payment_card_id?: string
+    notes?: string
+    invoice_number?: string
+    product_reference?: string
+    quantity?: number
+    price_excl_tax?: number
+    tax_rate?: number
+    order_id?: string
+    item_kind?: ItemKind
+    event_datetime?: string
+    event_location?: string
+    expiration_date?: string
+    redemption_url?: string
+    redeemed_at?: string
+  }
+) => invoke<Item>("create_item_from_transaction", { txId, item })
+
+/// Orphan-tx flow: enqueue a "facture à fournir plus tard" carrying the
+/// bank line's amount/date/currency. The user uploads the actual PDF
+/// from the pending-invoices page when it arrives.
+export const createPendingInvoiceFromTransaction = (
+  txId: string,
+  label?: string
+) =>
+  invoke<PendingInvoice>("create_pending_invoice_from_transaction", { txId, label })
 
 export const listMatchRules = (enabled?: boolean) =>
   invoke<BankMatchRule[]>("list_match_rules", { enabled })

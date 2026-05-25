@@ -7,10 +7,12 @@ use crate::db::models::{Attachment, PendingInvoice};
 use crate::storage;
 use crate::util::path::validate_read_source;
 
-const PENDING_INVOICE_SELECT_COLUMNS: &str =
-    "id, label, notes, original_name, mime_type, file_path, size_bytes, created_at, updated_at";
+pub(crate) const PENDING_INVOICE_SELECT_COLUMNS: &str =
+    "id, label, notes, original_name, mime_type, file_path, size_bytes,
+     source_bank_tx_id, expected_amount, expected_date, currency,
+     created_at, updated_at";
 
-fn row_to_pending_invoice(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingInvoice> {
+pub(crate) fn row_to_pending_invoice(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingInvoice> {
     Ok(PendingInvoice {
         id: row.get(0)?,
         label: row.get(1)?,
@@ -19,8 +21,12 @@ fn row_to_pending_invoice(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingIn
         mime_type: row.get(4)?,
         file_path: row.get(5)?,
         size_bytes: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        source_bank_tx_id: row.get(7)?,
+        expected_amount: row.get(8)?,
+        expected_date: row.get(9)?,
+        currency: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -187,7 +193,7 @@ pub fn delete_pending_invoice(state: State<'_, AppState>, id: String) -> Result<
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    let file_path: String = conn.query_row(
+    let file_path: Option<String> = conn.query_row(
         "SELECT file_path FROM pending_invoices WHERE id = ?1",
         [&id],
         |row| row.get(0),
@@ -196,11 +202,15 @@ pub fn delete_pending_invoice(state: State<'_, AppState>, id: String) -> Result<
     conn.execute("DELETE FROM pending_invoices WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
 
-    let vault_dir_guard = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;
-    if let Some(vault_dir) = vault_dir_guard.as_ref() {
-        let attachments_root = storage::attachments_dir(vault_dir);
-        if let Ok(resolved) = storage::resolve_attachment(&file_path, &attachments_root) {
-            let _ = storage::delete_attachment_file(resolved.to_str().unwrap_or(""));
+    // File-less rows (created from an orphan bank transaction) have nothing
+    // to shred on disk — skip the cleanup entirely.
+    if let Some(path) = file_path {
+        let vault_dir_guard = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;
+        if let Some(vault_dir) = vault_dir_guard.as_ref() {
+            let attachments_root = storage::attachments_dir(vault_dir);
+            if let Ok(resolved) = storage::resolve_attachment(&path, &attachments_root) {
+                let _ = storage::delete_attachment_file(resolved.to_str().unwrap_or(""));
+            }
         }
     }
     Ok(())
@@ -222,7 +232,7 @@ pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Resul
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    let (file_path, mime_type): (String, String) = conn
+    let (file_path, mime_type): (Option<String>, String) = conn
         .query_row(
             "SELECT file_path, mime_type FROM pending_invoices WHERE id = ?1",
             [&id],
@@ -230,6 +240,8 @@ pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Resul
         )
         .map_err(|e| e.to_string())?;
 
+    let file_path = file_path
+        .ok_or("Cette facture en attente n'a pas encore de fichier (créée depuis une transaction bancaire)")?;
     let safe_source = storage::resolve_attachment(&file_path, &attachments_root)?;
 
     let key_guard = state
@@ -272,7 +284,7 @@ pub fn attach_pending_invoice_to_item(
     // Read the pending row's metadata (label/notes are dropped — they were
     // workflow helpers and don't survive the move).
     let (pending_label, pending_original_name, pending_mime_type, pending_file_path, pending_size_bytes):
-        (Option<String>, String, String, String, i64) = conn
+        (Option<String>, String, String, Option<String>, i64) = conn
         .query_row(
             "SELECT label, original_name, mime_type, file_path, size_bytes
              FROM pending_invoices WHERE id = ?1",
@@ -280,6 +292,12 @@ pub fn attach_pending_invoice_to_item(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .map_err(|e| format!("Facture en attente introuvable: {}", e))?;
+
+    // file_path is NULL for "expected invoice" rows materialized from an
+    // orphan bank transaction. There is no file to promote — the user must
+    // first upload the PDF/image into this pending row.
+    let pending_file_path = pending_file_path
+        .ok_or("Aucun fichier à attacher : importe d'abord le PDF/image dans la facture en attente")?;
 
     // Resolve order_id when caller wants the attachment shared across the
     // whole order (mirror of add_attachment's share_with_order branch).
