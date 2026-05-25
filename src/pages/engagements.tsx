@@ -10,6 +10,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { formatPrice, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
+import { ClausesEditor } from "@/components/features/clauses-editor"
 import * as api from "@/lib/tauri"
 
 /// Groupings used for the category chips on the list page. Each maps to a
@@ -66,6 +67,7 @@ type FormState = {
   auto_pay: boolean
   status: api.EngagementStatus
   notes: string
+  clauses_json: string | null
 }
 
 const emptyForm = (): FormState => ({
@@ -87,6 +89,7 @@ const emptyForm = (): FormState => ({
   auto_pay: false,
   status: "active",
   notes: "",
+  clauses_json: null,
 })
 
 export function EngagementsPage() {
@@ -149,6 +152,7 @@ export function EngagementsPage() {
       auto_pay: e.auto_pay,
       status: e.status,
       notes: e.notes || "",
+      clauses_json: e.clauses_json,
     })
     setEditing(e)
     setShowForm(true)
@@ -186,6 +190,7 @@ export function EngagementsPage() {
           auto_pay: form.auto_pay,
           status: form.status,
           notes: form.notes || null,
+          clauses_json: form.clauses_json,
         })
         toast(t("engagements.updated"), "success")
       } else {
@@ -208,6 +213,7 @@ export function EngagementsPage() {
           auto_pay: form.auto_pay,
           status: form.status,
           notes: form.notes || null,
+          clauses_json: form.clauses_json,
         })
         toast(t("engagements.created"), "success")
       }
@@ -510,6 +516,14 @@ export function EngagementsPage() {
                   className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={form.notes}
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-2 sm:col-span-2 lg:col-span-3">
+                <label className="text-sm font-medium">{t("engagements.clauses")}</label>
+                <ClausesEditor
+                  value={form.clauses_json}
+                  onChange={(raw) => setForm({ ...form, clauses_json: raw })}
                 />
               </div>
 

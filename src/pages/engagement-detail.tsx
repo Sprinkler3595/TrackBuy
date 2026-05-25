@@ -11,6 +11,7 @@ import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
+import { ClausesEditor } from "@/components/features/clauses-editor"
 import * as api from "@/lib/tauri"
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -47,6 +48,16 @@ export function EngagementDetailPage() {
   })
   const [showRevForm, setShowRevForm] = useState(false)
 
+  // Child engagement form (creates a sub-engagement attached to this parent).
+  // Most fields inherit from the parent so the user only has to fill name +
+  // amount in the common case (rent + parking spot).
+  const [childForm, setChildForm] = useState({
+    name: "", engagement_type: "parking" as api.EngagementType,
+    amount: "", billing_cycle: "monthly" as api.EngagementBillingCycle,
+    contract_reference: "",
+  })
+  const [showChildForm, setShowChildForm] = useState(false)
+
   const load = async () => {
     if (!id) return
     try {
@@ -68,6 +79,14 @@ export function EngagementDetailPage() {
         payment_card_id: e.payment_card_id ?? "",
       }))
       setRevForm((f) => ({ ...f, amount: e.current_amount?.toString() || "" }))
+      // Default a child to "parking" when the parent is rent/leasing/mortgage
+      // (the dominant real-world use case), otherwise mirror the parent type.
+      const housingParents = new Set<api.EngagementType>(["rent", "leasing", "mortgage"])
+      setChildForm((f) => ({
+        ...f,
+        engagement_type: housingParents.has(e.engagement_type) ? "parking" : e.engagement_type,
+        billing_cycle: e.billing_cycle,
+      }))
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
     } finally {
@@ -196,6 +215,43 @@ export function EngagementDetailPage() {
       toast("Révision ajoutée", "success")
       setShowRevForm(false)
       setRevForm({ effective_date: today(), amount: "", change_reason: "", notes: "" })
+      await load()
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
+  const submitChild = async (ev: React.FormEvent) => {
+    ev.preventDefault()
+    if (!childForm.name.trim()) return
+    const amount = childForm.amount ? parseFloat(childForm.amount) : null
+    if (childForm.amount && (Number.isNaN(amount as number) || (amount as number) < 0)) {
+      toast("Montant invalide", "error")
+      return
+    }
+    try {
+      // Inherit creditor/payment card/method from parent so quick-adds (a
+      // parking spot under a rent) match the parent without extra clicks.
+      // The user can refine on the child's detail page if needed.
+      await api.createEngagement({
+        name: childForm.name.trim(),
+        engagement_type: childForm.engagement_type,
+        parent_engagement_id: e.id,
+        creditor_id: e.creditor_id,
+        payment_card_id: e.payment_card_id,
+        contract_reference: childForm.contract_reference || null,
+        billing_cycle: childForm.billing_cycle,
+        cycle_interval: 1,
+        next_due_date: e.next_due_date,
+        current_amount: amount,
+        currency: e.currency,
+        payment_method: e.payment_method,
+        auto_pay: e.auto_pay,
+        status: "active",
+      })
+      toast(t("engagements.created"), "success")
+      setShowChildForm(false)
+      setChildForm((f) => ({ ...f, name: "", amount: "", contract_reference: "" }))
       await load()
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
@@ -365,6 +421,12 @@ export function EngagementDetailPage() {
                   <p className="whitespace-pre-wrap">{e.notes}</p>
                 </div>
               )}
+              {e.clauses_json && (
+                <div className="pt-2 border-t space-y-2">
+                  <p className="text-xs text-muted-foreground">{t("engagements.clauses")}</p>
+                  <ClausesEditor value={e.clauses_json} onChange={() => {}} readOnly />
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -529,25 +591,144 @@ export function EngagementDetailPage() {
         />
       )}
 
-      {tab === "children" && (
+      {tab === "children" && (() => {
+        const childMonthly = children
+          .filter((c) => c.current_amount != null && c.billing_cycle !== "one_shot")
+          .reduce((acc, c) => acc + monthlyEquivalent(c.current_amount as number, c.billing_cycle, c.cycle_interval), 0)
+        const aggregated = monthly + childMonthly
+        return (
         <div className="space-y-3">
-          {children.length === 0 ? (
-            <Card><CardContent className="py-8 text-center text-muted-foreground">Aucun sous-engagement. Créez-en un depuis la page Engagements et choisissez celui-ci comme parent.</CardContent></Card>
-          ) : children.map((c) => (
-            <Card key={c.id}>
-              <CardContent className="p-3 flex items-center justify-between gap-3">
-                <Link to={`/engagements/${c.id}`} className="min-w-0 flex-1">
-                  <p className="font-medium truncate">{c.name}</p>
-                  <p className="text-xs text-muted-foreground">{t(`engagements.type.${c.engagement_type}` as keyof TranslationKeys)}</p>
-                </Link>
-                {c.current_amount != null && (
-                  <p className="font-semibold shrink-0">{formatPrice(c.current_amount, c.currency)}</p>
-                )}
+          {children.length > 0 && (
+            <Card className="bg-muted/30">
+              <CardContent className="p-4 grid sm:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">Parent /mois</p>
+                  <p className="text-xl font-semibold">{formatPrice(monthly, e.currency)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Sous-engagements /mois</p>
+                  <p className="text-xl font-semibold">{formatPrice(childMonthly, e.currency)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Total /mois</p>
+                  <p className="text-2xl font-bold text-primary">{formatPrice(aggregated, e.currency)}</p>
+                </div>
               </CardContent>
             </Card>
-          ))}
+          )}
+
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => setShowChildForm((v) => !v)}>
+              <Plus className="h-4 w-4" />{t("engagements.addChild")}
+            </Button>
+          </div>
+
+          {showChildForm && (
+            <Card>
+              <CardContent className="pt-4">
+                <form onSubmit={submitChild} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="text-sm font-medium">{t("engagements.name")} *</label>
+                    <Input
+                      value={childForm.name}
+                      onChange={(ev) => setChildForm({ ...childForm, name: ev.target.value })}
+                      placeholder="ex: Place de parc n°12"
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{t("engagements.type")}</label>
+                    <select
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      value={childForm.engagement_type}
+                      onChange={(ev) => setChildForm({ ...childForm, engagement_type: ev.target.value as api.EngagementType })}
+                    >
+                      <option value="parking">{t("engagements.type.parking")}</option>
+                      <option value="rent">{t("engagements.type.rent")}</option>
+                      <option value="leasing">{t("engagements.type.leasing")}</option>
+                      <option value="electricity">{t("engagements.type.electricity")}</option>
+                      <option value="gas">{t("engagements.type.gas")}</option>
+                      <option value="water">{t("engagements.type.water")}</option>
+                      <option value="heating">{t("engagements.type.heating")}</option>
+                      <option value="fee">{t("engagements.type.fee")}</option>
+                      <option value="other">{t("engagements.type.other")}</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{t("engagements.currentAmount")} *</label>
+                    <Input
+                      type="number" step="0.01" min="0"
+                      value={childForm.amount}
+                      onChange={(ev) => setChildForm({ ...childForm, amount: ev.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{t("engagements.billingCycle")}</label>
+                    <select
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      value={childForm.billing_cycle}
+                      onChange={(ev) => setChildForm({ ...childForm, billing_cycle: ev.target.value as api.EngagementBillingCycle })}
+                    >
+                      <option value="monthly">{t("engagements.cycleMonthly")}</option>
+                      <option value="quarterly">{t("engagements.cycleQuarterly")}</option>
+                      <option value="semiannual">{t("engagements.cycleSemiannual")}</option>
+                      <option value="yearly">{t("engagements.cycleYearly")}</option>
+                      <option value="one_shot">{t("engagements.cycleOneShot")}</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="text-sm font-medium">{t("engagements.contractRef")}</label>
+                    <Input
+                      value={childForm.contract_reference}
+                      onChange={(ev) => setChildForm({ ...childForm, contract_reference: ev.target.value })}
+                      placeholder="ex: Box 17 - sous-sol B"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-4">
+                    Créancier, moyen de paiement, prochaine échéance et auto-paiement sont hérités du parent. Modifiable ensuite depuis le sous-engagement.
+                  </p>
+                  <div className="flex gap-2 sm:col-span-2 lg:col-span-4">
+                    <Button type="submit" size="sm">{t("common.add")}</Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setShowChildForm(false)}>{t("common.cancel")}</Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          )}
+
+          {children.length === 0 ? (
+            <Card><CardContent className="py-8 text-center text-muted-foreground">Aucun sous-engagement. Ajoutez par exemple une place de parc rattachée à ce loyer.</CardContent></Card>
+          ) : children.map((c) => {
+            const cMonthly = c.current_amount != null && c.billing_cycle !== "one_shot"
+              ? monthlyEquivalent(c.current_amount, c.billing_cycle, c.cycle_interval)
+              : 0
+            return (
+              <Card key={c.id}>
+                <CardContent className="p-3 flex items-center justify-between gap-3">
+                  <Link to={`/engagements/${c.id}`} className="min-w-0 flex-1">
+                    <p className="font-medium truncate">{c.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t(`engagements.type.${c.engagement_type}` as keyof TranslationKeys)}
+                      {c.contract_reference && ` · ${c.contract_reference}`}
+                    </p>
+                  </Link>
+                  <div className="text-right shrink-0">
+                    {c.current_amount != null && (
+                      <p className="font-semibold">{formatPrice(c.current_amount, c.currency)}</p>
+                    )}
+                    {cMonthly > 0 && cMonthly !== c.current_amount && (
+                      <p className="text-xs text-muted-foreground">≈ {formatPrice(cMonthly, c.currency)}/mois</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
         </div>
-      )}
+        )
+      })()}
 
       <ConfirmDialog
         open={deleteEngagementOpen}
