@@ -2,6 +2,7 @@ pub mod ai;
 pub mod attachments;
 pub mod auth;
 pub mod backup;
+pub mod bank_statements;
 pub mod cards;
 pub mod creditors;
 pub mod engagements;

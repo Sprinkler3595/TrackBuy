@@ -665,3 +665,112 @@ pub struct CreateReimbursementRequest {
     pub status: Option<String>,
     pub notes: Option<String>,
 }
+
+// =====================================================================
+// Bank statements: monthly PDF imported, parsed by AI, then each line
+// matched to an engagement_charge / subscription_payment / item /
+// income_receipt / reimbursement. Patterns learned during review live in
+// `bank_match_rules` to auto-suggest matches on the next month.
+// =====================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankStatement {
+    pub id: String,
+    pub label: Option<String>,
+    pub bank_name: Option<String>,
+    pub account_iban: Option<String>,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub statement_date: Option<String>,
+    pub opening_balance: Option<f64>,
+    pub closing_balance: Option<f64>,
+    pub currency: String,
+    pub file_path: String,
+    pub original_name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    /// 'pending' | 'extracted' | 'reviewed' | 'archived'
+    pub status: String,
+    pub extracted_at: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankStatementTransaction {
+    pub id: String,
+    pub statement_id: String,
+    pub transaction_date: String,
+    pub booking_date: Option<String>,
+    pub raw_description: String,
+    pub cleaned_description: Option<String>,
+    /// Always positive — direction tells whether it's a debit or credit.
+    pub amount: f64,
+    pub currency: String,
+    /// 'debit' | 'credit'
+    pub direction: String,
+    pub reference_number: Option<String>,
+    pub counterparty_iban: Option<String>,
+    /// 'engagement_charge' | 'subscription_payment' | 'income_receipt'
+    /// | 'item' | 'reimbursement' | NULL
+    pub match_target_kind: Option<String>,
+    pub match_target_id: Option<String>,
+    pub match_confidence: Option<f64>,
+    pub match_rule_id: Option<String>,
+    /// 'unmatched' | 'suggested' | 'confirmed' | 'created' | 'ignored'
+    pub match_status: String,
+    pub review_notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// Display name of the matched target, joined for the review screen.
+    #[serde(skip_deserializing)]
+    pub match_target_label: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExtractedTransactionInput {
+    pub transaction_date: String,
+    pub booking_date: Option<String>,
+    pub raw_description: String,
+    pub amount: f64,
+    pub currency: Option<String>,
+    pub direction: String,
+    pub reference_number: Option<String>,
+    pub counterparty_iban: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BankMatchRule {
+    pub id: String,
+    pub pattern: String,
+    /// 'substring' | 'regex'
+    pub pattern_kind: String,
+    /// 'debit' | 'credit' | NULL
+    pub direction: Option<String>,
+    pub amount_min: Option<f64>,
+    pub amount_max: Option<f64>,
+    /// 'engagement' | 'subscription' | 'income' | 'merchant' | 'reimbursement'
+    pub target_kind: String,
+    pub target_id: String,
+    pub learned: bool,
+    pub enabled: bool,
+    pub hit_count: i64,
+    pub last_hit_at: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateBankMatchRuleRequest {
+    pub pattern: String,
+    pub pattern_kind: Option<String>,
+    pub direction: Option<String>,
+    pub amount_min: Option<f64>,
+    pub amount_max: Option<f64>,
+    pub target_kind: String,
+    pub target_id: String,
+    pub learned: Option<bool>,
+    pub notes: Option<String>,
+}

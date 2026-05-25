@@ -1088,3 +1088,173 @@ export const addReimbursementAttachment = (
     displayName,
     attachmentType,
   })
+
+// ============================================================================
+// Bank statements: PDF/image import → AI extraction → match review →
+// learned rules. Companion of `ai_extract_bank_statement` on the Rust side.
+// ============================================================================
+
+export type BankStatementStatus = "pending" | "extracted" | "reviewed" | "archived"
+
+export interface BankStatement {
+  id: string
+  label: string | null
+  bank_name: string | null
+  account_iban: string | null
+  period_start: string | null
+  period_end: string | null
+  statement_date: string | null
+  opening_balance: number | null
+  closing_balance: number | null
+  currency: string
+  file_path: string
+  original_name: string
+  mime_type: string
+  size_bytes: number
+  status: BankStatementStatus
+  extracted_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type BankTxDirection = "debit" | "credit"
+export type BankTxMatchStatus = "unmatched" | "suggested" | "confirmed" | "created" | "ignored"
+export type BankTxTargetKind =
+  | "engagement" | "engagement_charge"
+  | "subscription" | "subscription_payment"
+  | "income" | "income_receipt"
+  | "item" | "merchant" | "reimbursement"
+
+export interface BankStatementTransaction {
+  id: string
+  statement_id: string
+  transaction_date: string
+  booking_date: string | null
+  raw_description: string
+  cleaned_description: string | null
+  amount: number
+  currency: string
+  direction: BankTxDirection
+  reference_number: string | null
+  counterparty_iban: string | null
+  match_target_kind: BankTxTargetKind | null
+  match_target_id: string | null
+  match_confidence: number | null
+  match_rule_id: string | null
+  match_status: BankTxMatchStatus
+  review_notes: string | null
+  created_at: string
+  updated_at: string
+  match_target_label?: string | null
+}
+
+export interface ExtractedTransactionInput {
+  transaction_date: string
+  booking_date?: string | null
+  raw_description: string
+  amount: number
+  currency?: string
+  direction: BankTxDirection
+  reference_number?: string | null
+  counterparty_iban?: string | null
+}
+
+export interface BankMatchRule {
+  id: string
+  pattern: string
+  pattern_kind: "substring" | "regex"
+  direction: BankTxDirection | null
+  amount_min: number | null
+  amount_max: number | null
+  target_kind: BankTxTargetKind
+  target_id: string
+  learned: boolean
+  enabled: boolean
+  hit_count: number
+  last_hit_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ExtractedTransaction {
+  date: string
+  booking_date: string | null
+  description: string
+  amount: number
+  currency: string
+  direction: BankTxDirection
+  reference: string | null
+  counterparty_iban: string | null
+}
+
+export const addBankStatement = (
+  sourcePath: string,
+  label?: string,
+  bankName?: string
+) => invoke<BankStatement>("add_bank_statement", { sourcePath, label, bankName })
+
+export const listBankStatements = (params?: { status?: string }) =>
+  invoke<BankStatement[]>("list_bank_statements", params ?? {})
+
+export const getBankStatement = (id: string) =>
+  invoke<BankStatement>("get_bank_statement", { id })
+
+export const deleteBankStatement = (id: string) =>
+  invoke<void>("delete_bank_statement", { id })
+
+export const getBankStatementData = (id: string) =>
+  invoke<string>("get_bank_statement_data", { id })
+
+export const saveExtractedTransactions = (
+  statementId: string,
+  transactions: ExtractedTransactionInput[]
+) =>
+  invoke<number>("save_extracted_transactions", { statementId, transactions })
+
+export const listStatementTransactions = (statementId: string) =>
+  invoke<BankStatementTransaction[]>("list_statement_transactions", { statementId })
+
+export const suggestMatchesForStatement = (statementId: string) =>
+  invoke<number>("suggest_matches_for_statement", { statementId })
+
+export const applyTransactionMatch = (
+  txId: string,
+  targetKind: BankTxTargetKind,
+  targetId: string,
+  learnRule?: boolean
+) =>
+  invoke<BankStatementTransaction>("apply_transaction_match", {
+    txId,
+    targetKind,
+    targetId,
+    learnRule,
+  })
+
+export const ignoreTransaction = (txId: string) =>
+  invoke<void>("ignore_transaction", { txId })
+
+export const listMatchRules = (enabled?: boolean) =>
+  invoke<BankMatchRule[]>("list_match_rules", { enabled })
+
+export const createMatchRule = (rule: {
+  pattern: string
+  pattern_kind?: "substring" | "regex"
+  direction?: BankTxDirection | null
+  amount_min?: number | null
+  amount_max?: number | null
+  target_kind: BankTxTargetKind
+  target_id: string
+  learned?: boolean
+  notes?: string | null
+}) => invoke<BankMatchRule>("create_match_rule", { rule })
+
+export const updateMatchRule = (rule: BankMatchRule) =>
+  invoke<void>("update_match_rule", { rule })
+
+export const deleteMatchRule = (id: string) =>
+  invoke<void>("delete_match_rule", { id })
+
+export const aiExtractBankStatement = (text: string, config: unknown) =>
+  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config })

@@ -50,6 +50,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 11 {
         migrate_v11(conn)?;
     }
+    if current_version < 12 {
+        migrate_v12(conn)?;
+    }
 
     Ok(())
 }
@@ -901,6 +904,107 @@ fn migrate_v11(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (11);
         "
     ).map_err(|e| format!("Migration v11 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Bank statement import & transaction matching. A monthly PDF (or image)
+/// is ingested as an encrypted attachment, the AI command
+/// `ai_extract_bank_statement` parses each line, and the user validates
+/// each transaction against a target (engagement_charge, subscription
+/// payment, item, income_receipt, reimbursement). Patterns learned during
+/// validation are persisted in `bank_match_rules` so the next month's
+/// statement pre-fills the same matches automatically.
+///
+/// Tables added :
+/// - `bank_statements`     : header (bank name, period, file path, status)
+/// - `bank_statement_transactions` : one row per parsed line, carries the
+///   match target (polymorphic via `match_target_kind` + `match_target_id`)
+///   and the workflow status (unmatched / suggested / confirmed / created /
+///   ignored).
+/// - `bank_match_rules`    : libellé pattern → target binding. `hit_count`
+///   surfaces noisy rules.
+fn migrate_v12(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE bank_statements (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            bank_name TEXT,
+            account_iban TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            statement_date TEXT,
+            opening_balance REAL,
+            closing_balance REAL,
+            currency TEXT NOT NULL DEFAULT 'CHF',
+            file_path TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            extracted_at TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_bank_statements_status ON bank_statements(status);
+        CREATE INDEX idx_bank_statements_period ON bank_statements(period_start, period_end);
+
+        -- Match rules first: bank_statement_transactions FK back to it via
+        -- match_rule_id, so the rules table must exist when the txn table
+        -- declares its constraint.
+        CREATE TABLE bank_match_rules (
+            id TEXT PRIMARY KEY,
+            pattern TEXT NOT NULL,
+            pattern_kind TEXT NOT NULL DEFAULT 'substring',
+            direction TEXT,
+            amount_min REAL,
+            amount_max REAL,
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            learned INTEGER NOT NULL DEFAULT 1,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            last_hit_at TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_match_rules_enabled ON bank_match_rules(enabled);
+        CREATE INDEX idx_match_rules_target ON bank_match_rules(target_kind, target_id);
+
+        CREATE TABLE bank_statement_transactions (
+            id TEXT PRIMARY KEY,
+            statement_id TEXT NOT NULL,
+            transaction_date TEXT NOT NULL,
+            booking_date TEXT,
+            raw_description TEXT NOT NULL,
+            cleaned_description TEXT,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            reference_number TEXT,
+            counterparty_iban TEXT,
+            match_target_kind TEXT,
+            match_target_id TEXT,
+            match_confidence REAL,
+            match_rule_id TEXT,
+            match_status TEXT NOT NULL DEFAULT 'unmatched',
+            review_notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (statement_id) REFERENCES bank_statements(id) ON DELETE CASCADE,
+            FOREIGN KEY (match_rule_id) REFERENCES bank_match_rules(id) ON DELETE SET NULL
+        );
+        CREATE INDEX idx_bank_tx_statement ON bank_statement_transactions(statement_id);
+        CREATE INDEX idx_bank_tx_status ON bank_statement_transactions(match_status);
+        CREATE INDEX idx_bank_tx_target ON bank_statement_transactions(match_target_kind, match_target_id);
+        CREATE INDEX idx_bank_tx_date ON bank_statement_transactions(transaction_date);
+
+        INSERT INTO schema_version (version) VALUES (12);
+        "
+    ).map_err(|e| format!("Migration v12 failed: {}", e))?;
 
     Ok(())
 }

@@ -15,6 +15,7 @@ import {
   TrendingUp,
   HandCoins,
   BarChart3,
+  Banknote,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -45,6 +46,7 @@ const navSections: NavSection[] = [
       { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
       { to: "/incomes", icon: TrendingUp, label: "Revenus" },
       { to: "/reimbursements", icon: HandCoins, label: "Remboursements" },
+      { to: "/bank-statements", icon: Banknote, label: "Relevés bancaires" },
     ],
   },
   {

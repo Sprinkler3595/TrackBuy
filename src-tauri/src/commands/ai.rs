@@ -109,6 +109,112 @@ pub async fn ai_extract_receipt(
     Ok(parse_extracted(&value))
 }
 
+const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Préfère omettre une transaction plutôt que d'en inventer une.";
+
+const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction.
+
+RÈGLES :
+1. `date` = date de transaction au format YYYY-MM-DD. Si une seule date est donnée par ligne, c'est elle. Si deux dates apparaissent (valeur vs comptable), utilise la valeur dans `date` et la comptable dans `booking_date`.
+2. `description` = libellé brut tel qu'il apparaît sur la ligne, y compris la contre-partie / le commerçant / le motif. Ne raccourcis pas.
+3. `amount` = TOUJOURS un nombre POSITIF (jamais négatif). La direction est portée par `direction`.
+4. `direction` = "debit" si l'argent sort du compte, "credit" s'il y entre.
+5. `currency` = code ISO (CHF / EUR / USD…). Défaut CHF si non précisé.
+6. `reference` = suite numérique de référence BVR / QR-bill quand elle apparaît en fin de libellé (souvent 26-27 chiffres). null sinon.
+7. `counterparty_iban` = IBAN de la contre-partie si visible (CH/LI 21 caractères). null sinon.
+
+IGNORE absolument :
+- Les en-têtes du relevé (nom titulaire, adresse, IBAN du compte, période)
+- Les lignes de solde (« Solde au … », « Saldo … », « Balance forward »)
+- Les totaux mensuels (« Total débits », « Total crédits », « Net mouvement »)
+- Les lignes sans montant
+- Les notes explicatives en bas de page
+
+FORMAT DE RÉPONSE (JSON strict) :
+{
+  "transactions": [
+    {
+      "date": "YYYY-MM-DD",
+      "booking_date": "YYYY-MM-DD"|null,
+      "description": string,
+      "amount": number,
+      "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
+      "direction": "debit"|"credit",
+      "reference": string|null,
+      "counterparty_iban": string|null
+    }
+  ]
+}
+
+TEXTE DU RELEVÉ (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedTransaction {
+    pub date: String,
+    pub booking_date: Option<String>,
+    pub description: String,
+    pub amount: f64,
+    pub currency: String,
+    pub direction: String,
+    pub reference: Option<String>,
+    pub counterparty_iban: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ai_extract_bank_statement(
+    text: String,
+    config: AiConfig,
+) -> Result<Vec<ExtractedTransaction>, String> {
+    let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
+    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt).await?;
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+
+    let arr = value
+        .get("transactions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut out = Vec::with_capacity(arr.len());
+    for tx in arr {
+        let date = tx.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let description = tx.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let amount = tx.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0).abs();
+        let direction = tx
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| "debit".to_string());
+        // Skip junk rows the model occasionally surfaces (empty date, empty
+        // libellé, zero amount). Better to drop them than to litter the
+        // review screen with phantom entries.
+        if date.is_empty() || description.trim().is_empty() || amount <= 0.0 {
+            continue;
+        }
+        out.push(ExtractedTransaction {
+            date,
+            booking_date: tx.get("booking_date").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            description,
+            amount,
+            currency: tx
+                .get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("CHF")
+                .to_string(),
+            direction,
+            reference: tx.get("reference").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            counterparty_iban: tx
+                .get("counterparty_iban")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn ai_test_connection(config: AiConfig) -> Result<String, String> {
     let reply = call_provider(
