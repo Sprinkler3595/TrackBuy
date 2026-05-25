@@ -364,7 +364,16 @@ async fn call_infomaniak(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Requête Infomaniak: {}", e))?;
+        .map_err(|e| {
+            let raw = e.to_string();
+            if e.is_connect() {
+                format!("Impossible de joindre api.infomaniak.com — vérifie ta connexion internet. Détail : {}", raw)
+            } else if e.is_timeout() {
+                format!("Infomaniak n'a pas répondu en 120 s. Détail : {}", raw)
+            } else {
+                format!("Requête Infomaniak : {}", raw)
+            }
+        })?;
 
     // Si le modèle ne supporte pas json_schema (modèles plus anciens),
     // Infomaniak renvoie un 400. On retombe alors automatiquement sur
@@ -441,11 +450,36 @@ async fn call_ollama(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Requête Ollama: {}", e))?;
+        .map_err(|e| {
+            // reqwest's send() error happens BEFORE the server sees the
+            // request — connection refused / timed out / DNS failed. Turn
+            // it into something actionable instead of the raw error.
+            let raw = e.to_string();
+            if e.is_connect() {
+                format!(
+                    "Impossible de joindre Ollama à {}. Vérifie qu'Ollama est bien lancé (commande `ollama serve` dans un terminal, ou ouvre l'app Ollama sur macOS). Détail : {}",
+                    base, raw
+                )
+            } else if e.is_timeout() {
+                format!(
+                    "Ollama à {} n'a pas répondu en 120 s. Le modèle est peut-être trop gros pour ta machine, ou la première inférence est en train de charger le modèle en RAM — réessaie dans une minute. Détail : {}",
+                    base, raw
+                )
+            } else {
+                format!("Requête Ollama : {}", raw)
+            }
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        // 404 sur /api/chat = modèle inconnu — message dédié plus utile.
+        if status.as_u16() == 404 && text.contains("model") {
+            return Err(format!(
+                "Ollama ne connaît pas le modèle « {} ». Lance `ollama pull {}` dans un terminal pour le télécharger, ou choisis-en un autre dans Réglages → Général. Réponse brute : {}",
+                config.model, config.model, text
+            ));
+        }
         return Err(format!("Ollama {}: {}", status, text));
     }
 
