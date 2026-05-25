@@ -1,6 +1,5 @@
 import { useState } from "react"
 import { Banknote, FileText, Landmark, Upload } from "lucide-react"
-import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { BankStatementsPage } from "@/pages/bank-statements"
 import { FinancesPage } from "@/pages/finances"
@@ -8,11 +7,13 @@ import { Camt053Import } from "@/components/features/camt053-import"
 
 type Tab = "overview" | "statements"
 
-/// Lightweight tabbed shell that fuses the existing finances overview and
-/// bank statements list under a single "Banque" entry. Adds the CamT.053
-/// importer in the toolbar — recommended path versus the PDF + AI fallback.
+/// Lightweight tabbed shell that surfaces the existing finances overview and
+/// bank statements list under a single "Banque" entry. The sub-pages keep
+/// their own layouts — we render them straight (no wrapper Card) so any
+/// internal links or in-page navigation behave exactly like on /finances and
+/// /bank-statements respectively.
 export function BanquePage() {
-  const [tab, setTab] = useState<Tab>("overview")
+  const [tab, setTab] = useState<Tab>("statements")
   const [camtOpen, setCamtOpen] = useState(false)
 
   return (
@@ -24,7 +25,7 @@ export function BanquePage() {
             Banque
           </h1>
           <p className="text-sm text-muted-foreground">
-            Vue d'ensemble financière et imports de relevés.
+            Importez vos relevés et explorez votre vue d'ensemble financière.
           </p>
         </div>
         <Button onClick={() => setCamtOpen(true)} variant="outline">
@@ -34,29 +35,17 @@ export function BanquePage() {
       </div>
 
       <div className="flex gap-2 border-b">
-        <TabButton active={tab === "overview"} onClick={() => setTab("overview")}>
-          <Banknote className="mr-2 inline h-4 w-4" />
-          Vue d'ensemble
-        </TabButton>
         <TabButton active={tab === "statements"} onClick={() => setTab("statements")}>
           <FileText className="mr-2 inline h-4 w-4" />
           Relevés
         </TabButton>
+        <TabButton active={tab === "overview"} onClick={() => setTab("overview")}>
+          <Banknote className="mr-2 inline h-4 w-4" />
+          Vue d'ensemble
+        </TabButton>
       </div>
 
-      {tab === "overview" ? (
-        <Card>
-          <CardContent className="p-0">
-            <FinancesPage />
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent className="p-0">
-            <BankStatementsPage />
-          </CardContent>
-        </Card>
-      )}
+      {tab === "overview" ? <FinancesPage /> : <BankStatementsPage />}
 
       {camtOpen && <Camt053Import onClose={() => setCamtOpen(false)} />}
     </div>

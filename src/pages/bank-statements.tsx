@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { Plus, Trash2, Banknote, FileText, CheckCircle2, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -20,6 +20,7 @@ export function BankStatementsPage() {
   const [loading, setLoading] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const { toast } = useToast()
+  const navigate = useNavigate()
 
   const load = async () => {
     try {
@@ -46,8 +47,11 @@ export function BankStatementsPage() {
       toast("Relevé importé", "success")
       await load()
       // The next step is extraction — we redirect right into the review
-      // page so the user can launch the AI parser straight away.
-      window.location.hash = `#/bank-statements/${stmt.id}/review`
+      // page so the user can launch the AI parser straight away. Use the
+      // router's navigate(), not window.location.hash, since we run under
+      // BrowserRouter (history API) — a hash change wouldn't trigger a
+      // route match here.
+      navigate(`/bank-statements/${stmt.id}/review`)
     } catch (e) {
       toast(`Erreur: ${e}`, "error")
     }

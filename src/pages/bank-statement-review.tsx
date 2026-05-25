@@ -81,8 +81,12 @@ export function BankStatementReviewPage() {
   const [statement, setStatement] = useState<api.BankStatement | null>(null)
   const [transactions, setTransactions] = useState<api.BankStatementTransaction[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
+  // Re-read on each render — cheap localStorage lookup, and lets the banner
+  // disappear immediately once the user toggles the AI on in Settings.
+  const aiEnabled = getAiSettings().enabled
 
   // Candidate pool: we load every entity the user might want to match to.
   // Doing this once at mount lets the inline picker stay snappy without
@@ -104,6 +108,7 @@ export function BankStatementReviewPage() {
 
   const load = async () => {
     if (!id) return
+    setLoadError(null)
     try {
       const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList] = await Promise.all([
         api.getBankStatement(id),
@@ -140,17 +145,43 @@ export function BankStatementReviewPage() {
       for (const r of reimb) pool.push({ kind: "reimbursement", id: r.id, label: r.label })
       setCandidates(pool)
     } catch (err) {
-      toast(`Erreur: ${err}`, "error")
+      const msg = String(err)
+      setLoadError(msg)
+      toast(`Erreur: ${msg}`, "error")
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [id])
 
-  if (loading || !statement) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (loadError || !statement) {
+    return (
+      <div className="space-y-4 p-6">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/bank-statements")}>
+          <ArrowLeft className="h-4 w-4" />
+          Retour aux relevés
+        </Button>
+        <Card>
+          <CardContent className="space-y-3 p-6">
+            <h2 className="text-lg font-semibold text-destructive">
+              Impossible de charger ce relevé
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {loadError ?? "Le relevé n'a pas été trouvé. Il a peut-être été supprimé."}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              ID : <code className="rounded bg-muted px-1 font-mono">{id}</code>
+            </p>
+          </CardContent>
+        </Card>
       </div>
     )
   }
@@ -426,6 +457,28 @@ export function BankStatementReviewPage() {
           )}
         </div>
       </div>
+
+      {!aiEnabled && transactions.length === 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="space-y-2 p-4 text-sm">
+            <p className="font-semibold text-amber-900 dark:text-amber-200">
+              ⚠ L'IA n'est pas configurée
+            </p>
+            <p className="text-muted-foreground">
+              Pour extraire les transactions d'un PDF, activez d'abord un fournisseur
+              (Infomaniak ou Ollama) dans <strong>Réglages → Général → Extraction IA</strong>.
+              Sans cette étape, le bouton « Extraire avec IA » ne pourra pas parser le PDF.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate("/settings")}
+            >
+              Configurer l'IA
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {transactions.length > 0 && (
         <div className="grid gap-4 md:grid-cols-3">
