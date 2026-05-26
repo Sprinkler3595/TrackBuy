@@ -5,6 +5,7 @@ pub mod backup;
 pub mod bank_statements;
 pub mod camt053;
 pub mod cards;
+pub mod classify;
 pub mod creditors;
 pub mod engagements;
 pub mod household;

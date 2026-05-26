@@ -183,6 +183,7 @@ pub fn run() {
             commands::camt053::parse_camt053_text,
             commands::swiss_seed::seed_swiss_creditors,
             commands::this_month::get_this_month,
+            commands::classify::classify_transactions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TrackBuy");

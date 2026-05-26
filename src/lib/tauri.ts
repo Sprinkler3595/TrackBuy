@@ -1506,3 +1506,32 @@ export interface ThisMonthSummary {
 
 export const getThisMonth = () =>
   invoke<ThisMonthSummary>("get_this_month")
+
+// ===========================================================================
+// Bank transaction classifier — enrichit chaque ligne d'un relevé avec
+// marchand reconnu, catégorie de dépense, ville et hint fiscal.
+// ===========================================================================
+
+export interface Classification {
+  merchant: string | null
+  payment_method:
+    | "apple_pay"
+    | "twint"
+    | "qr_bill"
+    | "lsv"
+    | "withdrawal"
+    | "credit_card"
+    | null
+  category: string | null
+  tax_category: TaxCategory | null
+  city: string | null
+  confidence: number
+}
+
+export interface ClassifyResult extends Classification {
+  id: string
+}
+
+export const classifyTransactions = (
+  items: Array<{ id: string; description: string }>,
+) => invoke<ClassifyResult[]>("classify_transactions", { items })

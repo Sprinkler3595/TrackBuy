@@ -115,6 +115,31 @@ async function extractPdfText(base64: string): Promise<string> {
   return pages.join("\n\n--- PAGE BREAK ---\n\n")
 }
 
+// Étiquettes FR pour les catégories renvoyées par le classifier Rust.
+const CATEGORY_LABEL: Record<string, string> = {
+  courses: "Courses",
+  restaurant: "Restaurant",
+  carburant: "Carburant",
+  sante: "Santé",
+  transport: "Transport",
+  telecom: "Télécom",
+  streaming: "Abonnement en ligne",
+  shopping: "Shopping",
+  loisirs: "Loisirs",
+  maison: "Maison",
+  habillement: "Habillement",
+  retrait: "Retrait d'espèces",
+}
+
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  apple_pay: "Apple Pay",
+  twint: "Twint",
+  qr_bill: "QR-facture",
+  lsv: "LSV",
+  withdrawal: "Retrait",
+  credit_card: "Carte",
+}
+
 interface TargetCandidate {
   kind: api.BankTxTargetKind
   id: string
@@ -155,6 +180,10 @@ export function BankStatementReviewPage() {
 
   const [statement, setStatement] = useState<api.BankStatement | null>(null)
   const [transactions, setTransactions] = useState<api.BankStatementTransaction[]>([])
+  // Enrichissement marchand/catégorie/mode-paiement par transaction id —
+  // remplit l'écart entre un libellé Apple Pay brut et ce que l'utilisateur
+  // veut savoir d'un coup d'œil (« Migros · Courses · Marin-Epagnier »).
+  const [classifications, setClassifications] = useState<Record<string, api.Classification>>({})
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
@@ -202,6 +231,28 @@ export function BankStatementReviewPage() {
       setMerchants(mList)
       setLocations(lList)
       setCards(cList)
+
+      // Lance la classification en arrière-plan dès qu'on a les
+      // transactions. Pas bloquant — la liste s'affiche tout de suite et
+      // les chips marchand/catégorie apparaissent progressivement.
+      if (txs.length > 0) {
+        api
+          .classifyTransactions(
+            txs.map((t) => ({ id: t.id, description: t.raw_description })),
+          )
+          .then((results) => {
+            const map: Record<string, api.Classification> = {}
+            for (const r of results) {
+              const { id, ...rest } = r
+              map[id] = rest
+            }
+            setClassifications(map)
+          })
+          .catch(() => {
+            // Échec silencieux : la classification est un bonus, pas un
+            // bloquant. La review reste utilisable sans.
+          })
+      }
 
       // Restrict the item pool to the statement period ±7 days — outside
       // that window an item can't reasonably correspond to a line on this
@@ -637,6 +688,40 @@ export function BankStatementReviewPage() {
                         )}
                         {t.reference_number && <span className="text-xs text-muted-foreground/60 font-mono">{t.reference_number}</span>}
                       </div>
+                      {/* Enrichissement auto-calculé : marchand canonique +
+                          catégorie + mode de paiement détectés depuis le
+                          libellé. Donne en un coup d'œil "Migros · Courses ·
+                          Marin-Epagnier" là où le libellé brut PostFinance
+                          enterre l'info dans 80 caractères de boilerplate. */}
+                      {classifications[t.id] && (classifications[t.id].merchant || classifications[t.id].payment_method) && (
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          {classifications[t.id].merchant && (
+                            <Badge variant="outline" className="text-[10px]">
+                              {classifications[t.id].merchant}
+                            </Badge>
+                          )}
+                          {classifications[t.id].category && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {CATEGORY_LABEL[classifications[t.id].category!] ?? classifications[t.id].category}
+                            </Badge>
+                          )}
+                          {classifications[t.id].payment_method && (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              {PAYMENT_METHOD_LABEL[classifications[t.id].payment_method!] ?? classifications[t.id].payment_method}
+                            </Badge>
+                          )}
+                          {classifications[t.id].city && (
+                            <span className="text-[10px] text-muted-foreground">
+                              📍 {classifications[t.id].city}
+                            </span>
+                          )}
+                          {classifications[t.id].tax_category && (
+                            <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-700 dark:text-amber-300">
+                              Déductible ({classifications[t.id].tax_category})
+                            </Badge>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className={cn("font-semibold shrink-0 tabular-nums", isCredit ? "text-green-600" : "text-destructive")}>
                       {isCredit ? "+" : "−"} {formatPrice(t.amount, t.currency)}
