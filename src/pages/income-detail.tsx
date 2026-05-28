@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
@@ -27,6 +28,7 @@ export function IncomeDetailPage() {
   const [income, setIncome] = useState<api.Income | null>(null)
   const [receipts, setReceipts] = useState<api.IncomeReceipt[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>("overview")
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteReceiptTarget, setDeleteReceiptTarget] = useState<string | null>(null)
@@ -50,6 +52,7 @@ export function IncomeDetailPage() {
 
   const load = async () => {
     if (!id) return
+    setLoading(true)
     try {
       const [inc, recs] = await Promise.all([
         api.getIncome(id),
@@ -58,20 +61,26 @@ export function IncomeDetailPage() {
       setIncome(inc)
       setReceipts(recs)
       setForm((f) => ({ ...f, amount: inc.current_amount?.toString() || "" }))
+      setError(null)
     } catch (err) {
-      toast(`Erreur: ${err}`, "error")
+      const msg = String(err)
+      setError(msg)
+      toast(`Erreur: ${msg}`, "error")
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [id])
 
-  if (loading || !income) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     )
+  }
+  if (error || !income) {
+    return <ErrorPanel error={error ?? "Revenu introuvable"} onRetry={() => { void load() }} />
   }
 
   const i = income
@@ -452,7 +461,7 @@ export function IncomeDetailPage() {
 
       <ConfirmDialog
         open={deleteOpen}
-        title={t("incomes.deleted")}
+        title={t("incomes.deleteTitle")}
         message={t("incomes.deleteConfirm")}
         confirmLabel={t("common.delete")}
         variant="destructive"

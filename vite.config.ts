@@ -6,7 +6,7 @@ import path from "node:path"
 // Tauri expects a fixed port and to be told the host
 const host = process.env.TAURI_DEV_HOST
 
-export default defineConfig(async () => ({
+export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -31,8 +31,8 @@ export default defineConfig(async () => ({
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
     target:
-      process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
-    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
+      process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari15",
+    minify: (!process.env.TAURI_ENV_DEBUG ? "esbuild" : false) as "esbuild" | false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
   },
 }))

@@ -1,5 +1,6 @@
 import { useEffect, useCallback } from "react"
 import * as api from "@/lib/tauri"
+import { shouldDedupNotification, recordNotificationFired } from "./use-notifications"
 
 async function notify(title: string, body: string): Promise<void> {
   try {
@@ -20,17 +21,28 @@ async function notify(title: string, body: string): Promise<void> {
   }
 }
 
-export function useSubscriptionNotifications() {
+async function notifyOnce(fp: string, title: string, body: string): Promise<void> {
+  if (shouldDedupNotification(fp)) return
+  await notify(title, body)
+  recordNotificationFired(fp)
+}
+
+export function useSubscriptionNotifications(enabled: boolean) {
   const checkAll = useCallback(async () => {
+    if (!enabled) return
     try {
       const upcoming = await api.getUpcomingRenewals(7)
       if (upcoming.length === 1) {
-        await notify(
+        const s = upcoming[0]
+        await notifyOnce(
+          `subscription:${s.id}:${s.next_renewal_date}`,
           "TrackBuy — Abonnements",
-          `L'abonnement "${upcoming[0].name}" se renouvelle bientôt!`,
+          `L'abonnement "${s.name}" se renouvelle bientôt!`,
         )
       } else if (upcoming.length > 1) {
-        await notify(
+        const fp = `subscriptions-batch:${upcoming.map((s) => s.id).sort().join(",")}`
+        await notifyOnce(
+          fp,
           "TrackBuy — Abonnements",
           `${upcoming.length} abonnements se renouvellent dans 7 jours!`,
         )
@@ -38,11 +50,12 @@ export function useSubscriptionNotifications() {
     } catch {
       /* silent */
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
+    if (!enabled) return
     checkAll()
     const interval = setInterval(checkAll, 6 * 60 * 60 * 1000)
     return () => clearInterval(interval)
-  }, [checkAll])
+  }, [checkAll, enabled])
 }

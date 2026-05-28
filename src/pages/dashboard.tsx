@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { formatPrice, formatDate, daysUntil } from "@/lib/utils"
 import { monthlyEquivalent as engagementMonthlyEquivalent } from "@/lib/finance"
 import { MaskedAmount, useAmountsVisible } from "@/components/features/amount-masked"
+import { useI18n } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
 /// Normalise a subscription's price to its per-month equivalent so the
@@ -22,6 +23,7 @@ function monthlyEquivalent(s: api.Subscription): number {
 }
 
 export function DashboardPage() {
+  const { locale } = useI18n()
   const [amountsVisible] = useAmountsVisible()
   const [items, setItems] = useState<api.Item[]>([])
   const [expiring, setExpiring] = useState<api.Warranty[]>([])
@@ -256,8 +258,13 @@ export function DashboardPage() {
                 return data.map((d) => {
                   const height = (d.total / maxVal) * 100
                   const label = d.month.substring(5) // "MM" from "YYYY-MM"
-                  const months = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"]
-                  const monthLabel = months[parseInt(label) - 1] || label
+                  // Use Intl so the bar labels follow the user's locale
+                  // (the array was previously hard-coded French).
+                  const monthIdx = parseInt(label) - 1
+                  const monthLabel = monthIdx >= 0 && monthIdx < 12
+                    ? new Intl.DateTimeFormat(locale === "fr" ? "fr-CH" : "en-US", { month: "short" })
+                        .format(new Date(2000, monthIdx, 1))
+                    : label
                   return (
                     <div key={d.month} className="flex-1 flex flex-col items-center gap-1 min-w-0">
                       <span className="text-[10px] text-muted-foreground whitespace-nowrap">

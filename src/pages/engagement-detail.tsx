@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
@@ -30,6 +31,7 @@ export function EngagementDetailPage() {
   const [revisions, setRevisions] = useState<api.EngagementRevision[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>("overview")
   const [deleteEngagementOpen, setDeleteEngagementOpen] = useState(false)
   const [deleteChargeTarget, setDeleteChargeTarget] = useState<string | null>(null)
@@ -60,6 +62,7 @@ export function EngagementDetailPage() {
 
   const load = async () => {
     if (!id) return
+    setLoading(true)
     try {
       const [e, ch, rev, kids, cs] = await Promise.all([
         api.getEngagement(id),
@@ -87,20 +90,26 @@ export function EngagementDetailPage() {
         engagement_type: housingParents.has(e.engagement_type) ? "parking" : e.engagement_type,
         billing_cycle: e.billing_cycle,
       }))
+      setError(null)
     } catch (err) {
-      toast(`Erreur: ${err}`, "error")
+      const msg = String(err)
+      setError(msg)
+      toast(`Erreur: ${msg}`, "error")
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [id])
 
-  if (loading || !engagement) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     )
+  }
+  if (error || !engagement) {
+    return <ErrorPanel error={error ?? "Engagement introuvable"} onRetry={() => { void load() }} />
   }
 
   const e = engagement
@@ -146,6 +155,10 @@ export function EngagementDetailPage() {
     const amount = parseFloat(chargeForm.amount)
     if (!chargeForm.due_date || Number.isNaN(amount)) {
       toast("Date et montant requis", "error")
+      return
+    }
+    if (amount < 0) {
+      toast("Le montant doit être positif", "error")
       return
     }
     try {
@@ -458,7 +471,7 @@ export function EngagementDetailPage() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t("charges.amount")} *</label>
-                    <Input type="number" step="0.01" value={chargeForm.amount} onChange={(ev) => setChargeForm({ ...chargeForm, amount: ev.target.value })} required />
+                    <Input type="number" step="0.01" min="0" value={chargeForm.amount} onChange={(ev) => setChargeForm({ ...chargeForm, amount: ev.target.value })} required />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t("charges.reference")}</label>
@@ -546,7 +559,7 @@ export function EngagementDetailPage() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{t("revisions.amount")} *</label>
-                    <Input type="number" step="0.01" value={revForm.amount} onChange={(ev) => setRevForm({ ...revForm, amount: ev.target.value })} required />
+                    <Input type="number" step="0.01" min="0" value={revForm.amount} onChange={(ev) => setRevForm({ ...revForm, amount: ev.target.value })} required />
                   </div>
                   <div className="space-y-2 sm:col-span-2">
                     <label className="text-sm font-medium">{t("revisions.changeReason")}</label>
@@ -738,7 +751,7 @@ export function EngagementDetailPage() {
 
       <ConfirmDialog
         open={deleteEngagementOpen}
-        title={t("engagements.deleted")}
+        title={t("engagements.deleteTitle")}
         message={t("engagements.deleteConfirm")}
         confirmLabel={t("common.delete")}
         variant="destructive"

@@ -10,6 +10,7 @@ import {
 import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { ErrorPanel } from "@/components/ui/error-panel"
 import { formatPrice, DEFAULT_CURRENCY } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
@@ -94,8 +95,10 @@ export function FinancesPage() {
   const [windowMonths, setWindowMonths] = useState<12 | 24>(12)
   const [amountsVisible, setAmountsVisible] = useAmountsVisible()
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const load = async () => {
+    setLoading(true)
     try {
       const [statsData, incData, engData, subsData, chargesData] = await Promise.all([
         api.getStats(windowMonths, DEFAULT_CURRENCY),
@@ -112,8 +115,10 @@ export function FinancesPage() {
       if (!selectedEngagementId && engData.length > 0) {
         setSelectedEngagementId(engData[0].id)
       }
+      setError(null)
     } catch (err) {
       console.error(err)
+      setError(String(err))
     } finally {
       setLoading(false)
     }
@@ -237,12 +242,15 @@ export function FinancesPage() {
     return pivotYoyByCategory(stats.engagements_by_type, stats.yoy_by_engagement)
   }, [stats])
 
-  if (loading || !stats) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     )
+  }
+  if (error || !stats) {
+    return <ErrorPanel error={error ?? "Statistiques indisponibles"} onRetry={() => { void load() }} />
   }
 
   const fmt = (v: number) => formatPrice(v)

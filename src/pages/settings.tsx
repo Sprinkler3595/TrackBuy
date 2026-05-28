@@ -13,6 +13,7 @@ import {
   Shield,
   Repeat,
   HandCoins,
+  Undo2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
@@ -39,7 +40,7 @@ export function SettingsPage() {
     { to: "/warranties", end: false, icon: Shield, label: locale === "fr" ? "Garanties" : "Warranties" },
     { to: "/subscriptions", end: false, icon: Repeat, label: locale === "fr" ? "Abonnements" : "Subscriptions" },
     { to: "/incomes", end: false, icon: HandCoins, label: locale === "fr" ? "Revenus" : "Incomes" },
-    { to: "/reimbursements", end: false, icon: HandCoins, label: locale === "fr" ? "Remboursements" : "Reimbursements" },
+    { to: "/reimbursements", end: false, icon: Undo2, label: locale === "fr" ? "Remboursements" : "Reimbursements" },
   ]
 
   return (

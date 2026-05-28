@@ -519,18 +519,21 @@ pub fn add_bank_statement(
     let key = key_guard.as_ref().ok_or("No encryption key")?;
     let key_bytes: &[u8; 32] = key;
     let file_path = storage::save_attachment(vault_dir, &id, &data, key_bytes)?;
+    let abs_file_path = storage::attachments_dir(vault_dir).join(&file_path);
 
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT INTO bank_statements (id, label, bank_name, file_path, original_name,
          mime_type, size_bytes)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![id, label, bank_name, file_path, original_name, mime_type, size_bytes],
-    )
-    .map_err(|e| e.to_string())?;
+    ) {
+        let _ = storage::delete_attachment_file(&abs_file_path.to_string_lossy());
+        return Err(e.to_string());
+    }
 
     let sql = format!("SELECT {} FROM bank_statements WHERE id = ?1", STATEMENT_COLUMNS);
     conn.query_row(&sql, [&id], row_to_statement)
@@ -630,7 +633,20 @@ pub fn save_extracted_transactions(
 ) -> Result<i32, String> {
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Validate inputs BEFORE touching the DB. Re-extraction wipes the
+    // previous extraction, so any per-row validation error after the DELETE
+    // would leave the user with neither the old nor the new extraction.
+    for tx in &transactions {
+        let direction = tx.direction.trim().to_lowercase();
+        if direction != "debit" && direction != "credit" {
+            return Err(format!(
+                "Direction invalide '{}' pour la transaction « {} » — attendu 'debit' ou 'credit'.",
+                tx.direction, tx.raw_description
+            ));
+        }
+    }
 
     // Refuse re-extraction when the user has already confirmed/materialized
     // any match on this statement — wiping those rows would also orphan the
@@ -652,12 +668,16 @@ pub fn save_extracted_transactions(
         ));
     }
 
-    // Drop any previous extraction so the user can re-run without dupes.
-    conn.execute(
-        "DELETE FROM bank_statement_transactions WHERE statement_id = ?1",
-        [&statement_id],
-    )
-    .map_err(|e| e.to_string())?;
+    // Wrap DELETE + INSERTs + UPDATE in one transaction. Without this, a
+    // failure mid-loop would have already destroyed the previous extraction
+    // and left the user with a half-populated statement.
+    let tx_db = conn.transaction().map_err(|e| e.to_string())?;
+    tx_db
+        .execute(
+            "DELETE FROM bank_statement_transactions WHERE statement_id = ?1",
+            [&statement_id],
+        )
+        .map_err(|e| e.to_string())?;
 
     let mut inserted = 0;
     for tx in &transactions {
@@ -667,47 +687,41 @@ pub fn save_extracted_transactions(
             .currency
             .clone()
             .unwrap_or_else(|| "CHF".to_string());
-        // Normalize direction so case/whitespace variants from the AI
-        // ("Debit", " DEBIT ", "Credit") don't silently break every
-        // downstream matcher that compares with == "debit".
         let direction = tx.direction.trim().to_lowercase();
-        if direction != "debit" && direction != "credit" {
-            return Err(format!(
-                "Direction invalide '{}' pour la transaction « {} » — attendu 'debit' ou 'credit'.",
-                tx.direction, tx.raw_description
-            ));
-        }
-        conn.execute(
-            "INSERT INTO bank_statement_transactions (id, statement_id, transaction_date,
+        tx_db
+            .execute(
+                "INSERT INTO bank_statement_transactions (id, statement_id, transaction_date,
              booking_date, raw_description, cleaned_description, amount, currency, direction,
              reference_number, counterparty_iban, match_status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'unmatched')",
-            rusqlite::params![
-                id,
-                statement_id,
-                tx.transaction_date,
-                tx.booking_date,
-                tx.raw_description,
-                cleaned,
-                tx.amount,
-                currency,
-                direction,
-                tx.reference_number,
-                tx.counterparty_iban,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+                rusqlite::params![
+                    id,
+                    statement_id,
+                    tx.transaction_date,
+                    tx.booking_date,
+                    tx.raw_description,
+                    cleaned,
+                    tx.amount,
+                    currency,
+                    direction,
+                    tx.reference_number,
+                    tx.counterparty_iban,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
         inserted += 1;
     }
 
-    conn.execute(
-        "UPDATE bank_statements SET status = 'extracted',
+    tx_db
+        .execute(
+            "UPDATE bank_statements SET status = 'extracted',
          extracted_at = datetime('now'), updated_at = datetime('now')
          WHERE id = ?1",
-        [&statement_id],
-    )
-    .map_err(|e| e.to_string())?;
+            [&statement_id],
+        )
+        .map_err(|e| e.to_string())?;
 
+    tx_db.commit().map_err(|e| e.to_string())?;
     Ok(inserted)
 }
 

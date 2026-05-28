@@ -14,6 +14,14 @@ export type TranslationKeys = {
   "nav.vaults": string
   "nav.settings": string
   "nav.lock": string
+  "nav.thisMonth": string
+  "nav.inbox": string
+  "nav.bank": string
+  "nav.taxes": string
+  "nav.scan": string
+  "nav.finances": string
+  "nav.section.library": string
+  "nav.section.tools": string
 
   // Common
   "common.add": string
@@ -102,6 +110,16 @@ export type TranslationKeys = {
   "unlock.unlocking": string
   "unlock.existingVault": string
   "unlock.newVault": string
+  "unlock.vault": string
+  "unlock.createCard": string
+  "unlock.createDesc": string
+  "unlock.unlockDesc": string
+  "unlock.cryptoLabel": string
+  "unlock.vaultPlaceholder": string
+  "unlock.strength.weak": string
+  "unlock.strength.fair": string
+  "unlock.strength.good": string
+  "unlock.strength.strong": string
 
   // Settings
   "settings.title": string
@@ -296,6 +314,7 @@ export type TranslationKeys = {
   "engagements.totalMonthlyCost": string
   "engagements.noEngagements": string
   "engagements.deleteConfirm": string
+  "engagements.deleteTitle": string
   "engagements.created": string
   "engagements.updated": string
   "engagements.deleted": string
@@ -434,6 +453,7 @@ export type TranslationKeys = {
   "incomes.statusActive": string
   "incomes.statusEnded": string
   "incomes.deleteConfirm": string
+  "incomes.deleteTitle": string
   "incomes.created": string
   "incomes.updated": string
   "incomes.deleted": string
@@ -498,6 +518,7 @@ export type TranslationKeys = {
   "reimbursements.updated": string
   "reimbursements.deleted": string
   "reimbursements.deleteConfirm": string
+  "reimbursements.deleteTitle": string
   "reimbursements.tabPending": string
   "reimbursements.tabClaimed": string
   "reimbursements.tabSettled": string
@@ -529,6 +550,14 @@ const translations: Record<Locale, TranslationKeys> = {
     "nav.vaults": "Coffres",
     "nav.settings": "Paramètres",
     "nav.lock": "Verrouiller",
+    "nav.thisMonth": "Ce mois",
+    "nav.inbox": "Inbox",
+    "nav.bank": "Banque",
+    "nav.taxes": "Impôts",
+    "nav.scan": "Scanner",
+    "nav.finances": "Finances",
+    "nav.section.library": "Bibliothèque",
+    "nav.section.tools": "Outils",
 
     "common.add": "Ajouter",
     "common.edit": "Modifier",
@@ -618,6 +647,16 @@ const translations: Record<Locale, TranslationKeys> = {
     "unlock.unlocking": "Déverrouillage...",
     "unlock.existingVault": "Déverrouiller un coffre existant",
     "unlock.newVault": "Créer un nouveau coffre",
+    "unlock.vault": "Coffre",
+    "unlock.createCard": "Créer un coffre",
+    "unlock.createDesc": "Créez un mot de passe maître pour chiffrer vos données",
+    "unlock.unlockDesc": "Entrez le mot de passe pour \"{vault}\"",
+    "unlock.cryptoLabel": "Chiffrement AES-256 + ChaCha20-Poly1305 | Argon2id",
+    "unlock.vaultPlaceholder": "Maison",
+    "unlock.strength.weak": "Faible",
+    "unlock.strength.fair": "Moyen",
+    "unlock.strength.good": "Bon",
+    "unlock.strength.strong": "Fort",
 
     "settings.title": "Paramètres",
     "settings.appearance": "Apparence",
@@ -794,6 +833,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "engagements.totalMonthlyCost": "Coût mensuel total",
     "engagements.noEngagements": "Aucun engagement enregistré.",
     "engagements.deleteConfirm": "Cet engagement, ses échéances, ses révisions et ses pièces jointes seront supprimés définitivement.",
+    "engagements.deleteTitle": "Supprimer cet engagement ?",
     "engagements.created": "Engagement créé",
     "engagements.updated": "Engagement modifié",
     "engagements.deleted": "Engagement supprimé",
@@ -927,6 +967,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.statusActive": "Actif",
     "incomes.statusEnded": "Terminé",
     "incomes.deleteConfirm": "Ce revenu, son historique et les bulletins associés seront supprimés définitivement.",
+    "incomes.deleteTitle": "Supprimer ce revenu ?",
     "incomes.created": "Revenu créé",
     "incomes.updated": "Revenu modifié",
     "incomes.deleted": "Revenu supprimé",
@@ -989,6 +1030,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reimbursements.updated": "Remboursement modifié",
     "reimbursements.deleted": "Remboursement supprimé",
     "reimbursements.deleteConfirm": "Ce remboursement et ses pièces jointes seront supprimés définitivement.",
+    "reimbursements.deleteTitle": "Supprimer ce remboursement ?",
     "reimbursements.tabPending": "À demander",
     "reimbursements.tabClaimed": "Demandés",
     "reimbursements.tabSettled": "Reçus",
@@ -1019,6 +1061,14 @@ const translations: Record<Locale, TranslationKeys> = {
     "nav.vaults": "Vaults",
     "nav.settings": "Settings",
     "nav.lock": "Lock",
+    "nav.thisMonth": "This month",
+    "nav.inbox": "Inbox",
+    "nav.bank": "Bank",
+    "nav.taxes": "Taxes",
+    "nav.scan": "Scan",
+    "nav.finances": "Finances",
+    "nav.section.library": "Library",
+    "nav.section.tools": "Tools",
 
     "common.add": "Add",
     "common.edit": "Edit",
@@ -1108,6 +1158,16 @@ const translations: Record<Locale, TranslationKeys> = {
     "unlock.unlocking": "Unlocking...",
     "unlock.existingVault": "Unlock an existing vault",
     "unlock.newVault": "Create a new vault",
+    "unlock.vault": "Vault",
+    "unlock.createCard": "Create a vault",
+    "unlock.createDesc": "Pick a master password to encrypt your data",
+    "unlock.unlockDesc": "Enter the password for \"{vault}\"",
+    "unlock.cryptoLabel": "Encryption AES-256 + ChaCha20-Poly1305 | Argon2id",
+    "unlock.vaultPlaceholder": "Home",
+    "unlock.strength.weak": "Weak",
+    "unlock.strength.fair": "Fair",
+    "unlock.strength.good": "Good",
+    "unlock.strength.strong": "Strong",
 
     "settings.title": "Settings",
     "settings.appearance": "Appearance",
@@ -1284,6 +1344,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "engagements.totalMonthlyCost": "Total monthly cost",
     "engagements.noEngagements": "No engagements recorded yet.",
     "engagements.deleteConfirm": "This engagement, its charges, revisions and attachments will be permanently deleted.",
+    "engagements.deleteTitle": "Delete this engagement?",
     "engagements.created": "Engagement created",
     "engagements.updated": "Engagement updated",
     "engagements.deleted": "Engagement deleted",
@@ -1417,6 +1478,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.statusActive": "Active",
     "incomes.statusEnded": "Ended",
     "incomes.deleteConfirm": "This income, its history and the associated payslips will be permanently deleted.",
+    "incomes.deleteTitle": "Delete this income?",
     "incomes.created": "Income created",
     "incomes.updated": "Income updated",
     "incomes.deleted": "Income deleted",
@@ -1479,6 +1541,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reimbursements.updated": "Reimbursement updated",
     "reimbursements.deleted": "Reimbursement deleted",
     "reimbursements.deleteConfirm": "This reimbursement and its attachments will be permanently deleted.",
+    "reimbursements.deleteTitle": "Delete this reimbursement?",
     "reimbursements.tabPending": "To claim",
     "reimbursements.tabClaimed": "Claimed",
     "reimbursements.tabSettled": "Received",

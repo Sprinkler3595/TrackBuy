@@ -10,7 +10,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { CsvImport } from "@/components/features/csv-import"
 import { ItemThumbnail, invalidateThumbnail } from "@/components/features/item-thumbnail"
 import { QuickCreateDialog, type QuickCreateEntity } from "@/components/features/quick-create-dialog"
-import { DocSlot, type PickedFileValue } from "@/components/features/doc-slot"
+import { DocSlot } from "@/components/features/doc-slot"
 import { formatPrice, formatDate } from "@/lib/utils"
 import { findMerchantByName } from "@/lib/fuzzy-match"
 import { itemsToCsv, itemsToJson, downloadExport } from "@/lib/export"
@@ -236,6 +236,30 @@ export function ItemsPage() {
     }
   }, [loading, searchParams, merchants, setSearchParams, toast])
 
+  const handleEdit = (item: api.Item) => {
+    setForm({
+      description: item.description,
+      purchase_date: item.purchase_date,
+      purchase_price: String(item.purchase_price),
+      currency: item.currency || "CAD",
+      merchant_id: item.merchant_id,
+      location_id: item.location_id,
+      payment_card_id: item.payment_card_id || "",
+      notes: item.notes || "",
+      status: item.status,
+      invoice_number: item.invoice_number || "",
+      product_reference: item.product_reference || "",
+      quantity: String(item.quantity ?? 1),
+      price_excl_tax: item.price_excl_tax != null ? String(item.price_excl_tax) : "",
+      tax_rate: item.tax_rate != null ? String(item.tax_rate) : "",
+    })
+    setEditingItem(item)
+    setShowForm(true)
+    if (item.invoice_number || item.product_reference || item.price_excl_tax != null || item.tax_rate != null) {
+      setShowDetails(true)
+    }
+  }
+
   // Open the edit form when navigating with ?edit=<id> (from the detail page)
   useEffect(() => {
     if (loading) return
@@ -298,30 +322,6 @@ export function ItemsPage() {
     setSingleFiles({ photo: null, invoice: null, purchase_order: null })
     setSharedDocs({ invoice: null, purchase_order: null })
     setWarrantyHint(null)
-  }
-
-  const handleEdit = (item: api.Item) => {
-    setForm({
-      description: item.description,
-      purchase_date: item.purchase_date,
-      purchase_price: String(item.purchase_price),
-      currency: item.currency || "CAD",
-      merchant_id: item.merchant_id,
-      location_id: item.location_id,
-      payment_card_id: item.payment_card_id || "",
-      notes: item.notes || "",
-      status: item.status,
-      invoice_number: item.invoice_number || "",
-      product_reference: item.product_reference || "",
-      quantity: String(item.quantity ?? 1),
-      price_excl_tax: item.price_excl_tax != null ? String(item.price_excl_tax) : "",
-      tax_rate: item.tax_rate != null ? String(item.tax_rate) : "",
-    })
-    setEditingItem(item)
-    setShowForm(true)
-    if (item.invoice_number || item.product_reference || item.price_excl_tax != null || item.tax_rate != null) {
-      setShowDetails(true)
-    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {

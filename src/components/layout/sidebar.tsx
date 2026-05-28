@@ -10,23 +10,56 @@ import {
   Moon,
   Sun,
   Monitor,
+  ShoppingBag,
+  Shield,
+  Ticket,
+  Repeat,
+  HandCoins,
+  Undo2,
+  ScanLine,
+  LineChart,
+  LayoutDashboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
+import { useI18n, type TranslationKeys } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 
-// Swiss-first navigation (six entries) replacing the old eleven-entry layout.
-// Items, Tickets, Warranties, Subscriptions, Reimbursements et l'ancien
-// dashboard sont accessibles via les sous-vues de Ce mois / Banque / Réglages.
-type NavItem = { to: string; icon: typeof Home; label: string }
+// Three-section navigation. Previously the sidebar exposed only six entries
+// while the app had 30+ pages — most were reachable only via deep links.
+type NavItem = { to: string; icon: typeof Home; labelKey: keyof TranslationKeys }
+type NavSection = { headingKey: keyof TranslationKeys | null; items: NavItem[] }
 
-const navItems: NavItem[] = [
-  { to: "/ce-mois", icon: Home, label: "Ce mois" },
-  { to: "/inbox", icon: Inbox, label: "Inbox" },
-  { to: "/engagements", icon: FileText, label: "Engagements" },
-  { to: "/banque", icon: Landmark, label: "Banque" },
-  { to: "/impots", icon: Receipt, label: "Impôts" },
-  { to: "/settings", icon: Settings, label: "Réglages" },
+const navSections: NavSection[] = [
+  {
+    headingKey: null,
+    items: [
+      { to: "/ce-mois", icon: Home, labelKey: "nav.thisMonth" },
+      { to: "/inbox", icon: Inbox, labelKey: "nav.inbox" },
+      { to: "/engagements", icon: FileText, labelKey: "nav.engagements" },
+      { to: "/banque", icon: Landmark, labelKey: "nav.bank" },
+      { to: "/impots", icon: Receipt, labelKey: "nav.taxes" },
+    ],
+  },
+  {
+    headingKey: "nav.section.library",
+    items: [
+      { to: "/items", icon: ShoppingBag, labelKey: "nav.items" },
+      { to: "/warranties", icon: Shield, labelKey: "nav.warranties" },
+      { to: "/subscriptions", icon: Repeat, labelKey: "nav.subscriptions" },
+      { to: "/tickets", icon: Ticket, labelKey: "nav.tickets" },
+      { to: "/incomes", icon: HandCoins, labelKey: "nav.incomes" },
+      { to: "/reimbursements", icon: Undo2, labelKey: "nav.reimbursements" },
+    ],
+  },
+  {
+    headingKey: "nav.section.tools",
+    items: [
+      { to: "/scan", icon: ScanLine, labelKey: "nav.scan" },
+      { to: "/finances", icon: LineChart, labelKey: "nav.finances" },
+      { to: "/dashboard", icon: LayoutDashboard, labelKey: "nav.dashboard" },
+    ],
+  },
 ]
 
 interface SidebarProps {
@@ -36,6 +69,7 @@ interface SidebarProps {
 
 export function Sidebar({ onLock, vaultName }: SidebarProps) {
   const { theme, setTheme } = useTheme()
+  const { t } = useI18n()
 
   const nextTheme = () => {
     const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"]
@@ -44,6 +78,12 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
   }
 
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor
+  const themeLabel =
+    theme === "dark"
+      ? t("settings.dark")
+      : theme === "light"
+        ? t("settings.light")
+        : t("settings.system")
 
   return (
     <aside className="flex h-screen w-64 flex-col border-r bg-sidebar text-sidebar-foreground">
@@ -59,24 +99,49 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        {navItems.map(({ to, icon: Icon, label }) => (
+      <nav className="flex-1 space-y-3 overflow-y-auto p-3">
+        {navSections.map((section, i) => (
+          <div key={i} className="space-y-1">
+            {section.headingKey && (
+              <h2 className="px-3 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                {t(section.headingKey)}
+              </h2>
+            )}
+            {section.items.map(({ to, icon: Icon, labelKey }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  )
+                }
+              >
+                <Icon className="h-4 w-4" />
+                {t(labelKey)}
+              </NavLink>
+            ))}
+          </div>
+        ))}
+        <div className="space-y-1 pt-1">
           <NavLink
-            key={to}
-            to={to}
+            to="/settings"
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 isActive
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
               )
             }
           >
-            <Icon className="h-4 w-4" />
-            {label}
+            <Settings className="h-4 w-4" />
+            {t("nav.settings")}
           </NavLink>
-        ))}
+        </div>
       </nav>
 
       {/* Footer */}
@@ -88,7 +153,7 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
           onClick={nextTheme}
         >
           <ThemeIcon className="h-4 w-4" />
-          {theme === "dark" ? "Sombre" : theme === "light" ? "Clair" : "Système"}
+          {themeLabel}
         </Button>
         <Button
           variant="ghost"
@@ -97,7 +162,7 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
           onClick={onLock}
         >
           <Lock className="h-4 w-4" />
-          Verrouiller
+          {t("nav.lock")}
         </Button>
       </div>
     </aside>

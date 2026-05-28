@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { Plus, Vault, Check, Download, Upload, AlertTriangle } from "lucide-react"
+import { Plus, Vault, Check, Download, Upload, AlertTriangle, Check as CheckIcon, X as XIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
+import { evaluatePassword } from "@/lib/password"
 import * as api from "@/lib/tauri"
 
 interface VaultsPageProps {
@@ -33,6 +34,10 @@ export function VaultsPage({ onSwitchVault }: VaultsPageProps) {
 
   const { toast } = useToast()
   const navigate = useNavigate()
+
+  // Same rule as the primary unlock screen — secondary vaults must not be
+  // protected by a weaker password than the first one.
+  const pwdEval = useMemo(() => evaluatePassword(newPassword), [newPassword])
 
   const load = async () => { try { setVaults(await api.listVaults()) } catch (e) { console.error(e) } finally { setLoading(false) } }
 
@@ -104,6 +109,10 @@ export function VaultsPage({ onSwitchVault }: VaultsPageProps) {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!pwdEval.ok) {
+      toast("Mot de passe trop faible : voir les règles ci-dessous.", "error")
+      return
+    }
     try {
       await api.createVault(newName, newPassword)
       setShowCreate(false); setNewName(""); setNewPassword("")
@@ -123,8 +132,9 @@ export function VaultsPage({ onSwitchVault }: VaultsPageProps) {
       setSwitchTarget(null); setSwitchPassword("")
       toast(`Basculé sur « ${target} »`, "success")
       // Navigate away from any stale detail URL that might reference items
-      // from the previous vault.
-      navigate("/dashboard", { replace: true })
+      // from the previous vault. /ce-mois is the canonical landing page in
+      // the new IA — /dashboard is kept reachable but is no longer the home.
+      navigate("/ce-mois", { replace: true })
     } catch (e) {
       toast(`Mot de passe incorrect ou erreur: ${e}`, "error")
     }
@@ -231,8 +241,29 @@ export function VaultsPage({ onSwitchVault }: VaultsPageProps) {
           <CardContent>
             <form onSubmit={handleCreate} className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2"><label className="text-sm font-medium">Nom *</label><Input value={newName} onChange={(e) => setNewName(e.target.value)} required autoFocus /></div>
-              <div className="space-y-2"><label className="text-sm font-medium">Mot de passe *</label><Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={8} /></div>
-              <div className="flex gap-2 sm:col-span-2"><Button type="submit">Créer</Button><Button type="button" variant="outline" onClick={() => setShowCreate(false)}>Annuler</Button></div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Mot de passe *</label>
+                <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={12} />
+                {newPassword.length > 0 && (
+                  <ul className="space-y-1 pt-1">
+                    {pwdEval.checks.map((c) => (
+                      <li
+                        key={c.label}
+                        className={`flex items-center gap-1.5 text-xs ${
+                          c.ok ? "text-green-600 dark:text-green-500" : "text-muted-foreground"
+                        }`}
+                      >
+                        {c.ok ? <CheckIcon className="h-3 w-3" /> : <XIcon className="h-3 w-3" />}
+                        {c.label}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex gap-2 sm:col-span-2">
+                <Button type="submit" disabled={!pwdEval.ok}>Créer</Button>
+                <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>Annuler</Button>
+              </div>
             </form>
           </CardContent>
         </Card>

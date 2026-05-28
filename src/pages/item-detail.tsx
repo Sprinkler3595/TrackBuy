@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Edit, ShoppingBag, Layers } from "lucide-react"
+import { ArrowLeft, Edit, ShoppingBag, Layers, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { useToast } from "@/components/ui/toast"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { WarrantyPanel } from "@/components/features/warranty-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { AttachmentViewer } from "@/components/features/attachment-viewer"
@@ -38,6 +40,8 @@ export function ItemDetailPage() {
   const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const { toast } = useToast()
 
   useEffect(() => {
     if (!id) return
@@ -190,12 +194,38 @@ export function ItemDetailPage() {
           <span className="text-2xl font-semibold whitespace-nowrap">
             {formatPrice(item.purchase_price, item.currency)}
           </span>
-          <Button variant="outline" size="sm" onClick={() => navigate(`/items?edit=${item.id}`)}>
-            <Edit className="h-4 w-4" />
-            Modifier
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => navigate(`/items?edit=${item.id}`)}>
+              <Edit className="h-4 w-4" />
+              Modifier
+            </Button>
+            <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteOpen(true)}>
+              <Trash2 className="h-4 w-4" />
+              Supprimer
+            </Button>
+          </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Supprimer cet achat ?"
+        message="L'achat, ses pièces jointes et ses garanties seront supprimés définitivement."
+        confirmLabel="Supprimer"
+        variant="destructive"
+        onConfirm={async () => {
+          try {
+            await api.deleteItem(item.id)
+            toast("Achat supprimé", "success")
+            navigate("/items")
+          } catch (err) {
+            toast(`Erreur: ${err}`, "error")
+          } finally {
+            setDeleteOpen(false)
+          }
+        }}
+        onCancel={() => setDeleteOpen(false)}
+      />
 
       {/* Image gallery */}
       <Card>

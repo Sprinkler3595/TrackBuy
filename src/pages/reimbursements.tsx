@@ -8,6 +8,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
+import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { downloadExport } from "@/lib/export"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -385,10 +386,9 @@ export function ReimbursementsPage() {
                     onChange={(e) => setForm({ ...form, currency: e.target.value })}
                     className="w-24 rounded-md border border-input bg-background px-2 py-2 text-sm"
                   >
-                    <option value="CHF">CHF</option>
-                    <option value="EUR">EUR</option>
-                    <option value="USD">USD</option>
-                    <option value="GBP">GBP</option>
+                    {SUPPORTED_CURRENCIES.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -581,7 +581,7 @@ export function ReimbursementsPage() {
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={t("reimbursements.deleted")}
+        title={t("reimbursements.deleteTitle")}
         message={t("reimbursements.deleteConfirm")}
         confirmLabel={t("common.delete")}
         variant="destructive"

@@ -99,7 +99,7 @@ export interface TemplateContext {
 }
 
 const FILENAME_INVALID_RE = /[/\\:*?"<>|]/g
-const COLLAPSE_SEP_RE = /[_\-]{2,}/g
+const COLLAPSE_SEP_RE = /[_-]{2,}/g
 const TRIM_SEP_RE = /^[_\-.]+|[_\-.]+$/g
 
 // ---------------------------------------------------------------------------

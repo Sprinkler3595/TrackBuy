@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { formatDate, daysUntil } from "@/lib/utils"
+import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
@@ -363,10 +364,9 @@ export function IncomesPage() {
                     onChange={(e) => setForm({ ...form, currency: e.target.value })}
                     className="w-24 rounded-md border border-input bg-background px-2 py-2 text-sm"
                   >
-                    <option value="CHF">CHF</option>
-                    <option value="EUR">EUR</option>
-                    <option value="USD">USD</option>
-                    <option value="GBP">GBP</option>
+                    {SUPPORTED_CURRENCIES.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -454,7 +454,7 @@ export function IncomesPage() {
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={t("incomes.deleted")}
+        title={t("incomes.deleteTitle")}
         message={t("incomes.deleteConfirm")}
         confirmLabel={t("common.delete")}
         variant="destructive"
