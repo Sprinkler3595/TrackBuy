@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 import { AppLayout } from "@/components/layout/app-layout"
 import { ToastProvider } from "@/components/ui/toast"
+import { ErrorBoundary } from "@/components/error-boundary"
 import { UnlockPage } from "@/pages/unlock"
 import { DashboardPage } from "@/pages/dashboard"
 import { ItemsPage } from "@/pages/items"
@@ -26,8 +27,13 @@ import { BankStatementReviewPage } from "@/pages/bank-statement-review"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
+import { HouseholdSettings } from "@/pages/settings-household"
 import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
+import { CeMoisPage } from "@/pages/ce-mois"
+import { InboxPage } from "@/pages/inbox"
+import { TaxesPage } from "@/pages/taxes"
+import { BanquePage } from "@/pages/banque"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
 import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
@@ -144,6 +150,11 @@ function AppContent() {
     <BrowserRouter>
       <Routes>
         <Route element={<AppLayout onLock={handleLock} vaultName={vaultName} />}>
+          <Route path="/ce-mois" element={<ErrorBoundary><CeMoisPage /></ErrorBoundary>} />
+          <Route path="/inbox" element={<ErrorBoundary><InboxPage /></ErrorBoundary>} />
+          <Route path="/impots" element={<ErrorBoundary><TaxesPage /></ErrorBoundary>} />
+          <Route path="/banque" element={<ErrorBoundary><BanquePage /></ErrorBoundary>} />
+          <Route path="/bank-statements/:id/review" element={<ErrorBoundary><BankStatementReviewPage /></ErrorBoundary>} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/scan-review" element={<ScanReviewPage />} />
@@ -158,11 +169,11 @@ function AppContent() {
           <Route path="/incomes/:id" element={<IncomeDetailPage />} />
           <Route path="/reimbursements" element={<ReimbursementsPage />} />
           <Route path="/finances" element={<FinancesPage />} />
-          <Route path="/bank-statements" element={<BankStatementsPage />} />
-          <Route path="/bank-statements/:id/review" element={<BankStatementReviewPage />} />
+          <Route path="/bank-statements" element={<ErrorBoundary><BankStatementsPage /></ErrorBoundary>} />
           <Route path="/warranties" element={<WarrantiesPage />} />
           <Route path="/settings" element={<SettingsPage />}>
             <Route index element={<GeneralSettings />} />
+            <Route path="menage" element={<HouseholdSettings />} />
             <Route path="marchands" element={<MerchantsPage />} />
             <Route path="creanciers" element={<CreditorsPage />} />
             <Route path="lieux" element={<LocationsPage />} />
@@ -174,7 +185,7 @@ function AppContent() {
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />
           <Route path="/cards" element={<Navigate to="/settings/cartes" replace />} />
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/ce-mois" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

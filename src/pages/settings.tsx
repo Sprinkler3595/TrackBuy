@@ -1,5 +1,19 @@
 import { NavLink, Outlet } from "react-router-dom"
-import { Settings as SettingsIcon, Store, MapPin, CreditCard, Vault, FileSignature, Landmark } from "lucide-react"
+import {
+  Settings as SettingsIcon,
+  Store,
+  MapPin,
+  CreditCard,
+  Vault,
+  FileSignature,
+  Landmark,
+  Users,
+  ShoppingBag,
+  Ticket,
+  Shield,
+  Repeat,
+  HandCoins,
+} from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
 
@@ -13,12 +27,19 @@ export function SettingsPage() {
       icon: SettingsIcon,
       label: locale === "fr" ? "Général" : "General",
     },
+    { to: "/settings/menage", end: false, icon: Users, label: locale === "fr" ? "Ménage" : "Household" },
     { to: "/settings/marchands", end: false, icon: Store, label: locale === "fr" ? "Marchands" : "Merchants" },
     { to: "/settings/creanciers", end: false, icon: Landmark, label: locale === "fr" ? "Créanciers" : "Creditors" },
     { to: "/settings/lieux", end: false, icon: MapPin, label: locale === "fr" ? "Lieux" : "Locations" },
     { to: "/settings/cartes", end: false, icon: CreditCard, label: locale === "fr" ? "Cartes" : "Cards" },
     { to: "/settings/coffres", end: false, icon: Vault, label: locale === "fr" ? "Coffres" : "Vaults" },
     { to: "/settings/nommage", end: false, icon: FileSignature, label: locale === "fr" ? "Nommage" : "Naming" },
+    { to: "/items", end: false, icon: ShoppingBag, label: locale === "fr" ? "Achats" : "Items" },
+    { to: "/tickets", end: false, icon: Ticket, label: locale === "fr" ? "Billets & Codes" : "Tickets & Codes" },
+    { to: "/warranties", end: false, icon: Shield, label: locale === "fr" ? "Garanties" : "Warranties" },
+    { to: "/subscriptions", end: false, icon: Repeat, label: locale === "fr" ? "Abonnements" : "Subscriptions" },
+    { to: "/incomes", end: false, icon: HandCoins, label: locale === "fr" ? "Revenus" : "Incomes" },
+    { to: "/reimbursements", end: false, icon: HandCoins, label: locale === "fr" ? "Remboursements" : "Reimbursements" },
   ]
 
   return (

@@ -102,48 +102,52 @@ pub async fn ai_extract_receipt(
     config: AiConfig,
 ) -> Result<ExtractedReceipt, String> {
     let prompt = EXTRACTION_PROMPT.replace("{OCR}", &ocr_text);
-    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt).await?;
+    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned)
         .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
     Ok(parse_extracted(&value))
 }
 
-const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Préfère omettre une transaction plutôt que d'en inventer une.";
+const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
 
-const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction.
+const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction réelle PRÉSENTE DANS LE TEXTE.
+
+ANTI-HALLUCINATION (CRITIQUE) :
+- N'INVENTE JAMAIS une transaction. Si tu n'es pas sûr, omets.
+- Les dates, montants et libellés DOIVENT venir littéralement du texte fourni — pas de paraphrase.
+- Refuse les dates séquentielles factices (1, 2, 3, 4 avril…) si elles ne sont pas dans le texte.
+- N'utilise PAS de montants ronds (1000, 500, 100…) sauf s'ils figurent textuellement.
+
+CLÉ RACINE OBLIGATOIRE : "transactions" (un tableau JSON).
+
+LECTURE DU TABLEAU (format typique PostFinance / UBS / Raiffeisen) :
+Le tableau a généralement les colonnes : Date | Texte | Crédit | Débit | Valeur | Solde.
+Une transaction occupe SOUVENT PLUSIEURS LIGNES :
+  Ligne 1 : date + début de libellé + montant (dans colonne Crédit ou Débit) + date valeur + nouveau solde
+  Lignes 2-N : suite du libellé (nom du marchand, IBAN contrepartie, ville…)
+Toutes ces lignes appartiennent à UNE SEULE transaction. Concatène le libellé sur 2-5 lignes maximum.
 
 RÈGLES :
-1. `date` = date de transaction au format YYYY-MM-DD. Si une seule date est donnée par ligne, c'est elle. Si deux dates apparaissent (valeur vs comptable), utilise la valeur dans `date` et la comptable dans `booking_date`.
-2. `description` = libellé brut tel qu'il apparaît sur la ligne, y compris la contre-partie / le commerçant / le motif. Ne raccourcis pas.
-3. `amount` = TOUJOURS un nombre POSITIF (jamais négatif). La direction est portée par `direction`.
-4. `direction` = "debit" si l'argent sort du compte, "credit" s'il y entre.
-5. `currency` = code ISO (CHF / EUR / USD…). Défaut CHF si non précisé.
-6. `reference` = suite numérique de référence BVR / QR-bill quand elle apparaît en fin de libellé (souvent 26-27 chiffres). null sinon.
-7. `counterparty_iban` = IBAN de la contre-partie si visible (CH/LI 21 caractères). null sinon.
+1. `date` = date de la transaction au format YYYY-MM-DD. Les dates suisses sont écrites DD.MM.YY ou DD.MM.YYYY — convertis : "02.04.26" → "2026-04-02".
+2. `description` = libellé concaténé sur toutes les lignes liées (marchand, type d'opération, contrepartie). Ne raccourcis pas.
+3. `amount` = TOUJOURS positif, max 2 décimales. La direction est portée par `direction`.
+4. `direction` = "debit" si le montant apparaît dans la colonne Débit OU si le libellé contient « ACHAT », « DÉBIT », « PAIEMENT » ; "credit" si colonne Crédit OU « CRÉDIT », « RÉCEPTION », « SALAIRE », « VERSEMENT ».
+5. `currency` = "CHF" par défaut sur un relevé suisse.
+6. `reference` = suite de 26-27 chiffres BVR / QR-bill si présente. null sinon.
+7. `counterparty_iban` = IBAN visible (CH/LI commençant par "CH" ou "LI", 21 caractères). null sinon.
 
 IGNORE absolument :
-- Les en-têtes du relevé (nom titulaire, adresse, IBAN du compte, période)
-- Les lignes de solde (« Solde au … », « Saldo … », « Balance forward »)
-- Les totaux mensuels (« Total débits », « Total crédits », « Net mouvement »)
-- Les lignes sans montant
-- Les notes explicatives en bas de page
+- En-têtes (nom titulaire, adresse, IBAN du compte, période, BIC, numéro de compte)
+- « Etat de compte » initial (solde d'ouverture)
+- « Solde au … », « Saldo … », « Balance forward »
+- Totaux mensuels et totaux de page
+- Lignes purement de mise en page (numéros de page, « Page 1 / 4 »)
 
-FORMAT DE RÉPONSE (JSON strict) :
-{
-  "transactions": [
-    {
-      "date": "YYYY-MM-DD",
-      "booking_date": "YYYY-MM-DD"|null,
-      "description": string,
-      "amount": number,
-      "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
-      "direction": "debit"|"credit",
-      "reference": string|null,
-      "counterparty_iban": string|null
-    }
-  ]
-}
+EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
+{"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":"CH6330000011875037700"}]}
+
+Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
 
 TEXTE DU RELEVÉ (entre <<<>>>) :
 <<<{TEXT}>>>"#;
@@ -160,22 +164,88 @@ pub struct ExtractedTransaction {
     pub counterparty_iban: Option<String>,
 }
 
+/// Schéma JSON strict pour structured outputs — interdit physiquement au
+/// modèle d'émettre autre chose que cette forme (clé racine "transactions",
+/// item shape précis, additionalProperties: false). C'est plus solide qu'un
+/// json_object basique : avec un petit modèle (≤ 8B) qui aurait tendance à
+/// inventer un nom de clé ou à renvoyer le schéma plutôt que les données,
+/// le décodage contraint le force à respecter la forme.
+fn bank_statement_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "transactions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string"},
+                        "booking_date": {"type": ["string", "null"]},
+                        "description": {"type": "string"},
+                        "amount": {"type": "number"},
+                        "currency": {"type": "string"},
+                        "direction": {"type": "string", "enum": ["debit", "credit"]},
+                        "reference": {"type": ["string", "null"]},
+                        "counterparty_iban": {"type": ["string", "null"]}
+                    },
+                    "required": [
+                        "date", "booking_date", "description", "amount",
+                        "currency", "direction", "reference", "counterparty_iban"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["transactions"],
+        "additionalProperties": false
+    })
+}
+
 #[tauri::command]
 pub async fn ai_extract_bank_statement(
     text: String,
     config: AiConfig,
 ) -> Result<Vec<ExtractedTransaction>, String> {
     let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
-    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt).await?;
+    let schema = bank_statement_schema();
+    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
     let cleaned = strip_code_fences(&raw);
-    let value: Value = serde_json::from_str(&cleaned)
-        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    let value: Value = serde_json::from_str(&cleaned).map_err(|e| {
+        // Tronque l'aperçu pour rester lisible si le modèle a généré
+        // plusieurs milliers de caractères (cas de boucle infinie).
+        let preview: String = raw.chars().take(300).collect();
+        let suffix = if raw.chars().count() > 300 { "…" } else { "" };
+        format!(
+            "Le modèle n'a pas renvoyé de JSON valide ({}). Ton modèle est probablement trop petit ou mal configuré — essaye un modèle plus grand (≥ 7B), ou bascule sur Infomaniak/Mixtral. Début de réponse reçue : « {}{} »",
+            e, preview, suffix
+        )
+    })?;
 
+    // Le schéma demande "transactions" mais certains modèles inventent des
+    // synonymes : on accepte ces fallbacks pour ne pas perdre une extraction
+    // qui serait par ailleurs correcte. Ordre par décroissance de confiance.
     let arr = value
         .get("transactions")
+        .or_else(|| value.get("Transactions"))
+        .or_else(|| value.get("operations"))
+        .or_else(|| value.get("Opérations"))
+        .or_else(|| value.get("lines"))
+        .or_else(|| value.get("entries"))
+        // Dernier recours : si la valeur racine est elle-même un tableau,
+        // l'utiliser directement.
+        .or(if value.is_array() { Some(&value) } else { None })
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+
+    if arr.is_empty() {
+        return Err(format!(
+            "Le modèle n'a renvoyé aucune transaction. Vérifiez que la clé JSON racine est bien \"transactions\" — clés trouvées : {}",
+            value.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_else(|| "(non-objet)".into())
+        ));
+    }
 
     let mut out = Vec::with_capacity(arr.len());
     for tx in arr {
@@ -221,6 +291,7 @@ pub async fn ai_test_connection(config: AiConfig) -> Result<String, String> {
         &config,
         "You are a connection test responder.",
         "Reply with the single word: OK",
+        None,
     )
     .await?;
     Ok(reply)
@@ -230,6 +301,7 @@ async fn call_provider(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
@@ -237,8 +309,8 @@ async fn call_provider(
         .map_err(|e| format!("Client init: {}", e))?;
 
     match config.provider {
-        AiProvider::Infomaniak => call_infomaniak(&client, config, system_prompt, user_prompt).await,
-        AiProvider::Ollama => call_ollama(&client, config, system_prompt, user_prompt).await,
+        AiProvider::Infomaniak => call_infomaniak(&client, config, system_prompt, user_prompt, json_schema).await,
+        AiProvider::Ollama => call_ollama(&client, config, system_prompt, user_prompt, json_schema).await,
     }
 }
 
@@ -247,6 +319,7 @@ async fn call_infomaniak(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     if config.api_key.trim().is_empty() {
         return Err("Clé API Infomaniak manquante".into());
@@ -258,13 +331,31 @@ async fn call_infomaniak(
         "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
         config.infomaniak_product_id.trim()
     );
-    let body = json!({
+    // OpenAI structured outputs (json_schema + strict:true) contrainent la
+    // décodage côté serveur — le modèle ne PEUT pas émettre de tokens hors
+    // grammaire. C'est nettement plus solide qu'un json_object générique,
+    // qui laisse encore au modèle la liberté d'inventer la forme de l'objet.
+    // Si aucun schéma n'est fourni, on retombe sur json_object basique.
+    let response_format = match json_schema {
+        Some(schema) => json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "extraction",
+                "strict": true,
+                "schema": schema
+            }
+        }),
+        None => json!({"type": "json_object"}),
+    };
+    let mut body = json!({
         "model": config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": 0.0
+        "temperature": 0.0,
+        "max_tokens": 8192,
+        "response_format": response_format
     });
 
     let resp = client
@@ -273,7 +364,39 @@ async fn call_infomaniak(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Requête Infomaniak: {}", e))?;
+        .map_err(|e| {
+            let raw = e.to_string();
+            if e.is_connect() {
+                format!("Impossible de joindre api.infomaniak.com — vérifie ta connexion internet. Détail : {}", raw)
+            } else if e.is_timeout() {
+                format!("Infomaniak n'a pas répondu en 120 s. Détail : {}", raw)
+            } else {
+                format!("Requête Infomaniak : {}", raw)
+            }
+        })?;
+
+    // Si le modèle ne supporte pas json_schema (modèles plus anciens),
+    // Infomaniak renvoie un 400. On retombe alors automatiquement sur
+    // json_object qui est universellement supporté — c'est mieux que de
+    // jeter une erreur incompréhensible à l'utilisateur.
+    let resp = if !resp.status().is_success() && json_schema.is_some() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 400 && text.contains("json_schema") {
+            body["response_format"] = json!({"type": "json_object"});
+            client
+                .post(&url)
+                .bearer_auth(config.api_key.trim())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("Requête Infomaniak (fallback json_object): {}", e))?
+        } else {
+            return Err(format!("Infomaniak {}: {}", status, text));
+        }
+    } else {
+        resp
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -296,6 +419,7 @@ async fn call_ollama(
     config: &AiConfig,
     system_prompt: &str,
     user_prompt: &str,
+    json_schema: Option<&Value>,
 ) -> Result<String, String> {
     let base = if config.ollama_url.trim().is_empty() {
         "http://localhost:11434".to_string()
@@ -303,6 +427,13 @@ async fn call_ollama(
         config.ollama_url.trim_end_matches('/').to_string()
     };
     let url = format!("{}/api/chat", base);
+    // Ollama 0.5+ accepte un schéma JSON dans le champ `format` pour
+    // contraindre la sortie (équivalent au json_schema d'OpenAI). Si pas
+    // de schéma fourni, on garde la chaîne "json" qui force juste un JSON
+    // bien formé sans contrainte de structure.
+    let format_value = json_schema
+        .cloned()
+        .unwrap_or_else(|| Value::String("json".to_string()));
     let body = json!({
         "model": config.model,
         "messages": [
@@ -310,8 +441,8 @@ async fn call_ollama(
             {"role": "user", "content": user_prompt}
         ],
         "stream": false,
-        "format": "json",
-        "options": {"temperature": 0.0}
+        "format": format_value,
+        "options": {"temperature": 0.0, "num_predict": 8192}
     });
 
     let resp = client
@@ -319,11 +450,36 @@ async fn call_ollama(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Requête Ollama: {}", e))?;
+        .map_err(|e| {
+            // reqwest's send() error happens BEFORE the server sees the
+            // request — connection refused / timed out / DNS failed. Turn
+            // it into something actionable instead of the raw error.
+            let raw = e.to_string();
+            if e.is_connect() {
+                format!(
+                    "Impossible de joindre Ollama à {}. Vérifie qu'Ollama est bien lancé (commande `ollama serve` dans un terminal, ou ouvre l'app Ollama sur macOS). Détail : {}",
+                    base, raw
+                )
+            } else if e.is_timeout() {
+                format!(
+                    "Ollama à {} n'a pas répondu en 120 s. Le modèle est peut-être trop gros pour ta machine, ou la première inférence est en train de charger le modèle en RAM — réessaie dans une minute. Détail : {}",
+                    base, raw
+                )
+            } else {
+                format!("Requête Ollama : {}", raw)
+            }
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        // 404 sur /api/chat = modèle inconnu — message dédié plus utile.
+        if status.as_u16() == 404 && text.contains("model") {
+            return Err(format!(
+                "Ollama ne connaît pas le modèle « {} ». Lance `ollama pull {}` dans un terminal pour le télécharger, ou choisis-en un autre dans Réglages → Général. Réponse brute : {}",
+                config.model, config.model, text
+            ));
+        }
         return Err(format!("Ollama {}: {}", status, text));
     }
 

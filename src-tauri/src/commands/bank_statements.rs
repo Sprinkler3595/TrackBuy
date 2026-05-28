@@ -602,8 +602,17 @@ pub fn delete_bank_statement(state: State<'_, AppState>, id: String) -> Result<(
     conn.execute("DELETE FROM bank_statements WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
 
+    // Same filename-only convention as the read path — resolve against the
+    // vault's attachments directory before unlinking, otherwise the PDF is
+    // left behind on disk while the DB row is gone.
     if let Some(path) = file_path {
-        let _ = crate::storage::delete_attachment_file(&path);
+        let vault_dir = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;
+        if let Some(vault_dir) = vault_dir.as_ref() {
+            let attachments_root = crate::storage::attachments_dir(vault_dir);
+            if let Ok(resolved) = crate::storage::resolve_attachment(&path, &attachments_root) {
+                let _ = crate::storage::delete_attachment_file(resolved.to_str().unwrap_or(""));
+            }
+        }
     }
     Ok(())
 }
@@ -1359,6 +1368,12 @@ pub fn delete_match_rule(state: State<'_, AppState>, id: String) -> Result<(), S
 /// Surface the encrypted PDF as base64 so the front (pdfjs) can render
 /// it for visual cross-check during review. Same access path as
 /// `get_attachment_data` but resolved via the `bank_statements.file_path`.
+///
+/// `save_attachment` stores only the *filename* (e.g. `abc.enc`) so the
+/// path stays valid across vault renames/restores; we must resolve it
+/// against the current vault's attachments directory before reading,
+/// otherwise the bare filename is interpreted relative to the process'
+/// cwd and `std::fs::read` returns "No such file or directory".
 #[tauri::command]
 pub fn get_bank_statement_data(
     state: State<'_, AppState>,
@@ -1376,11 +1391,16 @@ pub fn get_bank_statement_data(
         .map_err(|e| format!("Statement not found: {}", e))?
     };
 
+    let vault_dir = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;
+    let vault_dir = vault_dir.as_ref().ok_or("No active vault")?;
+    let attachments_root = storage::attachments_dir(vault_dir);
+    let resolved = storage::resolve_attachment(&file_path, &attachments_root)?;
+
     let key_guard = state.encryption_key.lock().map_err(|_| "lock poisoned".to_string())?;
     let key = key_guard.as_ref().ok_or("No encryption key")?;
     let key_bytes: &[u8; 32] = key;
 
-    let data = storage::read_attachment(&file_path, key_bytes)?;
+    let data = storage::read_attachment(resolved.to_str().unwrap_or(""), key_bytes)?;
     use base64::{engine::general_purpose, Engine as _};
     Ok(general_purpose::STANDARD.encode(data))
 }

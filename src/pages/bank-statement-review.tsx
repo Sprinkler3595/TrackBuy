@@ -19,25 +19,125 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString()
 
-/// Build a single text block out of a PDF document by concatenating every
-/// page's TextContent items. Bank statements are usually text-native (not
-/// image scans) so this works directly. For image-only scans, the AI prompt
-/// degrades gracefully — but the matching will be poor.
+/// Build a single text block out of a PDF document while preserving the
+/// table structure. Bank statements use a column layout (Date / Texte /
+/// Crédit / Débit / Valeur / Solde) — flattening every text item into a
+/// single space-separated blob destroys that structure and the LLM ends
+/// up inventing transactions instead of extracting them (observed with
+/// PostFinance statements via ministral-3:8b).
+///
+/// We sort each page's items by Y descending then X ascending, and insert
+/// a newline every time Y drops below the previous item's Y minus half the
+/// font height — that's a robust heuristic for "next line" across all
+/// Swiss bank statement layouts I've sampled.
+///
+/// Uses streamTextContent() + reader.read() instead of getTextContent(),
+/// because pdfjs-dist v5's getTextContent() does
+/// `for await (const v of readableStream)` which requires
+/// `ReadableStream[Symbol.asyncIterator]` — missing in the WebKit shipped
+/// with macOS Tauri webview (and webkit2gtk on Linux).
 async function extractPdfText(base64: string): Promise<string> {
   const binary = atob(base64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
   const doc = await pdfjsLib.getDocument({ data: bytes }).promise
-  const parts: string[] = []
+  const pages: string[] = []
+
+  type Item = { x: number; y: number; h: number; str: string }
+
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
-    const content = await page.getTextContent()
-    const text = content.items
-      .map((it) => ("str" in it ? (it as { str: string }).str : ""))
-      .join(" ")
-    parts.push(text)
+    const stream = page.streamTextContent({}) as ReadableStream<{
+      items: Array<{
+        str?: string
+        transform?: number[]
+        height?: number
+      }>
+    }>
+    const reader = stream.getReader()
+    const items: Item[] = []
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || !Array.isArray(value.items)) continue
+      for (const it of value.items) {
+        if (!it || typeof it.str !== "string") continue
+        if (!it.str.trim() && it.str !== " ") continue
+        // transform = [a, b, c, d, e=x, f=y] (PDF matrix). y origin is at
+        // the page bottom; we'll sort descending to read top-to-bottom.
+        const x = it.transform?.[4] ?? 0
+        const y = it.transform?.[5] ?? 0
+        const h = it.height ?? 10
+        items.push({ x, y, h, str: it.str })
+      }
+    }
+
+    // Group items into lines by Y coordinate. A new line starts whenever
+    // the current item's Y is more than half a font-height below the line
+    // we're currently building.
+    items.sort((a, b) => b.y - a.y || a.x - b.x)
+    const lines: { y: number; items: Item[] }[] = []
+    for (const it of items) {
+      const tol = Math.max(it.h / 2, 3)
+      const last = lines[lines.length - 1]
+      if (last && Math.abs(last.y - it.y) <= tol) {
+        last.items.push(it)
+      } else {
+        lines.push({ y: it.y, items: [it] })
+      }
+    }
+
+    // Inside each line, sort by X and join with single spaces — large
+    // X jumps (column gaps) are preserved by emitting multiple spaces
+    // proportional to the gap, so the model sees something close to a
+    // monospaced table.
+    const pageLines = lines.map((line) => {
+      line.items.sort((a, b) => a.x - b.x)
+      let out = ""
+      let prevEnd = -Infinity
+      for (const it of line.items) {
+        if (out === "") {
+          out = it.str
+        } else {
+          const gap = it.x - prevEnd
+          // Approximate space width as ~5 PDF units. Cap at 8 spaces to
+          // avoid pathological cases where a single line of metadata
+          // explodes into a wall of whitespace.
+          const spaces = Math.min(8, Math.max(1, Math.round(gap / 5)))
+          out += " ".repeat(spaces) + it.str
+        }
+        prevEnd = it.x + it.str.length * 5
+      }
+      return out
+    })
+    pages.push(pageLines.join("\n"))
   }
-  return parts.join("\n\n")
+  return pages.join("\n\n--- PAGE BREAK ---\n\n")
+}
+
+// Étiquettes FR pour les catégories renvoyées par le classifier Rust.
+const CATEGORY_LABEL: Record<string, string> = {
+  courses: "Courses",
+  restaurant: "Restaurant",
+  carburant: "Carburant",
+  sante: "Santé",
+  transport: "Transport",
+  telecom: "Télécom",
+  streaming: "Abonnement en ligne",
+  shopping: "Shopping",
+  loisirs: "Loisirs",
+  maison: "Maison",
+  habillement: "Habillement",
+  retrait: "Retrait d'espèces",
+}
+
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  apple_pay: "Apple Pay",
+  twint: "Twint",
+  qr_bill: "QR-facture",
+  lsv: "LSV",
+  withdrawal: "Retrait",
+  credit_card: "Carte",
 }
 
 interface TargetCandidate {
@@ -80,9 +180,17 @@ export function BankStatementReviewPage() {
 
   const [statement, setStatement] = useState<api.BankStatement | null>(null)
   const [transactions, setTransactions] = useState<api.BankStatementTransaction[]>([])
+  // Enrichissement marchand/catégorie/mode-paiement par transaction id —
+  // remplit l'écart entre un libellé Apple Pay brut et ce que l'utilisateur
+  // veut savoir d'un coup d'œil (« Migros · Courses · Marin-Epagnier »).
+  const [classifications, setClassifications] = useState<Record<string, api.Classification>>({})
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
+  // Re-read on each render — cheap localStorage lookup, and lets the banner
+  // disappear immediately once the user toggles the AI on in Settings.
+  const aiEnabled = getAiSettings().enabled
 
   // Candidate pool: we load every entity the user might want to match to.
   // Doing this once at mount lets the inline picker stay snappy without
@@ -104,6 +212,7 @@ export function BankStatementReviewPage() {
 
   const load = async () => {
     if (!id) return
+    setLoadError(null)
     try {
       const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList] = await Promise.all([
         api.getBankStatement(id),
@@ -123,6 +232,28 @@ export function BankStatementReviewPage() {
       setLocations(lList)
       setCards(cList)
 
+      // Lance la classification en arrière-plan dès qu'on a les
+      // transactions. Pas bloquant — la liste s'affiche tout de suite et
+      // les chips marchand/catégorie apparaissent progressivement.
+      if (txs.length > 0) {
+        api
+          .classifyTransactions(
+            txs.map((t) => ({ id: t.id, description: t.raw_description })),
+          )
+          .then((results) => {
+            const map: Record<string, api.Classification> = {}
+            for (const r of results) {
+              const { id, ...rest } = r
+              map[id] = rest
+            }
+            setClassifications(map)
+          })
+          .catch(() => {
+            // Échec silencieux : la classification est un bonus, pas un
+            // bloquant. La review reste utilisable sans.
+          })
+      }
+
       // Restrict the item pool to the statement period ±7 days — outside
       // that window an item can't reasonably correspond to a line on this
       // month's statement, and keeping the picker tight makes search fast.
@@ -140,17 +271,79 @@ export function BankStatementReviewPage() {
       for (const r of reimb) pool.push({ kind: "reimbursement", id: r.id, label: r.label })
       setCandidates(pool)
     } catch (err) {
-      toast(`Erreur: ${err}`, "error")
+      const msg = String(err)
+      setLoadError(msg)
+      toast(`Erreur: ${msg}`, "error")
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [id])
 
-  if (loading || !statement) {
+  // All hooks must be declared before any early return — otherwise the
+  // count of hooks differs between renders ("Rendered more hooks than
+  // during the previous render") which throws inside React.
+  const sortedTransactions = useMemo(() => {
+    const copy = [...transactions]
+    switch (sortKey) {
+      case "date":   return copy.sort((a, b) => a.transaction_date.localeCompare(b.transaction_date))
+      case "amount": return copy.sort((a, b) => b.amount - a.amount)
+      case "status": {
+        const order: Record<api.BankTxMatchStatus, number> = {
+          unmatched: 0, suggested: 1, confirmed: 2, created: 3, ignored: 4,
+        }
+        return copy.sort((a, b) => order[a.match_status] - order[b.match_status])
+      }
+    }
+  }, [transactions, sortKey])
+
+  const totals = useMemo(() => {
+    let debit = 0, credit = 0, unmatched = 0, suggested = 0, confirmed = 0
+    for (const t of transactions) {
+      if (t.direction === "debit") debit += t.amount; else credit += t.amount
+      if (t.match_status === "unmatched") unmatched++
+      else if (t.match_status === "suggested") suggested++
+      else if (t.match_status === "confirmed" || t.match_status === "created") confirmed++
+    }
+    return { debit, credit, unmatched, suggested, confirmed }
+  }, [transactions])
+
+  const filteredCandidates = useMemo(() => {
+    const q = pickerSearch.toLowerCase().trim()
+    if (!q) return candidates.slice(0, 30)
+    return candidates
+      .filter((c) => c.label.toLowerCase().includes(q) || (c.hint ?? "").toLowerCase().includes(q))
+      .slice(0, 30)
+  }, [candidates, pickerSearch])
+
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (loadError || !statement) {
+    return (
+      <div className="space-y-4 p-6">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/bank-statements")}>
+          <ArrowLeft className="h-4 w-4" />
+          Retour aux relevés
+        </Button>
+        <Card>
+          <CardContent className="space-y-3 p-6">
+            <h2 className="text-lg font-semibold text-destructive">
+              Impossible de charger ce relevé
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {loadError ?? "Le relevé n'a pas été trouvé. Il a peut-être été supprimé."}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              ID : <code className="rounded bg-muted px-1 font-mono">{id}</code>
+            </p>
+          </CardContent>
+        </Card>
       </div>
     )
   }
@@ -336,39 +529,6 @@ export function BankStatementReviewPage() {
     }
   }
 
-  const sortedTransactions = useMemo(() => {
-    const copy = [...transactions]
-    switch (sortKey) {
-      case "date":   return copy.sort((a, b) => a.transaction_date.localeCompare(b.transaction_date))
-      case "amount": return copy.sort((a, b) => b.amount - a.amount)
-      case "status": {
-        const order: Record<api.BankTxMatchStatus, number> = {
-          unmatched: 0, suggested: 1, confirmed: 2, created: 3, ignored: 4,
-        }
-        return copy.sort((a, b) => order[a.match_status] - order[b.match_status])
-      }
-    }
-  }, [transactions, sortKey])
-
-  const totals = useMemo(() => {
-    let debit = 0, credit = 0, unmatched = 0, suggested = 0, confirmed = 0
-    for (const t of transactions) {
-      if (t.direction === "debit") debit += t.amount; else credit += t.amount
-      if (t.match_status === "unmatched") unmatched++
-      else if (t.match_status === "suggested") suggested++
-      else if (t.match_status === "confirmed" || t.match_status === "created") confirmed++
-    }
-    return { debit, credit, unmatched, suggested, confirmed }
-  }, [transactions])
-
-  const filteredCandidates = useMemo(() => {
-    const q = pickerSearch.toLowerCase().trim()
-    if (!q) return candidates.slice(0, 30)
-    return candidates
-      .filter((c) => c.label.toLowerCase().includes(q) || (c.hint ?? "").toLowerCase().includes(q))
-      .slice(0, 30)
-  }, [candidates, pickerSearch])
-
   const candidateLabel = (kind: api.BankTxTargetKind | null, id: string | null, fallback?: string | null): string => {
     if (!kind || !id) return fallback ?? "—"
     const c = candidates.find((c) => c.kind === kind && c.id === id)
@@ -426,6 +586,28 @@ export function BankStatementReviewPage() {
           )}
         </div>
       </div>
+
+      {!aiEnabled && transactions.length === 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardContent className="space-y-2 p-4 text-sm">
+            <p className="font-semibold text-amber-900 dark:text-amber-200">
+              ⚠ L'IA n'est pas configurée
+            </p>
+            <p className="text-muted-foreground">
+              Pour extraire les transactions d'un PDF, activez d'abord un fournisseur
+              (Infomaniak ou Ollama) dans <strong>Réglages → Général → Extraction IA</strong>.
+              Sans cette étape, le bouton « Extraire avec IA » ne pourra pas parser le PDF.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate("/settings")}
+            >
+              Configurer l'IA
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {transactions.length > 0 && (
         <div className="grid gap-4 md:grid-cols-3">
@@ -506,6 +688,40 @@ export function BankStatementReviewPage() {
                         )}
                         {t.reference_number && <span className="text-xs text-muted-foreground/60 font-mono">{t.reference_number}</span>}
                       </div>
+                      {/* Enrichissement auto-calculé : marchand canonique +
+                          catégorie + mode de paiement détectés depuis le
+                          libellé. Donne en un coup d'œil "Migros · Courses ·
+                          Marin-Epagnier" là où le libellé brut PostFinance
+                          enterre l'info dans 80 caractères de boilerplate. */}
+                      {classifications[t.id] && (classifications[t.id].merchant || classifications[t.id].payment_method) && (
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          {classifications[t.id].merchant && (
+                            <Badge variant="outline" className="text-[10px]">
+                              {classifications[t.id].merchant}
+                            </Badge>
+                          )}
+                          {classifications[t.id].category && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {CATEGORY_LABEL[classifications[t.id].category!] ?? classifications[t.id].category}
+                            </Badge>
+                          )}
+                          {classifications[t.id].payment_method && (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              {PAYMENT_METHOD_LABEL[classifications[t.id].payment_method!] ?? classifications[t.id].payment_method}
+                            </Badge>
+                          )}
+                          {classifications[t.id].city && (
+                            <span className="text-[10px] text-muted-foreground">
+                              📍 {classifications[t.id].city}
+                            </span>
+                          )}
+                          {classifications[t.id].tax_category && (
+                            <Badge variant="outline" className="text-[10px] border-amber-500/50 text-amber-700 dark:text-amber-300">
+                              Déductible ({classifications[t.id].tax_category})
+                            </Badge>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className={cn("font-semibold shrink-0 tabular-nums", isCredit ? "text-green-600" : "text-destructive")}>
                       {isCredit ? "+" : "−"} {formatPrice(t.amount, t.currency)}

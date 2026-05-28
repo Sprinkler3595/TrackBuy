@@ -56,6 +56,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     if current_version < 13 {
         migrate_v13(conn)?;
     }
+    if current_version < 14 {
+        migrate_v14(conn)?;
+    }
 
     Ok(())
 }
@@ -1077,6 +1080,73 @@ fn migrate_v13(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (13);
         "
     ).map_err(|e| format!("Migration v13 failed: {}", e))?;
+
+    Ok(())
+}
+
+// v14 — Swiss workflow: tax categorisation on purchases & charges, household
+// members for multi-person attribution, canton on tax engagements, LAMal /
+// mortgage specifics, and Twint as an account kind.
+fn migrate_v14(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Tax category for the annual declaration: pro / medical / don /
+        -- entretien / 3a / formation / garde_enfant. NULL = not deductible.
+        ALTER TABLE items ADD COLUMN tax_category TEXT;
+        ALTER TABLE engagement_charges ADD COLUMN tax_category TEXT;
+        CREATE INDEX idx_items_tax_category ON items(tax_category)
+            WHERE tax_category IS NOT NULL;
+        CREATE INDEX idx_engagement_charges_tax_category
+            ON engagement_charges(tax_category)
+            WHERE tax_category IS NOT NULL;
+
+        -- Canton field for tax_federal / tax_cantonal / tax_communal /
+        -- tax_other engagements. Two-letter ISO 3166-2:CH code (VD, GE, NE...).
+        ALTER TABLE engagements ADD COLUMN canton TEXT;
+
+        -- LAMal (compulsory Swiss health insurance) specifics.
+        -- model: standard / family_doctor / hmo / telmed
+        -- franchise_chf: 300 / 500 / 1000 / 1500 / 2000 / 2500
+        -- franchise_reached_chf: year-to-date amount counting toward franchise
+        -- accident_covered: boolean
+        ALTER TABLE engagements ADD COLUMN lamal_model TEXT;
+        ALTER TABLE engagements ADD COLUMN lamal_franchise_chf REAL;
+        ALTER TABLE engagements ADD COLUMN lamal_franchise_reached_chf REAL;
+        ALTER TABLE engagements ADD COLUMN lamal_accident_covered INTEGER;
+
+        -- Mortgage specifics.
+        -- mortgage_kind: fixed / saron / libor / variable
+        ALTER TABLE engagements ADD COLUMN mortgage_kind TEXT;
+        ALTER TABLE engagements ADD COLUMN mortgage_rate_pct REAL;
+        ALTER TABLE engagements ADD COLUMN mortgage_renewal_date TEXT;
+        ALTER TABLE engagements ADD COLUMN mortgage_amortisation_chf REAL;
+
+        -- Household members: spouse / child / parent / other. Per-person LAMal,
+        -- attributable expenses, tax declaration breakdowns.
+        CREATE TABLE household_members (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            relation TEXT NOT NULL DEFAULT 'other',
+            birth_date TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_household_members_relation ON household_members(relation);
+
+        -- Attribute purchases & engagements to a member (NULL = household-wide).
+        ALTER TABLE items ADD COLUMN attributed_to_member_id TEXT
+            REFERENCES household_members(id) ON DELETE SET NULL;
+        ALTER TABLE engagements ADD COLUMN attributed_to_member_id TEXT
+            REFERENCES household_members(id) ON DELETE SET NULL;
+        CREATE INDEX idx_items_member ON items(attributed_to_member_id)
+            WHERE attributed_to_member_id IS NOT NULL;
+        CREATE INDEX idx_engagements_member ON engagements(attributed_to_member_id)
+            WHERE attributed_to_member_id IS NOT NULL;
+
+        INSERT INTO schema_version (version) VALUES (14);
+        "
+    ).map_err(|e| format!("Migration v14 failed: {}", e))?;
 
     Ok(())
 }

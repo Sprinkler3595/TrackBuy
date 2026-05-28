@@ -1,59 +1,32 @@
 import { NavLink } from "react-router-dom"
 import {
-  LayoutDashboard,
-  ShoppingBag,
-  Shield,
+  Home,
+  Inbox,
+  FileText,
+  Landmark,
+  Receipt,
   Settings,
   Lock,
   Moon,
   Sun,
   Monitor,
-  ScanLine,
-  Ticket,
-  Repeat,
-  FileText,
-  TrendingUp,
-  HandCoins,
-  BarChart3,
-  Banknote,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
 import { Button } from "@/components/ui/button"
 
-type NavSection = { label?: string; items: { to: string; icon: typeof LayoutDashboard; label: string }[] }
+// Swiss-first navigation (six entries) replacing the old eleven-entry layout.
+// Items, Tickets, Warranties, Subscriptions, Reimbursements et l'ancien
+// dashboard sont accessibles via les sous-vues de Ce mois / Banque / Réglages.
+type NavItem = { to: string; icon: typeof Home; label: string }
 
-const navSections: NavSection[] = [
-  {
-    items: [
-      { to: "/dashboard", icon: LayoutDashboard, label: "Tableau de bord" },
-      { to: "/scan", icon: ScanLine, label: "Scanner un reçu" },
-    ],
-  },
-  {
-    label: "Achats",
-    items: [
-      { to: "/items", icon: ShoppingBag, label: "Achats" },
-      { to: "/tickets", icon: Ticket, label: "Billets & Codes" },
-      { to: "/warranties", icon: Shield, label: "Garanties" },
-    ],
-  },
-  {
-    label: "Finances",
-    items: [
-      { to: "/finances", icon: BarChart3, label: "Tableau financier" },
-      { to: "/engagements", icon: FileText, label: "Engagements" },
-      { to: "/subscriptions", icon: Repeat, label: "Abonnements en ligne" },
-      { to: "/incomes", icon: TrendingUp, label: "Revenus" },
-      { to: "/reimbursements", icon: HandCoins, label: "Remboursements" },
-      { to: "/bank-statements", icon: Banknote, label: "Relevés bancaires" },
-    ],
-  },
-  {
-    items: [
-      { to: "/settings", icon: Settings, label: "Paramètres" },
-    ],
-  },
+const navItems: NavItem[] = [
+  { to: "/ce-mois", icon: Home, label: "Ce mois" },
+  { to: "/inbox", icon: Inbox, label: "Inbox" },
+  { to: "/engagements", icon: FileText, label: "Engagements" },
+  { to: "/banque", icon: Landmark, label: "Banque" },
+  { to: "/impots", icon: Receipt, label: "Impôts" },
+  { to: "/settings", icon: Settings, label: "Réglages" },
 ]
 
 interface SidebarProps {
@@ -86,32 +59,23 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-4 overflow-y-auto p-3">
-        {navSections.map((section, idx) => (
-          <div key={idx} className="space-y-1">
-            {section.label && (
-              <p className="px-3 pt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                {section.label}
-              </p>
-            )}
-            {section.items.map(({ to, icon: Icon, label }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                  )
-                }
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </NavLink>
-            ))}
-          </div>
+      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+        {navItems.map(({ to, icon: Icon, label }) => (
+          <NavLink
+            key={to}
+            to={to}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              )
+            }
+          >
+            <Icon className="h-4 w-4" />
+            {label}
+          </NavLink>
         ))}
       </nav>
 
