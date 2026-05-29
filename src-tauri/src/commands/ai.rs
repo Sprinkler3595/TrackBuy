@@ -200,14 +200,27 @@ PROFIL BANQUE : REVOLUT
 - Relevé Revolut (peut être en français ou en anglais). La devise du compte est indiquée dans le titre « Relevé CHF/EUR/USD … » et suffixe chaque montant (ex. « 9,95 CHF »). Utilise cette devise pour `currency`.
 - Colonnes du tableau : Date | Description | « Argent sortant » | « Argent entrant » | « Solde » (en anglais : Date | Description | Money out | Money in | Balance).
 - Un montant dans « Argent sortant » / « Money out » ⇒ `direction` = "debit". Un montant dans « Argent entrant » / « Money in » ⇒ `direction` = "credit".
-- IGNORER la colonne « Solde » / « Balance » : c'est le solde courant, PAS un montant de transaction.
+- RÈGLE LA PLUS IMPORTANTE — STRUCTURE DE LIGNE : après le libellé, chaque ligne de transaction contient TOUJOURS EXACTEMENT DEUX montants dans la devise du compte. Le PREMIER est le mouvement (soit Argent sortant, soit Argent entrant — l'autre colonne est VIDE et a disparu du texte). Le SECOND est le SOLDE courant. `amount` = le PREMIER montant UNIQUEMENT. N'extrais JAMAIS le second montant (le solde) : c'est l'erreur la plus fréquente.
+- DÉTERMINER LA DIRECTION PAR LA VARIATION DU SOLDE (méthode fiable, car la colonne vide a disparu) : compare le solde de la ligne au solde de la ligne PRÉCÉDENTE (le solde de départ figure dans « Résumé du solde » → « Solde d'ouverture »). Si le solde AUGMENTE ⇒ Argent entrant ⇒ `direction` = "credit". Si le solde DIMINUE ⇒ Argent sortant ⇒ `direction` = "debit". Vérification : |solde_courant − solde_précédent| doit être égal au montant du mouvement. Ainsi « Recharge sur Apple Pay » fait MONTER le solde ⇒ credit, et un achat le fait BAISSER ⇒ debit.
+- IGNORER la colonne « Solde » / « Balance » comme montant de transaction (elle ne sert QU'À déduire la direction, voir ci-dessus).
 - Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` doit être positif.
 - Dates en français à convertir en ISO : « 1 mars 2026 » ⇒ 2026-03-01 (mois : janvier, février, mars, avril, mai, juin, juillet, août, septembre, octobre, novembre, décembre).
 - La `description` est le nom du marchand de la première ligne (ex. « Holy Cow Steakhouse », « Migros », « OpenAI »). Les lignes « À : … » / « De : … » / « Carte : … » sont des détails : ne pas en faire des transactions (tu peux en tirer `counterparty_iban` seulement si un IBAN apparaît).
 - IGNORER les lignes de taux de change du type « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » : ce n'est PAS une transaction et le montant en devise étrangère (ex. 23,00€) ne doit jamais être extrait.
 - Les lignes « Frais: 0,58 CHF » sont des frais déjà inclus dans le montant principal (colonne « Argent sortant ») : ne crée PAS de transaction séparée pour les frais ; le montant de la transaction est celui de la colonne « Argent sortant ».
-- « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant).
+- « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant) : le solde MONTE.
 - IGNORER : « Résumé du solde », « Solde d'ouverture », « Solde de clôture », « Total », les en-têtes de colonnes, les numéros de page (« Page sur … »), et tout le texte légal/footer (mentions « Revolut Bank UAB », garantie des dépôts, etc.).
+
+EXEMPLE REVOLUT (lignes du relevé ⇒ JSON attendu). Solde d'ouverture = 60,00 CHF :
+  « 2 mars 2026  BP  2,95 CHF  57,05 CHF »            (solde 60,00 → 57,05 : baisse de 2,95 ⇒ debit 2,95)
+  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (57,05 → 707,05 : hausse de 650,00 ⇒ credit 650,00)
+  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF »  puis  « Taux Revolut = 1,00 CHF = 1,10€ … 23,00€ »  (mouvement 20,83 ; le solde baisse ⇒ debit ; 23,00€ = taux, ignoré)
+⇒ {"transactions":[
+  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},
+  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},
+  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null}
+]}
+Remarque : 57,05 / 707,05 / 540,04 sont des SOLDES (jamais extraits comme `amount`) ; 23,00€ est un taux de change (jamais extrait).
 "#;
 
 const N26_HINT: &str = r#"
