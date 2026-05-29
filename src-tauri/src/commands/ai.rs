@@ -148,9 +148,145 @@ EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
 {"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":"CH6330000011875037700"}]}
 
 Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
-
+{BANK_HINT}
 TEXTE DU RELEVÉ (entre <<<>>>) :
 <<<{TEXT}>>>"#;
+
+// ===========================================================================
+// Registre de profils bancaires (reconnaissance adaptée par banque)
+// ===========================================================================
+//
+// Le prompt générique ci-dessus couvre les banques suisses (PostFinance, UBS,
+// Raiffeisen…). Certaines banques (Revolut, N26, Wise…) ont une mise en page
+// très différente : colonnes nommées autrement, devise étrangère, format de
+// date localisé, lignes de taux de change parasites, etc. Plutôt que de
+// gonfler le prompt générique, on injecte un « profil banque » ciblé.
+//
+// COMMENT AJOUTER UNE BANQUE :
+//   1. Ajoute une entrée `BankProfile` dans `BANK_PROFILES` ci-dessous.
+//      - `id`            : identifiant court en minuscules (ex. "revolut").
+//      - `display_name`  : nom lisible affiché/loggé (ex. "Revolut").
+//      - `detect_keywords` : mots-clés en MINUSCULES cherchés dans le texte
+//        du relevé pour l'auto-détection (ex. ["revolut", "revolt21"]).
+//      - `prompt_hint`   : section en français injectée dans le prompt
+//        décrivant la mise en page spécifique (colonnes, devise, format de
+//        date, lignes à ignorer…). Laisser vide ("") pour ne rien injecter.
+//   2. C'est tout. L'auto-détection et l'override par `bank_name` marchent
+//      automatiquement. Le profil `generic` (id "generic") reste le défaut.
+
+/// Profil de reconnaissance pour une banque donnée. Statique (`&'static`) :
+/// tous les profils sont des constantes connues à la compilation.
+pub struct BankProfile {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub detect_keywords: &'static [&'static str],
+    pub prompt_hint: &'static str,
+}
+
+/// Profil par défaut : aucune indication spécifique, le prompt générique
+/// (orienté banques suisses) s'applique tel quel.
+const GENERIC_PROFILE: BankProfile = BankProfile {
+    id: "generic",
+    display_name: "Banque générique",
+    detect_keywords: &[],
+    prompt_hint: "",
+};
+
+/// Indication ciblée pour les relevés Revolut. Encode les règles dérivées
+/// d'un vrai « Relevé CHF » Revolut (colonnes Argent sortant / entrant /
+/// Solde, devise dans le titre, dates françaises, lignes de taux de change…).
+const REVOLUT_HINT: &str = r#"
+PROFIL BANQUE : REVOLUT
+- Relevé Revolut (peut être en français ou en anglais). La devise du compte est indiquée dans le titre « Relevé CHF/EUR/USD … » et suffixe chaque montant (ex. « 9,95 CHF »). Utilise cette devise pour `currency`.
+- Colonnes du tableau : Date | Description | « Argent sortant » | « Argent entrant » | « Solde » (en anglais : Date | Description | Money out | Money in | Balance).
+- Un montant dans « Argent sortant » / « Money out » ⇒ `direction` = "debit". Un montant dans « Argent entrant » / « Money in » ⇒ `direction` = "credit".
+- IGNORER la colonne « Solde » / « Balance » : c'est le solde courant, PAS un montant de transaction.
+- Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` doit être positif.
+- Dates en français à convertir en ISO : « 1 mars 2026 » ⇒ 2026-03-01 (mois : janvier, février, mars, avril, mai, juin, juillet, août, septembre, octobre, novembre, décembre).
+- La `description` est le nom du marchand de la première ligne (ex. « Holy Cow Steakhouse », « Migros », « OpenAI »). Les lignes « À : … » / « De : … » / « Carte : … » sont des détails : ne pas en faire des transactions (tu peux en tirer `counterparty_iban` seulement si un IBAN apparaît).
+- IGNORER les lignes de taux de change du type « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » : ce n'est PAS une transaction et le montant en devise étrangère (ex. 23,00€) ne doit jamais être extrait.
+- Les lignes « Frais: 0,58 CHF » sont des frais déjà inclus dans le montant principal (colonne « Argent sortant ») : ne crée PAS de transaction séparée pour les frais ; le montant de la transaction est celui de la colonne « Argent sortant ».
+- « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant).
+- IGNORER : « Résumé du solde », « Solde d'ouverture », « Solde de clôture », « Total », les en-têtes de colonnes, les numéros de page (« Page sur … »), et tout le texte légal/footer (mentions « Revolut Bank UAB », garantie des dépôts, etc.).
+"#;
+
+const N26_HINT: &str = r#"
+PROFIL BANQUE : N26
+- Relevé N26 (banque mobile, souvent en EUR). La devise figure à côté de chaque montant ; utilise-la pour `currency`.
+- Les débits (paiements/retraits) sont négatifs, les crédits (entrées) positifs : déduis `direction` du signe et mets toujours `amount` positif.
+- IGNORER les lignes de solde (« Solde », « Balance ») et les en-têtes/pieds de page.
+"#;
+
+const WISE_HINT: &str = r#"
+PROFIL BANQUE : WISE
+- Relevé Wise (multi-devises). Chaque transaction porte sa propre devise ; utilise-la pour `currency`, ne suppose pas CHF.
+- Les frais Wise (« Fee », « Frais ») sont des lignes distinctes : ne les fusionne pas avec le montant principal sauf indication contraire.
+- IGNORER les lignes de solde et les conversions de change qui ne sont pas des transactions réelles.
+"#;
+
+/// Liste exhaustive des profils bancaires connus. Ajoute une entrée ici pour
+/// supporter une nouvelle banque (voir le commentaire « COMMENT AJOUTER UNE
+/// BANQUE » plus haut). Le profil générique n'est PAS dans cette liste : il
+/// sert de repli quand aucune entrée ne correspond.
+const BANK_PROFILES: &[BankProfile] = &[
+    BankProfile {
+        id: "revolut",
+        display_name: "Revolut",
+        detect_keywords: &["revolut", "revolut bank uab", "revolt21"],
+        prompt_hint: REVOLUT_HINT,
+    },
+    BankProfile {
+        id: "n26",
+        display_name: "N26",
+        detect_keywords: &["n26", "ntsbdeb1"],
+        prompt_hint: N26_HINT,
+    },
+    BankProfile {
+        id: "wise",
+        display_name: "Wise",
+        detect_keywords: &["wise", "transferwise"],
+        prompt_hint: WISE_HINT,
+    },
+];
+
+/// Résout le profil bancaire à utiliser.
+///
+/// Priorité :
+///   1. `bank` explicite (depuis `bank_name` côté JS) : match sur l'`id` ou le
+///      `display_name`, insensible à la casse, avec correspondance « contient »
+///      dans les deux sens (ex. "Compte Revolut" ⇒ profil "revolut").
+///   2. Auto-détection : on scanne le texte du relevé (en minuscules) à la
+///      recherche d'un `detect_keywords` de n'importe quel profil.
+///   3. Repli sur le profil générique.
+fn resolve_bank_profile(bank: &Option<String>, text: &str) -> &'static BankProfile {
+    if let Some(name) = bank {
+        let needle = name.trim().to_lowercase();
+        if !needle.is_empty() {
+            for p in BANK_PROFILES {
+                let id = p.id.to_lowercase();
+                let display = p.display_name.to_lowercase();
+                if needle == id
+                    || needle == display
+                    || needle.contains(&id)
+                    || id.contains(&needle)
+                    || needle.contains(&display)
+                    || display.contains(&needle)
+                {
+                    return p;
+                }
+            }
+        }
+    }
+
+    let haystack = text.to_lowercase();
+    for p in BANK_PROFILES {
+        if p.detect_keywords.iter().any(|kw| haystack.contains(kw)) {
+            return p;
+        }
+    }
+
+    &GENERIC_PROFILE
+}
 
 #[derive(Debug, Serialize)]
 pub struct ExtractedTransaction {
@@ -205,8 +341,19 @@ fn bank_statement_schema() -> Value {
 pub async fn ai_extract_bank_statement(
     text: String,
     config: AiConfig,
+    bank: Option<String>,
 ) -> Result<Vec<ExtractedTransaction>, String> {
-    let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
+    // Choisit le profil banque (override `bank` explicite, sinon auto-détection
+    // depuis le texte, sinon générique) et injecte son indication dans le prompt.
+    let profile = resolve_bank_profile(&bank, &text);
+    let bank_hint = if profile.prompt_hint.trim().is_empty() {
+        String::from("\nPROFIL BANQUE : inconnu — déduis la mise en page à partir du texte.\n")
+    } else {
+        profile.prompt_hint.to_string()
+    };
+    let prompt = BANK_EXTRACTION_PROMPT
+        .replace("{BANK_HINT}", &bank_hint)
+        .replace("{TEXT}", &text);
     let schema = bank_statement_schema();
     let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
     let cleaned = strip_code_fences(&raw);

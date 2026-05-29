@@ -1351,8 +1351,8 @@ export const updateMatchRule = (rule: BankMatchRule) =>
 export const deleteMatchRule = (id: string) =>
   invoke<void>("delete_match_rule", { id })
 
-export const aiExtractBankStatement = (text: string, config: unknown) =>
-  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config })
+export const aiExtractBankStatement = (text: string, config: unknown, bank?: string | null) =>
+  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config, bank })
 
 // ===========================================================================
 // Swiss workflow (v14): household members, tax categories, QR-bill / CamT.053

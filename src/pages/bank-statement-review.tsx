@@ -373,7 +373,7 @@ export function BankStatementReviewPage() {
         infomaniakProductId: aiCfg.infomaniakProductId,
         ollamaUrl: aiCfg.ollamaUrl,
         model: aiCfg.model,
-      })
+      }, statement.bank_name ?? undefined)
       if (result.length === 0) {
         toast("Aucune transaction détectée par l'IA.", "error")
         setExtracting(false)
