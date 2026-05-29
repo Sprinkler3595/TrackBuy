@@ -364,9 +364,14 @@ function parseReceiptText(text: string): ParsedReceipt {
       const match = line.match(pattern)
       if (match) {
         warrantyMonths = parseInt(match[1])
-        // Try to extract warranty start date from the same line
+        // Try to extract warranty start date from the same line. On ne
+        // l'assigne que si la date est réellement reconnue (normalizeDate
+        // renvoie "" sinon) pour ne pas fabriquer une date de garantie.
         const dateInLine = line.match(/(\d{1,2}\/\d{1,2}\/\d{4})/)
-        if (dateInLine) warrantyStartDate = normalizeDate(dateInLine[1])
+        if (dateInLine) {
+          const normalized = normalizeDate(dateInLine[1])
+          if (normalized) warrantyStartDate = normalized
+        }
         break
       }
     }
@@ -406,7 +411,10 @@ function normalizeDate(raw: string): string {
     if (m) return `${monthMatch[3]}-${m}-${monthMatch[1].padStart(2, "0")}`
   }
 
-  return new Date().toISOString().split("T")[0]
+  // Échec du parsing : on retourne une date VIDE plutôt que d'inventer
+  // aujourd'hui. Une fausse date d'achat fausserait la fin de garantie et le
+  // rapprochement bancaire ; l'utilisateur devra confirmer la date à la main.
+  return ""
 }
 
 /** Render a PDF page to a canvas data URL for OCR */

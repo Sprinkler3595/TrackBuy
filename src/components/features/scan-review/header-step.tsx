@@ -87,7 +87,13 @@ export function HeaderStep({
             value={shared.purchase_date}
             onChange={(e) => onChange({ purchase_date: e.target.value })}
             required
+            aria-invalid={!shared.purchase_date}
           />
+          {!shared.purchase_date && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              Non détectée automatiquement — saisis la date réelle de l'achat.
+            </p>
+          )}
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
