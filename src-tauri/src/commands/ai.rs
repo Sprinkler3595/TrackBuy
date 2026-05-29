@@ -136,6 +136,7 @@ RÈGLES :
 5. `currency` = "CHF" par défaut sur un relevé suisse.
 6. `reference` = suite de 26-27 chiffres BVR / QR-bill si présente. null sinon.
 7. `counterparty_iban` = IBAN visible (CH/LI commençant par "CH" ou "LI", 21 caractères). null sinon.
+8. `balance` = null (sauf indication de profil banque ci-dessous). `opening_balance` (racine) = null également.
 
 IGNORE absolument :
 - En-têtes (nom titulaire, adresse, IBAN du compte, période, BIC, numéro de compte)
@@ -145,7 +146,7 @@ IGNORE absolument :
 - Lignes purement de mise en page (numéros de page, « Page 1 / 4 »)
 
 EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
-{"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":"CH6330000011875037700"}]}
+{"opening_balance":null,"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","balance":null,"reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":"CH6330000011875037700"}]}
 
 Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
 {BANK_HINT}
@@ -199,11 +200,12 @@ const REVOLUT_HINT: &str = r#"
 PROFIL BANQUE : REVOLUT
 - Relevé Revolut (peut être en français ou en anglais). La devise du compte est indiquée dans le titre « Relevé CHF/EUR/USD … » et suffixe chaque montant (ex. « 9,95 CHF »). Utilise cette devise pour `currency`.
 - Colonnes du tableau : Date | Description | « Argent sortant » | « Argent entrant » | « Solde » (en anglais : Date | Description | Money out | Money in | Balance).
-- Un montant dans « Argent sortant » / « Money out » ⇒ `direction` = "debit". Un montant dans « Argent entrant » / « Money in » ⇒ `direction` = "credit".
-- RÈGLE LA PLUS IMPORTANTE — STRUCTURE DE LIGNE : après le libellé, chaque ligne de transaction contient TOUJOURS EXACTEMENT DEUX montants dans la devise du compte. Le PREMIER est le mouvement (soit Argent sortant, soit Argent entrant — l'autre colonne est VIDE et a disparu du texte). Le SECOND est le SOLDE courant. `amount` = le PREMIER montant UNIQUEMENT. N'extrais JAMAIS le second montant (le solde) : c'est l'erreur la plus fréquente.
-- DÉTERMINER LA DIRECTION PAR LA VARIATION DU SOLDE (méthode fiable, car la colonne vide a disparu) : compare le solde de la ligne au solde de la ligne PRÉCÉDENTE (le solde de départ figure dans « Résumé du solde » → « Solde d'ouverture »). Si le solde AUGMENTE ⇒ Argent entrant ⇒ `direction` = "credit". Si le solde DIMINUE ⇒ Argent sortant ⇒ `direction` = "debit". Vérification : |solde_courant − solde_précédent| doit être égal au montant du mouvement. Ainsi « Recharge sur Apple Pay » fait MONTER le solde ⇒ credit, et un achat le fait BAISSER ⇒ debit.
-- IGNORER la colonne « Solde » / « Balance » comme montant de transaction (elle ne sert QU'À déduire la direction, voir ci-dessus).
-- Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` doit être positif.
+- STRUCTURE DE LIGNE (capitale) : après le libellé, chaque ligne contient EXACTEMENT DEUX montants dans la devise du compte. Le PREMIER est le mouvement (soit Argent sortant, soit Argent entrant — l'AUTRE colonne est vide et a disparu du texte). Le SECOND est le SOLDE courant.
+- CHAMP `amount` = le PREMIER montant (le mouvement) UNIQUEMENT, positif. N'y mets JAMAIS le solde.
+- CHAMP `balance` = le SECOND montant (le solde courant après l'opération). REMPLIS-LE TOUJOURS — c'est obligatoire pour ce relevé : le code s'en sert pour calculer débit/crédit de façon fiable.
+- CHAMP `opening_balance` (à la racine, une seule fois) = le « Solde d'ouverture » du tout premier « Résumé du solde » (ex. 67,00). C'est le solde AVANT la première transaction.
+- `direction` : mets ta meilleure estimation (Argent sortant ⇒ "debit", Argent entrant ⇒ "credit"), mais ne t'inquiète pas si tu hésites : le code la recalcule à partir de `balance`/`opening_balance` (solde qui monte ⇒ credit, qui baisse ⇒ debit). L'essentiel est que `amount` et `balance` soient EXACTS.
+- Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` et `balance` doivent être des nombres positifs (le solde l'est toujours ici).
 - Dates en français à convertir en ISO : « 1 mars 2026 » ⇒ 2026-03-01 (mois : janvier, février, mars, avril, mai, juin, juillet, août, septembre, octobre, novembre, décembre).
 - La `description` est le nom du marchand de la première ligne (ex. « Holy Cow Steakhouse », « Migros », « OpenAI »). Les lignes « À : … » / « De : … » / « Carte : … » sont des détails : ne pas en faire des transactions (tu peux en tirer `counterparty_iban` seulement si un IBAN apparaît).
 - IGNORER les lignes de taux de change du type « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » : ce n'est PAS une transaction et le montant en devise étrangère (ex. 23,00€) ne doit jamais être extrait.
@@ -211,16 +213,20 @@ PROFIL BANQUE : REVOLUT
 - « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant) : le solde MONTE.
 - IGNORER : « Résumé du solde », « Solde d'ouverture », « Solde de clôture », « Total », les en-têtes de colonnes, les numéros de page (« Page sur … »), et tout le texte légal/footer (mentions « Revolut Bank UAB », garantie des dépôts, etc.).
 
-EXEMPLE REVOLUT (lignes du relevé ⇒ JSON attendu). Solde d'ouverture = 60,00 CHF :
-  « 2 mars 2026  BP  2,95 CHF  57,05 CHF »            (solde 60,00 → 57,05 : baisse de 2,95 ⇒ debit 2,95)
-  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (57,05 → 707,05 : hausse de 650,00 ⇒ credit 650,00)
-  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF »  puis  « Taux Revolut = 1,00 CHF = 1,10€ … 23,00€ »  (mouvement 20,83 ; le solde baisse ⇒ debit ; 23,00€ = taux, ignoré)
-⇒ {"transactions":[
-  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},
-  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},
-  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null}
+EXEMPLE REVOLUT (lignes du relevé ⇒ JSON attendu). « Solde d'ouverture » = 60,00 CHF :
+  « 2 mars 2026  BP  2,95 CHF  57,05 CHF »            (mouvement 2,95 ; solde 57,05 ; 60,00→57,05 baisse ⇒ debit)
+  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (mouvement 650,00 ; solde 707,05 ; hausse ⇒ credit)
+  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF »  puis  « Taux Revolut = 1,00 CHF = 1,10€ … 23,00€ »  (mouvement 20,83 ; solde 540,04 ; 23,00€ = taux, ignoré)
+  « 19 mars 2026  Shell  61,79 CHF  157,97 CHF »     (mouvement 61,79 ; solde 157,97 ; baisse ⇒ debit)
+  « 20 mars 2026  TechSmith  De : Fs*techsmith  212,65 CHF  370,62 CHF »  (REMBOURSEMENT : « De : » et solde 157,97→370,62 qui MONTE ⇒ credit 212,65)
+⇒ {"opening_balance":60.00,"transactions":[
+  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","balance":57.05,"reference":null,"counterparty_iban":null},
+  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","balance":707.05,"reference":null,"counterparty_iban":null},
+  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","balance":540.04,"reference":null,"counterparty_iban":null},
+  {"date":"2026-03-19","booking_date":null,"description":"Shell","amount":61.79,"currency":"CHF","direction":"debit","balance":157.97,"reference":null,"counterparty_iban":null},
+  {"date":"2026-03-20","booking_date":null,"description":"TechSmith","amount":212.65,"currency":"CHF","direction":"credit","balance":370.62,"reference":null,"counterparty_iban":null}
 ]}
-Remarque : 57,05 / 707,05 / 540,04 sont des SOLDES (jamais extraits comme `amount`) ; 23,00€ est un taux de change (jamais extrait).
+Remarque : 57,05 / 707,05 / 540,04 / 157,97 / 370,62 vont dans `balance` (jamais dans `amount`) ; 23,00€ est un taux de change (jamais extrait). Le même marchand peut être un débit (achat, « À : ») un jour et un crédit (remboursement, « De : ») un autre — fie-toi au solde.
 "#;
 
 const N26_HINT: &str = r#"
@@ -323,6 +329,10 @@ fn bank_statement_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            // `opening_balance` : solde AVANT la première transaction (depuis le
+            // « Résumé du solde » → « Solde d'ouverture »). null si absent. Sert
+            // à dériver la direction de la 1re transaction par variation de solde.
+            "opening_balance": {"type": ["number", "null"]},
             "transactions": {
                 "type": "array",
                 "items": {
@@ -334,18 +344,24 @@ fn bank_statement_schema() -> Value {
                         "amount": {"type": "number"},
                         "currency": {"type": "string"},
                         "direction": {"type": "string", "enum": ["debit", "credit"]},
+                        // `balance` : solde courant APRÈS la transaction (dernier
+                        // montant de la ligne). null si la mise en page n'a pas de
+                        // colonne solde. Quand il est présent et cohérent, le code
+                        // recalcule amount+direction par delta de solde (déterministe).
+                        "balance": {"type": ["number", "null"]},
                         "reference": {"type": ["string", "null"]},
                         "counterparty_iban": {"type": ["string", "null"]}
                     },
                     "required": [
                         "date", "booking_date", "description", "amount",
-                        "currency", "direction", "reference", "counterparty_iban"
+                        "currency", "direction", "balance", "reference",
+                        "counterparty_iban"
                     ],
                     "additionalProperties": false
                 }
             }
         },
-        "required": ["transactions"],
+        "required": ["opening_balance", "transactions"],
         "additionalProperties": false
     })
 }
@@ -407,7 +423,13 @@ pub async fn ai_extract_bank_statement(
         ));
     }
 
+    let opening_balance = value.get("opening_balance").and_then(|v| v.as_f64());
+
     let mut out = Vec::with_capacity(arr.len());
+    // Solde courant déclaré par le modèle pour chaque transaction (dernier
+    // montant de la ligne). Parallèle à `out` ; sert à recalculer amount +
+    // direction de façon déterministe (voir reconcile_with_balances).
+    let mut balances: Vec<Option<f64>> = Vec::with_capacity(arr.len());
     for tx in arr {
         let date = tx.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let description = tx.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -423,6 +445,7 @@ pub async fn ai_extract_bank_statement(
         if date.is_empty() || description.trim().is_empty() || amount <= 0.0 {
             continue;
         }
+        balances.push(tx.get("balance").and_then(|v| v.as_f64()));
         out.push(ExtractedTransaction {
             date,
             booking_date: tx.get("booking_date").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -442,7 +465,55 @@ pub async fn ai_extract_bank_statement(
         });
     }
 
+    // Correction déterministe par variation de solde (Revolut & toute banque
+    // dont le modèle remonte la colonne solde). Le modèle n'a plus à DEVINER
+    // débit/crédit (peu fiable quand la colonne vide a disparu du texte aplati) :
+    // on le calcule à partir des soldes, qui eux sont sans ambiguïté.
+    reconcile_with_balances(&mut out, &balances, opening_balance);
+
     Ok(out)
+}
+
+/// Recalcule `amount` et `direction` à partir des soldes courants, quand ils
+/// sont disponibles. C'est la source de vérité la plus fiable : sur un relevé
+/// au format « [mouvement] [solde] » (Revolut, etc.), le texte aplati perd la
+/// colonne vide (Argent sortant OU Argent entrant), si bien que le modèle ne
+/// peut pas distinguer un débit d'un crédit et confond parfois le solde avec le
+/// montant. La variation de solde, elle, est sans ambiguïté :
+///   solde_courant − solde_précédent = montant signé du mouvement.
+///
+/// Pour chaque transaction i (dans l'ordre du relevé) :
+///   - solde précédent = solde[i-1], ou `opening_balance` pour la première ;
+///   - signed = solde[i] − solde_précédent ;
+///   - si |signed| > 0 : `amount` = |signed| (arrondi 2 déc.),
+///     `direction` = "credit" si signed > 0 sinon "debit".
+///
+/// On ne touche RIEN si le solde de la ligne (ou le solde de référence) manque
+/// — comportement générique (banques suisses) préservé : le modèle ne remplit
+/// pas `balance`/`opening_balance` là-bas, donc `out` reste tel quel.
+fn reconcile_with_balances(
+    out: &mut [ExtractedTransaction],
+    balances: &[Option<f64>],
+    opening_balance: Option<f64>,
+) {
+    let mut prev_balance = opening_balance;
+    for (i, tx) in out.iter_mut().enumerate() {
+        let current = balances.get(i).copied().flatten();
+        if let (Some(prev), Some(cur)) = (prev_balance, current) {
+            let signed = cur - prev;
+            // Arrondi au centime pour absorber les erreurs de virgule flottante.
+            let amount = (signed.abs() * 100.0).round() / 100.0;
+            if amount > 0.0 {
+                tx.amount = amount;
+                tx.direction = if signed > 0.0 { "credit" } else { "debit" }.to_string();
+            }
+        }
+        // Avance le solde de référence dès qu'on a une valeur, même si on n'a
+        // pas pu corriger cette ligne (ex. 1re ligne sans opening_balance).
+        if current.is_some() {
+            prev_balance = current;
+        }
+    }
 }
 
 #[tauri::command]
