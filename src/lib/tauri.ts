@@ -1298,8 +1298,11 @@ export const createItemFromTransaction = (
     expiration_date?: string
     redemption_url?: string
     redeemed_at?: string
-  }
-) => invoke<Item>("create_item_from_transaction", { txId, item })
+  },
+  // Quand un article très proche existe déjà, l'appel échoue avec un message
+  // préfixé « DUPLICATE: ». Relancer avec force=true pour créer malgré tout.
+  force?: boolean,
+) => invoke<Item>("create_item_from_transaction", { txId, item, force })
 
 /// Orphan-tx flow: enqueue a "facture à fournir plus tard" carrying the
 /// bank line's amount/date/currency. The user uploads the actual PDF

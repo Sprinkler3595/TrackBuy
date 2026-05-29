@@ -299,6 +299,67 @@ fn date_diff_days(a: &str, b: &str) -> Option<i64> {
     Some((da - db).num_days().abs())
 }
 
+/// Cherche un article actif déjà saisi très proche de celui qu'on s'apprête à
+/// créer depuis une transaction bancaire : même devise, montant à
+/// `AMOUNT_EPSILON_CENTS` près, et date d'achat dans la fenêtre
+/// `ITEM_DATE_TOLERANCE_DAYS` (mêmes seuils que `suggest_matches_for_statement`,
+/// pour rester cohérent). Renvoie une courte description du doublon potentiel
+/// (pour avertir l'utilisateur) ou `None`.
+fn find_duplicate_item(
+    conn: &rusqlite::Connection,
+    item: &CreateItemRequest,
+) -> Result<Option<String>, String> {
+    let currency = item
+        .currency
+        .clone()
+        .unwrap_or_else(|| "CHF".to_string());
+    let target_cents = to_cents(item.purchase_price);
+
+    // Fenêtre de dates ±tolérance, en s'appuyant sur la comparaison lexicale
+    // des dates ISO (YYYY-MM-DD). Si la date est illisible, on n'élargit pas.
+    let (lo, hi) = match NaiveDate::parse_from_str(&item.purchase_date, "%Y-%m-%d") {
+        Ok(d) => (
+            (d - chrono::Duration::days(ITEM_DATE_TOLERANCE_DAYS))
+                .format("%Y-%m-%d")
+                .to_string(),
+            (d + chrono::Duration::days(ITEM_DATE_TOLERANCE_DAYS))
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+        Err(_) => (item.purchase_date.clone(), item.purchase_date.clone()),
+    };
+
+    let sql = "SELECT i.description, i.purchase_date, i.purchase_price, i.currency
+               FROM items i
+               WHERE i.status = 'active'
+                 AND i.purchase_date >= ?1 AND i.purchase_date <= ?2
+               ORDER BY i.purchase_date";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([&lo, &hi], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for r in rows {
+        let (desc, date, price, cur) = r.map_err(|e| e.to_string())?;
+        // Devise différente = pas de doublon (pas de conversion de change).
+        if !cur.eq_ignore_ascii_case(&currency) {
+            continue;
+        }
+        if (to_cents(price) - target_cents).abs() > AMOUNT_EPSILON_CENTS {
+            continue;
+        }
+        return Ok(Some(format!("« {} » du {} ({:.2} {})", desc, date, price, cur)));
+    }
+    Ok(None)
+}
+
 /// Try to match the transaction to a single item. Returns (item_id, conf).
 /// Confidence rubric (debits only):
 /// - exact amount + merchant hit + |Δdate| ≤ 3j  → 0.95
@@ -1183,10 +1244,21 @@ pub fn create_item_from_transaction(
     state: State<'_, AppState>,
     tx_id: String,
     item: CreateItemRequest,
+    force: Option<bool>,
 ) -> Result<Item, String> {
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Garde-fou anti-doublon : un même achat peut déjà avoir été saisi via le
+    // scanner. À moins que l'utilisateur ne confirme (force), on refuse et on
+    // décrit l'article proche trouvé. Le préfixe « DUPLICATE: » permet au
+    // frontend de proposer une confirmation plutôt qu'une simple erreur.
+    if !force.unwrap_or(false) {
+        if let Some(dup) = find_duplicate_item(&conn, &item)? {
+            return Err(format!("DUPLICATE:{}", dup));
+        }
+    }
 
     let new_id = insert_item_row(&conn, &item)?;
 
@@ -1417,4 +1489,97 @@ pub fn get_bank_statement_data(
     let data = storage::read_attachment(resolved.to_str().unwrap_or(""), key_bytes)?;
     use base64::{engine::general_purpose, Engine as _};
     Ok(general_purpose::STANDARD.encode(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::models::CreateItemRequest;
+    use crate::db::Database;
+    use crate::util::test_support::{test_key, TempDir};
+
+    fn req(date: &str, price: f64, currency: &str) -> CreateItemRequest {
+        CreateItemRequest {
+            description: "Casque audio".to_string(),
+            purchase_date: date.to_string(),
+            purchase_price: price,
+            currency: Some(currency.to_string()),
+            status: None,
+            merchant_id: "m1".to_string(),
+            location_id: "l1".to_string(),
+            payment_card_id: None,
+            notes: None,
+            invoice_number: None,
+            product_reference: None,
+            quantity: None,
+            price_excl_tax: None,
+            tax_rate: None,
+            order_id: None,
+            item_kind: None,
+            event_datetime: None,
+            event_location: None,
+            expiration_date: None,
+            redemption_url: None,
+            redeemed_at: None,
+        }
+    }
+
+    /// Coffre avec un marchand + un lieu (FK) et un article existant.
+    fn open_with_item(date: &str, price: f64, currency: &str) -> (TempDir, Database) {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("INSERT INTO merchants (id, name) VALUES ('m1','Fnac')", [])
+                .unwrap();
+            conn.execute("INSERT INTO locations (id, name) VALUES ('l1','Lausanne')", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO items (id, description, purchase_date, purchase_price, currency, merchant_id, location_id)
+                 VALUES ('i1','Casque audio',?1,?2,?3,'m1','l1')",
+                rusqlite::params![date, price, currency],
+            )
+            .unwrap();
+        }
+        (tmp, db)
+    }
+
+    #[test]
+    fn detecte_un_doublon_proche() {
+        let (_tmp, db) = open_with_item("2026-04-10", 199.90, "CHF");
+        let conn = db.conn.lock().unwrap();
+        // Même montant, 2 jours plus tard, même devise → doublon signalé.
+        let dup = find_duplicate_item(&conn, &req("2026-04-12", 199.90, "CHF")).unwrap();
+        assert!(dup.is_some(), "un article quasi identique aurait dû être détecté");
+        assert!(dup.unwrap().contains("Casque audio"));
+    }
+
+    #[test]
+    fn pas_de_doublon_si_montant_eloigne() {
+        let (_tmp, db) = open_with_item("2026-04-10", 199.90, "CHF");
+        let conn = db.conn.lock().unwrap();
+        assert!(find_duplicate_item(&conn, &req("2026-04-10", 250.00, "CHF"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn pas_de_doublon_si_hors_fenetre_de_dates() {
+        let (_tmp, db) = open_with_item("2026-04-10", 199.90, "CHF");
+        let conn = db.conn.lock().unwrap();
+        // 30 jours d'écart > ITEM_DATE_TOLERANCE_DAYS.
+        assert!(find_duplicate_item(&conn, &req("2026-05-10", 199.90, "CHF"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn pas_de_doublon_si_devise_differente() {
+        let (_tmp, db) = open_with_item("2026-04-10", 199.90, "CHF");
+        let conn = db.conn.lock().unwrap();
+        // Même montant nominal mais EUR ≠ CHF : pas de conversion, pas de doublon.
+        assert!(find_duplicate_item(&conn, &req("2026-04-10", 199.90, "EUR"))
+            .unwrap()
+            .is_none());
+    }
 }
