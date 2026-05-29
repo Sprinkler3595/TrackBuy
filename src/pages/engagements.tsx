@@ -7,12 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
-import { formatPrice, daysUntil, cn } from "@/lib/utils"
+import { formatPrice, daysUntil, formatDate, cn } from "@/lib/utils"
 import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
+import { upcomingCancellations } from "@/lib/cancellation"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { ClausesEditor } from "@/components/features/clauses-editor"
+import { CancellationLetterModal } from "@/components/features/cancellation-letter"
+import { AlarmClock } from "lucide-react"
 import * as api from "@/lib/tauri"
 
 /// Groupings used for the category chips on the list page. Each maps to a
@@ -106,6 +109,7 @@ export function EngagementsPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [category, setCategory] = useState<CategoryGroup>("all")
   const [search, setSearch] = useState("")
+  const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
   const { toast } = useToast()
 
   const load = async () => {
@@ -263,6 +267,10 @@ export function EngagementsPage() {
       .reduce((acc, e) => acc + monthlyEquivalent(e.current_amount as number, e.billing_cycle, e.cycle_interval), 0)
   }, [engagements])
 
+  // Engagements whose cancellation deadline (contract end − notice period) is
+  // approaching or just missed — the "résiliez au bon moment" reminder.
+  const cancellations = useMemo(() => upcomingCancellations(engagements), [engagements])
+
   const cycleLabel = (e: api.Engagement): string => {
     const base =
       e.billing_cycle === "monthly" ? t("engagements.cycleMonthly") :
@@ -346,6 +354,60 @@ export function EngagementsPage() {
           </Button>
         </div>
       </div>
+
+      {cancellations.length > 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardHeader className="flex flex-row items-center gap-2 space-y-0 pb-3">
+            <AlarmClock className="h-5 w-5 text-amber-600 dark:text-amber-500" />
+            <CardTitle className="text-base">Résiliations à anticiper</CardTitle>
+            <Badge variant="secondary" className="ml-auto">{cancellations.length}</Badge>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {cancellations.map(({ engagement, info }) => {
+              const missed = info.severity === "missed"
+              const urgent = info.severity === "urgent"
+              const deadlineLabel = missed
+                ? `Délai dépassé le ${formatDate(info.deadlineISO)}`
+                : info.daysUntilDeadline === 0
+                  ? "Dernier jour pour résilier : aujourd'hui"
+                  : `Résiliez avant le ${formatDate(info.deadlineISO)} (dans ${info.daysUntilDeadline} j)`
+              return (
+                <div
+                  key={engagement.id}
+                  className="flex items-center justify-between gap-4 rounded-md border bg-background p-3"
+                >
+                  <div className="min-w-0">
+                    <Link to={`/engagements/${engagement.id}`} className="font-medium hover:underline">
+                      {engagement.name}
+                    </Link>
+                    <div
+                      className={cn(
+                        "text-xs",
+                        missed || urgent
+                          ? "font-medium text-destructive"
+                          : "text-amber-600 dark:text-amber-500",
+                      )}
+                    >
+                      {deadlineLabel}
+                      <span className="text-muted-foreground">
+                        {" "}· échéance du contrat le {formatDate(info.contractEndISO)}
+                      </span>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={missed ? "outline" : "default"}
+                    onClick={() => setLetterTarget(engagement)}
+                  >
+                    <FileText className="mr-1 h-3.5 w-3.5" />
+                    Lettre
+                  </Button>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         {(["all", "insurance", "housing", "vehicle", "utilities", "telecom", "taxes", "other"] as const).map((k) => (
@@ -611,6 +673,14 @@ export function EngagementsPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {letterTarget && (
+        <CancellationLetterModal
+          engagement={letterTarget}
+          creditor={creditors.find((c) => c.id === letterTarget.creditor_id) ?? null}
+          onClose={() => setLetterTarget(null)}
+        />
+      )}
     </div>
   )
 }
