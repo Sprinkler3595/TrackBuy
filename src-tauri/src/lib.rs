@@ -97,6 +97,7 @@ pub fn run() {
             commands::engagements::add_engagement_revision,
             commands::engagements::delete_engagement_revision,
             commands::engagements::migrate_subscription_to_engagement,
+            commands::engagements::migrate_all_subscriptions_to_engagements,
             commands::incomes::get_incomes,
             commands::incomes::get_income,
             commands::incomes::create_income,

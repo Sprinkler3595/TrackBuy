@@ -13,7 +13,6 @@ import {
   ShoppingBag,
   Shield,
   Ticket,
-  Repeat,
   HandCoins,
   Undo2,
   ScanLine,
@@ -46,7 +45,9 @@ const navSections: NavSection[] = [
     items: [
       { to: "/items", icon: ShoppingBag, labelKey: "nav.items" },
       { to: "/warranties", icon: Shield, labelKey: "nav.warranties" },
-      { to: "/subscriptions", icon: Repeat, labelKey: "nav.subscriptions" },
+      // Module Abonnements déprécié au profit des Engagements : retiré de la
+      // navigation. La page reste accessible (/subscriptions) le temps de la
+      // migration, proposée via une bannière sur la page Engagements.
       { to: "/tickets", icon: Ticket, labelKey: "nav.tickets" },
       { to: "/incomes", icon: HandCoins, labelKey: "nav.incomes" },
       { to: "/reimbursements", icon: Undo2, labelKey: "nav.reimbursements" },

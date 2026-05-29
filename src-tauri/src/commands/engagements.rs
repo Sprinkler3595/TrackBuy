@@ -766,7 +766,65 @@ pub fn migrate_subscription_to_engagement(
     let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let new_id = migrate_one_subscription(
+        &tx,
+        &subscription_id,
+        &engagement_type,
+        creditor_id.as_deref(),
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
 
+    let sql = format!(
+        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+        ENG_SELECT_COLUMNS, ENG_JOINS
+    );
+    conn.query_row(&sql, [&new_id], row_to_engagement)
+        .map_err(|e| e.to_string())
+}
+
+/// Migre TOUS les abonnements restants vers des engagements, en un seul lot
+/// transactionnel (tout ou rien). Le type d'engagement par défaut est `other`
+/// (l'utilisateur peut le préciser ensuite) et aucun créancier n'est lié. Le
+/// module Abonnements étant déprécié au profit des Engagements, cette commande
+/// alimente la bannière de migration. Retourne le nombre d'abonnements migrés.
+#[tauri::command]
+pub fn migrate_all_subscriptions_to_engagements(
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM subscriptions")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut migrated = 0i64;
+    for id in &ids {
+        migrate_one_subscription(&tx, id, "other", None)?;
+        migrated += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(migrated)
+}
+
+/// Cœur de migration d'UN abonnement, exécuté dans une transaction fournie par
+/// l'appelant (réutilisé en unitaire et en lot). Crée l'engagement, recopie les
+/// paiements en charges payées, re-route les pièces jointes, supprime la source.
+/// Retourne l'id du nouvel engagement.
+fn migrate_one_subscription(
+    tx: &rusqlite::Transaction<'_>,
+    subscription_id: &str,
+    engagement_type: &str,
+    creditor_id: Option<&str>,
+) -> Result<String, String> {
     // 1. Read the source subscription.
     let (name, payment_card_id, start_date, next_renewal_date, billing_cycle,
          cycle_interval, price, currency, notes): (
@@ -827,17 +885,10 @@ pub fn migrate_subscription_to_engagement(
     .map_err(|e| e.to_string())?;
 
     // 5. Drop the source subscription (CASCADE wipes payments + members).
-    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [&subscription_id])
+    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [subscription_id])
         .map_err(|e| e.to_string())?;
 
-    tx.commit().map_err(|e| e.to_string())?;
-
-    let sql = format!(
-        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
-        ENG_SELECT_COLUMNS, ENG_JOINS
-    );
-    conn.query_row(&sql, [&new_id], row_to_engagement)
-        .map_err(|e| e.to_string())
+    Ok(new_id)
 }
 
 #[cfg(test)]
@@ -992,6 +1043,61 @@ mod tests {
         let before = charge_count(&conn, "e1");
         assert_eq!(roll_forward_inner(&conn).unwrap(), 0, "second passage : aucune charge ajoutée");
         assert_eq!(charge_count(&conn, "e1"), before);
+    }
+
+    #[test]
+    fn migration_en_lot_convertit_tous_les_abonnements() {
+        let (_tmp, db) = open_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            // Deux abonnements + un paiement sur le premier.
+            for (id, name) in [("s1", "Netflix"), ("s2", "Spotify")] {
+                conn.execute(
+                    "INSERT INTO subscriptions
+                     (id, name, start_date, next_renewal_date, billing_cycle, cycle_interval, price, currency)
+                     VALUES (?1, ?2, date('now','-1 years'), date('now','+10 days'), 'monthly', 1, 12.0, 'CHF')",
+                    rusqlite::params![id, name],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, is_presumed)
+                 VALUES ('p1','s1', date('now','-1 months'), 12.0, 'CHF', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let migrated = {
+            // migrate_all_* prend State ; on appelle le cœur via une transaction
+            // directe pour le test unitaire.
+            let mut conn = db.conn.lock().unwrap();
+            let ids: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT id FROM subscriptions").unwrap();
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            let tx = conn.transaction().unwrap();
+            for id in &ids {
+                migrate_one_subscription(&tx, id, "other", None).unwrap();
+            }
+            tx.commit().unwrap();
+            ids.len()
+        };
+        assert_eq!(migrated, 2);
+
+        let conn = db.conn.lock().unwrap();
+        // Plus aucun abonnement, deux engagements créés, le paiement devenu charge payée.
+        let subs: i64 = conn.query_row("SELECT COUNT(*) FROM subscriptions", [], |r| r.get(0)).unwrap();
+        assert_eq!(subs, 0);
+        let engs: i64 = conn.query_row("SELECT COUNT(*) FROM engagements", [], |r| r.get(0)).unwrap();
+        assert_eq!(engs, 2);
+        let paid: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement_charges WHERE status='paid'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(paid, 1);
     }
 
     #[test]

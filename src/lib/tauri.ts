@@ -859,6 +859,11 @@ export const migrateSubscriptionToEngagement = (
     creditorId,
   })
 
+// Migre TOUS les abonnements restants vers des engagements (type « other » par
+// défaut). Retourne le nombre migré. Module Abonnements déprécié.
+export const migrateAllSubscriptionsToEngagements = () =>
+  invoke<number>("migrate_all_subscriptions_to_engagements")
+
 // Polymorphic attachments
 export const getEngagementAttachments = (engagementId: string) =>
   invoke<Attachment[]>("get_engagement_attachments", { engagementId })
