@@ -187,6 +187,10 @@ pub fn run() {
             commands::swiss_seed::seed_swiss_creditors,
             commands::this_month::get_this_month,
             commands::classify::classify_transactions,
+            commands::classify::list_merchant_rules,
+            commands::classify::create_merchant_rule,
+            commands::classify::update_merchant_rule,
+            commands::classify::delete_merchant_rule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TrackBuy");

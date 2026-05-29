@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 15;
+pub const CURRENT_SCHEMA_VERSION: i64 = 16;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -75,6 +75,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 15 {
         migrate_v15(conn)?;
+    }
+    if current_version < 16 {
+        migrate_v16(conn)?;
     }
 
     Ok(())
@@ -1186,6 +1189,31 @@ fn migrate_v15(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (15);
         "
     ).map_err(|e| format!("Migration v15 failed: {}", e))?;
+
+    Ok(())
+}
+
+fn migrate_v16(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Règles de classification marchand définies par l'utilisateur.
+        -- La table statique de classify.rs est suisse-centrée ; ces règles la
+        -- COMPLÈTENT et la SURCHARGENT (vérifiées en premier). `needle` est une
+        -- sous-chaîne cherchée dans le libellé bancaire (comparaison en
+        -- majuscules, avec frontières de mot, comme les patterns intégrés).
+        CREATE TABLE merchant_rules (
+            id TEXT PRIMARY KEY,
+            needle TEXT NOT NULL,
+            merchant TEXT NOT NULL,
+            category TEXT,
+            tax_category TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO schema_version (version) VALUES (16);
+        "
+    ).map_err(|e| format!("Migration v16 failed: {}", e))?;
 
     Ok(())
 }

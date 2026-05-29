@@ -1559,3 +1559,33 @@ export interface ClassifyResult extends Classification {
 export const classifyTransactions = (
   items: Array<{ id: string; description: string }>,
 ) => invoke<ClassifyResult[]>("classify_transactions", { items })
+
+// Règles de classification marchand définies par l'utilisateur (extensibles).
+export interface MerchantRule {
+  id: string
+  needle: string
+  merchant: string
+  category: string | null
+  tax_category: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface MerchantRuleInput {
+  needle: string
+  merchant: string
+  category?: string | null
+  tax_category?: string | null
+}
+
+export const listMerchantRules = () =>
+  invoke<MerchantRule[]>("list_merchant_rules")
+
+export const createMerchantRule = (rule: MerchantRuleInput) =>
+  invoke<MerchantRule>("create_merchant_rule", { rule })
+
+export const updateMerchantRule = (id: string, rule: MerchantRuleInput) =>
+  invoke<MerchantRule>("update_merchant_rule", { id, rule })
+
+export const deleteMerchantRule = (id: string) =>
+  invoke<void>("delete_merchant_rule", { id })

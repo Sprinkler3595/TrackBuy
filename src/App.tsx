@@ -28,6 +28,7 @@ import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
 import { HouseholdSettings } from "@/pages/settings-household"
+import { MerchantRulesSettings } from "@/pages/settings-merchant-rules"
 import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
 import { CeMoisPage } from "@/pages/ce-mois"
@@ -225,6 +226,7 @@ function AppContent() {
             <Route path="cartes" element={<ErrorBoundary><CardsPage /></ErrorBoundary>} />
             <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
+            <Route path="regles-marchand" element={<ErrorBoundary><MerchantRulesSettings /></ErrorBoundary>} />
           </Route>
           <Route path="/merchants" element={<Navigate to="/settings/marchands" replace />} />
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />
