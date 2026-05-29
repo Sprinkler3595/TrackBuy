@@ -11,6 +11,7 @@ import { CsvImport } from "@/components/features/csv-import"
 import { ItemThumbnail, invalidateThumbnail } from "@/components/features/item-thumbnail"
 import { QuickCreateDialog, type QuickCreateEntity } from "@/components/features/quick-create-dialog"
 import { DocSlot } from "@/components/features/doc-slot"
+import { InsuranceInventoryModal } from "@/components/features/insurance-inventory"
 import { formatPrice, formatDate } from "@/lib/utils"
 import { findMerchantByName } from "@/lib/fuzzy-match"
 import { itemsToCsv, itemsToJson, downloadExport } from "@/lib/export"
@@ -45,6 +46,7 @@ export function ItemsPage() {
   const [statusFilter, setStatusFilter] = useState("all")
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [showInventory, setShowInventory] = useState(false)
   const [editingItem, setEditingItem] = useState<api.Item | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [isGroup, setIsGroup] = useState(false)
@@ -618,6 +620,10 @@ export function ItemsPage() {
           <Button variant="outline" onClick={() => setShowImport(true)}>
             <Upload className="h-4 w-4" />
             Importer
+          </Button>
+          <Button variant="outline" onClick={() => setShowInventory(true)}>
+            <ClipboardList className="h-4 w-4" />
+            Inventaire assurance
           </Button>
           {!selectionMode && items.length > 1 && (
             <Button variant="outline" onClick={() => setSelectionMode(true)}>
@@ -1289,6 +1295,8 @@ export function ItemsPage() {
         onClose={() => setQuickCreate(null)}
         onCreated={handleQuickCreated}
       />
+
+      {showInventory && <InsuranceInventoryModal onClose={() => setShowInventory(false)} />}
     </div>
   )
 }

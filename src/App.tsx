@@ -37,6 +37,7 @@ import { BanquePage } from "@/pages/banque"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
 import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
+import { useCancellationNotifications } from "@/hooks/use-cancellation-notifications"
 import { useIdleLock, useIdleLockMinutes } from "@/hooks/use-idle-lock"
 import { I18nContext, getTranslation, type Locale } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -58,6 +59,7 @@ function AppContent() {
   useWarrantyNotifications(unlocked)
   useSubscriptionNotifications(unlocked)
   useEngagementNotifications(unlocked)
+  useCancellationNotifications(unlocked)
 
   useEffect(() => {
     async function check() {

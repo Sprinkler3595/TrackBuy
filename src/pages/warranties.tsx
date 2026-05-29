@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { Shield, Search, ExternalLink, AlertTriangle } from "lucide-react"
+import { Shield, Search, ExternalLink, AlertTriangle, Wrench } from "lucide-react"
 import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { formatDate, daysUntil } from "@/lib/utils"
+import { WarrantyClaimModal, type ClaimWarranty } from "@/components/features/warranty-claim"
 import * as api from "@/lib/tauri"
 
 type Filter = "all" | "active" | "expiring" | "expired"
@@ -20,6 +22,7 @@ export function WarrantiesPage() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<Filter>("all")
+  const [claimTarget, setClaimTarget] = useState<ClaimWarranty | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -123,9 +126,8 @@ export function WarrantiesPage() {
                 ? { label: `${w.days_left} j`, variant: "secondary" as const }
                 : { label: "Active", variant: "default" as const }
             return (
-              <Link
+              <div
                 key={w.id}
-                to={`/items/${w.item_id}`}
                 className="flex items-center gap-4 px-4 py-2.5 hover:bg-accent/40 transition-colors"
               >
                 {w.days_left >= 0 && w.days_left <= 30 ? (
@@ -133,19 +135,41 @@ export function WarrantiesPage() {
                 ) : (
                   <Shield className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
-                <div className="flex-1 min-w-0">
+                <Link to={`/items/${w.item_id}`} className="flex-1 min-w-0">
                   <div className="font-medium truncate">{w.item_description ?? "Article inconnu"}</div>
                   <div className="text-xs text-muted-foreground truncate">
                     {formatDate(w.start_date)} → {formatDate(w.end_date)} · {w.duration_months} mois
                     {w.notes && ` · ${w.notes}`}
                   </div>
-                </div>
+                </Link>
                 <Badge variant={status.variant} className="shrink-0">{status.label}</Badge>
-                <ExternalLink className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              </Link>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => setClaimTarget({
+                    item_id: w.item_id,
+                    item_description: w.item_description,
+                    start_date: w.start_date,
+                    duration_months: w.duration_months,
+                    end_date: w.end_date,
+                    days_left: w.days_left,
+                  })}
+                >
+                  <Wrench className="mr-1 h-3.5 w-3.5" />
+                  SAV
+                </Button>
+                <Link to={`/items/${w.item_id}`} className="shrink-0" aria-label="Ouvrir l'article">
+                  <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                </Link>
+              </div>
             )
           })}
         </div>
+      )}
+
+      {claimTarget && (
+        <WarrantyClaimModal warranty={claimTarget} onClose={() => setClaimTarget(null)} />
       )}
     </div>
   )
