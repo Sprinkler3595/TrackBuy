@@ -794,3 +794,118 @@ pub fn migrate_subscription_to_engagement(
     conn.query_row(&sql, [&new_id], row_to_engagement)
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::util::test_support::{test_key, TempDir};
+
+    fn open_db() -> (TempDir, Database) {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        (tmp, db)
+    }
+
+    /// Insère un engagement actif dont `next_due_date` est calculé relativement
+    /// à aujourd'hui.
+    fn insert_eng(
+        conn: &Connection,
+        id: &str,
+        due_modifier: &str,
+        cycle: &str,
+        interval: i32,
+        auto_pay: bool,
+        status: &str,
+    ) {
+        conn.execute(
+            &format!(
+                "INSERT INTO engagements
+                 (id, name, engagement_type, billing_cycle, cycle_interval,
+                  next_due_date, current_amount, currency, auto_pay, status)
+                 VALUES (?1, 'Test', 'insurance', ?2, ?3, date('now', '{}'),
+                         50.0, 'CHF', ?4, ?5)",
+                due_modifier
+            ),
+            rusqlite::params![id, cycle, interval, auto_pay as i32, status],
+        )
+        .unwrap();
+    }
+
+    fn charge_count(conn: &Connection, eng_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id = ?1",
+            [eng_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn roll_forward_genere_une_charge_par_cycle_manque() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, false, "active");
+        let inserted = roll_forward_inner(&conn).unwrap();
+        assert_eq!(inserted, 4);
+        assert_eq!(charge_count(&conn, "e1"), 4);
+    }
+
+    #[test]
+    fn auto_pay_marque_paid_sinon_scheduled() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "auto", "-15 days", "custom", 10, true, "active");
+        insert_eng(&conn, "manuel", "-15 days", "custom", 10, false, "active");
+        roll_forward_inner(&conn).unwrap();
+
+        // auto_pay ⇒ statut 'paid' avec paid_on renseigné (LSV/SEPA réglé seul).
+        let auto_paid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges
+                 WHERE engagement_id = 'auto' AND status = 'paid' AND paid_on IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto_paid, charge_count(&conn, "auto"));
+
+        // sinon ⇒ 'scheduled', à confirmer par l'utilisateur.
+        let manuel_sched: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges
+                 WHERE engagement_id = 'manuel' AND status = 'scheduled' AND paid_on IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(manuel_sched, charge_count(&conn, "manuel"));
+    }
+
+    #[test]
+    fn one_shot_ne_roule_jamais() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-100 days", "one_shot", 1, false, "active");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0);
+        assert_eq!(charge_count(&conn, "e1"), 0);
+    }
+
+    #[test]
+    fn engagement_non_actif_est_ignore() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, false, "ended");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0);
+        assert_eq!(charge_count(&conn, "e1"), 0);
+    }
+
+    #[test]
+    fn roll_forward_plafonne_a_1000_iterations() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-5000 days", "custom", 1, false, "active");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 1000);
+        assert_eq!(charge_count(&conn, "e1"), 1000);
+    }
+}

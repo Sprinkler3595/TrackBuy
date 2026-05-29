@@ -80,3 +80,71 @@ fn hex_encode(bytes: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::{test_key, TempDir};
+
+    #[test]
+    fn open_initialise_le_schema_a_la_version_courante() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        let db = Database::open(tmp.path(), &key).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, migrations::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn reouverture_est_idempotente_et_preserve_les_donnees() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        {
+            let db = Database::open(tmp.path(), &key).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO merchants (id, name) VALUES ('m1', 'Migros')",
+                [],
+            )
+            .unwrap();
+        } // fermeture (checkpoint WAL via Drop)
+
+        // Réouverture : les migrations ne doivent rien casser ni rejouer.
+        let db = Database::open(tmp.path(), &key).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM merchants WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Migros");
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, migrations::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn ouverture_avec_mauvaise_cle_echoue() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        {
+            let _db = Database::open(tmp.path(), &key).unwrap();
+        }
+        let mut wrong = *key;
+        wrong[0] ^= 0xff;
+        // `Database` n'implémente pas Debug, donc pas de `unwrap_err()` :
+        // on inspecte le Result à la main.
+        let err = match Database::open(tmp.path(), &wrong) {
+            Ok(_) => panic!("ouverture avec mauvaise clé aurait dû échouer"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("Mot de passe incorrect"),
+            "erreur inattendue: {err}"
+        );
+    }
+}
