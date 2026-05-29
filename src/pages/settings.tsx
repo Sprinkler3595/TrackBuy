@@ -14,6 +14,7 @@ import {
   Repeat,
   HandCoins,
   Undo2,
+  Tag,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
@@ -35,6 +36,7 @@ export function SettingsPage() {
     { to: "/settings/cartes", end: false, icon: CreditCard, label: locale === "fr" ? "Cartes" : "Cards" },
     { to: "/settings/coffres", end: false, icon: Vault, label: locale === "fr" ? "Coffres" : "Vaults" },
     { to: "/settings/nommage", end: false, icon: FileSignature, label: locale === "fr" ? "Nommage" : "Naming" },
+    { to: "/settings/regles-marchand", end: false, icon: Tag, label: locale === "fr" ? "Règles marchand" : "Merchant rules" },
     { to: "/items", end: false, icon: ShoppingBag, label: locale === "fr" ? "Achats" : "Items" },
     { to: "/tickets", end: false, icon: Ticket, label: locale === "fr" ? "Billets & Codes" : "Tickets & Codes" },
     { to: "/warranties", end: false, icon: Shield, label: locale === "fr" ? "Garanties" : "Warranties" },

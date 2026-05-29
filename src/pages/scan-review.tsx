@@ -123,7 +123,9 @@ export function ScanReviewPage() {
         : null
       setShared({
         ...blankShared(),
-        purchase_date: payload.shared.purchase_date || today(),
+        // Pas de repli sur aujourd'hui : si l'OCR n'a pas détecté de date, on
+        // laisse le champ VIDE pour forcer une confirmation explicite (cf. 2.2).
+        purchase_date: payload.shared.purchase_date || "",
         currency: payload.shared.currency || "CHF",
         invoice_number: payload.shared.invoice_number || "",
         notes: payload.shared.notes || "",
@@ -207,8 +209,11 @@ export function ScanReviewPage() {
   }, [drafts.length])
 
   // ------------------ Navigation guards ------------------
-  // Step 0 (header): can only move on once merchant + location are picked.
-  const headerComplete = !!shared.merchant_id && !!shared.location_id
+  // Step 0 (header): can only move on once merchant + location are picked AND
+  // a purchase date is confirmed. La date n'est plus inventée par l'OCR : si
+  // elle n'a pas été détectée, l'utilisateur doit la saisir avant de continuer.
+  const headerComplete =
+    !!shared.merchant_id && !!shared.location_id && !!shared.purchase_date
   // Item steps: description + a parsable price required.
   const isItemComplete = (d: ItemDraft) => {
     const trimmed = d.description.trim()
@@ -231,7 +236,12 @@ export function ScanReviewPage() {
   // ------------------ Submit ------------------
   const submit = async () => {
     if (!headerComplete) {
-      toast("Sélectionne un marchand et un lieu d'abord", "error")
+      toast(
+        !shared.purchase_date
+          ? "Confirme la date d'achat (non détectée par l'OCR) avant de continuer"
+          : "Sélectionne un marchand et un lieu d'abord",
+        "error",
+      )
       setCurrentStep(0)
       return
     }
@@ -628,7 +638,9 @@ export function ScanReviewPage() {
       {isHeader && !headerComplete && (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <AlertCircle className="h-3.5 w-3.5" />
-          Sélectionne au moins un marchand et un lieu pour continuer.
+          {!shared.purchase_date
+            ? "Date d'achat non détectée : confirme-la, ainsi qu'un marchand et un lieu, pour continuer."
+            : "Sélectionne au moins un marchand et un lieu pour continuer."}
         </p>
       )}
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff } from "lucide-react"
+import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff, KeyRound, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,7 @@ import {
   getAiSettings,
   saveAiSettings,
   defaultAiSettings,
+  isCloudProvider,
 } from "@/lib/ai-settings"
 
 function formatBytes(n: number, locale: "fr" | "en"): string {
@@ -40,7 +41,58 @@ export function GeneralSettings() {
   const [ai, setAi] = useState<AiSettings>(() => getAiSettings())
   const [showApiKey, setShowApiKey] = useState(false)
   const [testing, setTesting] = useState(false)
+  // Rotation du mot de passe maître.
+  const [oldPwd, setOldPwd] = useState("")
+  const [newPwd, setNewPwd] = useState("")
+  const [confirmPwd, setConfirmPwd] = useState("")
+  const [showPwd, setShowPwd] = useState(false)
+  const [rotating, setRotating] = useState(false)
   const { toast } = useToast()
+
+  const changePassword = async () => {
+    if (newPwd.length < 8) {
+      toast(
+        locale === "fr"
+          ? "Le nouveau mot de passe doit contenir au moins 8 caractères."
+          : "The new password must be at least 8 characters.",
+        "error",
+      )
+      return
+    }
+    if (newPwd !== confirmPwd) {
+      toast(
+        locale === "fr" ? "La confirmation ne correspond pas." : "Confirmation does not match.",
+        "error",
+      )
+      return
+    }
+    if (newPwd === oldPwd) {
+      toast(
+        locale === "fr"
+          ? "Le nouveau mot de passe doit être différent de l'ancien."
+          : "The new password must differ from the old one.",
+        "error",
+      )
+      return
+    }
+    setRotating(true)
+    try {
+      await api.changeMasterPassword(oldPwd, newPwd)
+      setOldPwd("")
+      setNewPwd("")
+      setConfirmPwd("")
+      toast(
+        locale === "fr"
+          ? "Mot de passe maître changé. La base et les pièces jointes ont été re-chiffrées."
+          : "Master password changed. Database and attachments were re-encrypted.",
+        "success",
+      )
+    } catch (e) {
+      toast(`${locale === "fr" ? "Échec" : "Failed"}: ${e}`, "error")
+    } finally {
+      setRotating(false)
+    }
+  }
 
   const updateIdle = (minutes: number) => {
     setIdleLockMinutes(minutes)
@@ -254,6 +306,17 @@ export function GeneralSettings() {
                 </div>
               </div>
 
+              {isCloudProvider(ai.provider) && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    {locale === "fr"
+                      ? "Fournisseur cloud : l'image et le texte des reçus/relevés sont envoyés à un service distant (Infomaniak). Cela sort du modèle « 100 % local ». Pour rester local, utilise Ollama. N'active l'IA cloud que pour des documents non sensibles."
+                      : "Cloud provider: receipt/statement image and text are sent to a remote service (Infomaniak). This leaves the “100% local” model. Use Ollama to stay local. Only enable cloud AI for non-sensitive documents."}
+                  </span>
+                </div>
+              )}
+
               {ai.provider === "infomaniak" ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-2 sm:col-span-2">
@@ -386,6 +449,83 @@ export function GeneralSettings() {
               </div>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <KeyRound className="h-5 w-5" />
+            {locale === "fr" ? "Mot de passe maître" : "Master password"}
+          </CardTitle>
+          <CardDescription>
+            {locale === "fr"
+              ? "Change le mot de passe du coffre actif. La base et toutes les pièces jointes sont re-chiffrées ; en cas d'interruption, le coffre reste utilisable avec l'ancien mot de passe."
+              : "Changes the active vault's password. The database and all attachments are re-encrypted; if interrupted, the vault stays usable with the old password."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              {locale === "fr" ? "Mot de passe actuel" : "Current password"}
+            </label>
+            <Input
+              type={showPwd ? "text" : "password"}
+              value={oldPwd}
+              onChange={(e) => setOldPwd(e.target.value)}
+              autoComplete="current-password"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              {locale === "fr" ? "Nouveau mot de passe" : "New password"}
+            </label>
+            <div className="flex gap-2">
+              <Input
+                type={showPwd ? "text" : "password"}
+                value={newPwd}
+                onChange={(e) => setNewPwd(e.target.value)}
+                autoComplete="new-password"
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setShowPwd(!showPwd)}
+              >
+                {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              {locale === "fr" ? "Confirmer le nouveau mot de passe" : "Confirm new password"}
+            </label>
+            <Input
+              type={showPwd ? "text" : "password"}
+              value={confirmPwd}
+              onChange={(e) => setConfirmPwd(e.target.value)}
+              autoComplete="new-password"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {locale === "fr"
+              ? "Conseil : effectuez une sauvegarde avant de changer le mot de passe."
+              : "Tip: make a backup before changing the password."}
+          </p>
+          <Button
+            onClick={changePassword}
+            disabled={rotating || !oldPwd || !newPwd || !confirmPwd}
+          >
+            {rotating
+              ? locale === "fr"
+                ? "Re-chiffrement en cours..."
+                : "Re-encrypting..."
+              : locale === "fr"
+                ? "Changer le mot de passe"
+                : "Change password"}
+          </Button>
         </CardContent>
       </Card>
 

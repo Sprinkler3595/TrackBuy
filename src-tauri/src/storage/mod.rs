@@ -87,3 +87,77 @@ pub fn detect_mime_type(filename: &str) -> String {
     }
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::{test_key, TempDir};
+
+    #[test]
+    fn save_then_read_attachment_round_trip() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        let data = b"contenu binaire de la piece jointe \x00\x01\x02";
+
+        let stored = save_attachment(tmp.path(), "att-123", data, &key).unwrap();
+        // On ne renvoie que le nom de fichier (portable entre coffres).
+        assert_eq!(stored, "att-123.enc");
+
+        let on_disk = attachments_dir(tmp.path()).join(&stored);
+        // Le fichier sur disque est chiffré : il ne contient pas le clair.
+        let raw = std::fs::read(&on_disk).unwrap();
+        assert_ne!(raw, data);
+
+        let decrypted =
+            read_attachment(on_disk.to_str().unwrap(), &key).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn read_attachment_echoue_avec_mauvaise_cle() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        let stored = save_attachment(tmp.path(), "att-1", b"secret", &key).unwrap();
+        let on_disk = attachments_dir(tmp.path()).join(&stored);
+
+        let mut wrong = [0u8; 32];
+        wrong[0] = 0xff;
+        assert!(read_attachment(on_disk.to_str().unwrap(), &wrong).is_err());
+    }
+
+    #[test]
+    fn resolve_attachment_ne_garde_que_le_nom() {
+        let tmp = TempDir::new();
+        let root = attachments_dir(tmp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        // `ensure_within` canonicalise et exige l'existence du fichier cible.
+        std::fs::write(root.join("abc.enc"), b"x").unwrap();
+
+        // Un chemin venant d'un autre coffre doit se résoudre dans le coffre
+        // courant en ne gardant que le composant final.
+        let resolved =
+            resolve_attachment("/un/autre/coffre/files/abc.enc", &root).unwrap();
+        assert_eq!(resolved.file_name().unwrap(), "abc.enc");
+        assert!(resolved.starts_with(root.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn resolve_attachment_rejette_echappement() {
+        let tmp = TempDir::new();
+        let root = attachments_dir(tmp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        // file_name() de ".." est None → erreur, pas d'évasion possible.
+        assert!(resolve_attachment("..", &root).is_err());
+    }
+
+    #[test]
+    fn delete_attachment_supprime_le_fichier() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        let stored = save_attachment(tmp.path(), "att-x", b"abc", &key).unwrap();
+        let on_disk = attachments_dir(tmp.path()).join(&stored);
+        assert!(on_disk.exists());
+        delete_attachment_file(on_disk.to_str().unwrap()).unwrap();
+        assert!(!on_disk.exists());
+    }
+}

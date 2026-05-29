@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Plus, Trash2, RefreshCw, Users, Receipt, ExternalLink } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, RefreshCw, Users, Receipt, ExternalLink, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -157,6 +157,16 @@ export function SubscriptionDetailPage() {
     try {
       await api.deleteSubscriptionPayment(deletePaymentTarget)
       setDeletePaymentTarget(null)
+      await load()
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    }
+  }
+
+  // Confirme un paiement présumé (généré automatiquement) : le débit a bien eu lieu.
+  const handleConfirmPayment = async (id: string) => {
+    try {
+      await api.confirmSubscriptionPayment(id)
       await load()
     } catch (e) {
       toast(`Erreur: ${e}`, "error")
@@ -333,13 +343,28 @@ export function SubscriptionDetailPage() {
               {payments.map((p) => (
                 <div key={p.id} className="flex items-center justify-between rounded-md border p-2">
                   <div>
-                    <p className="text-sm font-medium">{formatDate(p.paid_on)}</p>
+                    <p className="text-sm font-medium flex items-center gap-2">
+                      {formatDate(p.paid_on)}
+                      {p.is_presumed && (
+                        <Badge variant="warning">Présumé · à confirmer</Badge>
+                      )}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {p.card_name ?? "—"}{p.notes && ` · ${p.notes}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold">{formatPrice(p.amount, p.currency)}</span>
+                    {p.is_presumed && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Confirmer ce paiement"
+                        onClick={() => handleConfirmPayment(p.id)}
+                      >
+                        <Check className="h-4 w-4 text-emerald-600" />
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" onClick={() => setDeletePaymentTarget(p.id)}>
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>

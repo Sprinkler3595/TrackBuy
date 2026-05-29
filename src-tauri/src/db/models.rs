@@ -347,6 +347,10 @@ pub struct SubscriptionPayment {
     pub payment_card_id: Option<String>,
     pub notes: Option<String>,
     pub created_at: String,
+    /// true = ligne présumée générée par le roll-forward, en attente de
+    /// confirmation (le débit n'est pas garanti d'avoir eu lieu).
+    #[serde(default)]
+    pub is_presumed: bool,
     #[serde(skip_deserializing)]
     pub card_name: Option<String>,
 }
@@ -501,6 +505,11 @@ pub struct EngagementCharge {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// true = charge présumée générée par le roll-forward (auto_pay), en
+    /// attente de confirmation : marquée 'paid' par commodité mais le débit
+    /// n'est pas garanti tant que l'utilisateur ne l'a pas validée.
+    #[serde(default)]
+    pub is_presumed: bool,
     #[serde(skip_deserializing)]
     pub card_name: Option<String>,
 }

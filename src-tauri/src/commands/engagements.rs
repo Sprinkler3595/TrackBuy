@@ -56,7 +56,7 @@ const CHARGE_SELECT_COLUMNS: &str =
     "c.id, c.engagement_id, c.period_start, c.period_end, c.due_date, c.amount, c.currency,
      c.quantity, c.unit, c.unit_price, c.paid_on, c.status, c.payment_card_id,
      c.reference_number, c.invoice_number, c.notes, c.created_at, c.updated_at,
-     pc.name as card_name";
+     c.is_presumed, pc.name as card_name";
 
 fn row_to_charge(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementCharge> {
     Ok(EngagementCharge {
@@ -78,7 +78,8 @@ fn row_to_charge(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementCharge> 
         notes: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
-        card_name: row.get(18)?,
+        is_presumed: row.get::<_, i64>(18)? != 0,
+        card_name: row.get(19)?,
     })
 }
 
@@ -169,20 +170,36 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
             if current >= today {
                 break;
             }
-            let charge_id = Uuid::new_v4().to_string();
-            let (status, paid_on) = if auto_pay {
-                ("paid", Some(current.clone()))
-            } else {
-                ("scheduled", None::<String>)
-            };
-            conn.execute(
-                "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
-                 payment_card_id, paid_on, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status],
-            )
-            .map_err(|e| e.to_string())?;
-            inserted += 1;
+            // Garde anti-double-comptage : ne pas dupliquer une charge déjà
+            // présente pour cette échéance (saisie manuelle, exécution
+            // précédente du roll-forward, etc.).
+            let already: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM engagement_charges
+                     WHERE engagement_id = ?1 AND due_date = ?2",
+                    rusqlite::params![id, current],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if already == 0 {
+                let charge_id = Uuid::new_v4().to_string();
+                // auto_pay : marquée 'paid' mais PRÉSUMÉE (débit LSV/SEPA
+                // supposé, pas confirmé). Sinon 'scheduled' (rien n'est payé,
+                // donc pas de présomption à lever).
+                let (status, paid_on, is_presumed) = if auto_pay {
+                    ("paid", Some(current.clone()), 1)
+                } else {
+                    ("scheduled", None::<String>, 0)
+                };
+                conn.execute(
+                    "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
+                     payment_card_id, paid_on, status, is_presumed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status, is_presumed],
+                )
+                .map_err(|e| e.to_string())?;
+                inserted += 1;
+            }
             current = advance_date(conn, &current, &modifier)?;
         }
         conn.execute(
@@ -573,6 +590,32 @@ pub fn update_engagement_charge(
     Ok(())
 }
 
+/// Confirme une charge présumée (auto_pay générée par le roll-forward) : le
+/// débit a bien eu lieu. Bascule is_presumed à 0, sans toucher au reste.
+#[tauri::command]
+pub fn confirm_engagement_charge(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<EngagementCharge, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE engagement_charges SET is_presumed = 0, updated_at = datetime('now')
+         WHERE id = ?1",
+        [&id],
+    )
+    .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT {} FROM engagement_charges c
+         LEFT JOIN payment_cards pc ON c.payment_card_id = pc.id
+         WHERE c.id = ?1",
+        CHARGE_SELECT_COLUMNS
+    );
+    conn.query_row(&sql, [&id], row_to_charge)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn mark_charge_paid(
     state: State<'_, AppState>,
@@ -584,9 +627,11 @@ pub fn mark_charge_paid(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
+    // Confirmation explicite par l'utilisateur : is_presumed repasse à 0.
     conn.execute(
         "UPDATE engagement_charges SET status = 'paid', paid_on = ?1,
-         payment_card_id = COALESCE(?2, payment_card_id), updated_at = datetime('now')
+         payment_card_id = COALESCE(?2, payment_card_id), is_presumed = 0,
+         updated_at = datetime('now')
          WHERE id = ?3",
         rusqlite::params![paid_on, payment_card_id, id],
     )
@@ -721,7 +766,65 @@ pub fn migrate_subscription_to_engagement(
     let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let new_id = migrate_one_subscription(
+        &tx,
+        &subscription_id,
+        &engagement_type,
+        creditor_id.as_deref(),
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
 
+    let sql = format!(
+        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+        ENG_SELECT_COLUMNS, ENG_JOINS
+    );
+    conn.query_row(&sql, [&new_id], row_to_engagement)
+        .map_err(|e| e.to_string())
+}
+
+/// Migre TOUS les abonnements restants vers des engagements, en un seul lot
+/// transactionnel (tout ou rien). Le type d'engagement par défaut est `other`
+/// (l'utilisateur peut le préciser ensuite) et aucun créancier n'est lié. Le
+/// module Abonnements étant déprécié au profit des Engagements, cette commande
+/// alimente la bannière de migration. Retourne le nombre d'abonnements migrés.
+#[tauri::command]
+pub fn migrate_all_subscriptions_to_engagements(
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM subscriptions")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut migrated = 0i64;
+    for id in &ids {
+        migrate_one_subscription(&tx, id, "other", None)?;
+        migrated += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(migrated)
+}
+
+/// Cœur de migration d'UN abonnement, exécuté dans une transaction fournie par
+/// l'appelant (réutilisé en unitaire et en lot). Crée l'engagement, recopie les
+/// paiements en charges payées, re-route les pièces jointes, supprime la source.
+/// Retourne l'id du nouvel engagement.
+fn migrate_one_subscription(
+    tx: &rusqlite::Transaction<'_>,
+    subscription_id: &str,
+    engagement_type: &str,
+    creditor_id: Option<&str>,
+) -> Result<String, String> {
     // 1. Read the source subscription.
     let (name, payment_card_id, start_date, next_renewal_date, billing_cycle,
          cycle_interval, price, currency, notes): (
@@ -782,15 +885,234 @@ pub fn migrate_subscription_to_engagement(
     .map_err(|e| e.to_string())?;
 
     // 5. Drop the source subscription (CASCADE wipes payments + members).
-    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [&subscription_id])
+    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [subscription_id])
         .map_err(|e| e.to_string())?;
 
-    tx.commit().map_err(|e| e.to_string())?;
+    Ok(new_id)
+}
 
-    let sql = format!(
-        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
-        ENG_SELECT_COLUMNS, ENG_JOINS
-    );
-    conn.query_row(&sql, [&new_id], row_to_engagement)
-        .map_err(|e| e.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::util::test_support::{test_key, TempDir};
+
+    fn open_db() -> (TempDir, Database) {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        (tmp, db)
+    }
+
+    /// Insère un engagement actif dont `next_due_date` est calculé relativement
+    /// à aujourd'hui.
+    fn insert_eng(
+        conn: &Connection,
+        id: &str,
+        due_modifier: &str,
+        cycle: &str,
+        interval: i32,
+        auto_pay: bool,
+        status: &str,
+    ) {
+        conn.execute(
+            &format!(
+                "INSERT INTO engagements
+                 (id, name, engagement_type, billing_cycle, cycle_interval,
+                  next_due_date, current_amount, currency, auto_pay, status)
+                 VALUES (?1, 'Test', 'insurance', ?2, ?3, date('now', '{}'),
+                         50.0, 'CHF', ?4, ?5)",
+                due_modifier
+            ),
+            rusqlite::params![id, cycle, interval, auto_pay as i32, status],
+        )
+        .unwrap();
+    }
+
+    fn charge_count(conn: &Connection, eng_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id = ?1",
+            [eng_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn roll_forward_genere_une_charge_par_cycle_manque() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, false, "active");
+        let inserted = roll_forward_inner(&conn).unwrap();
+        assert_eq!(inserted, 4);
+        assert_eq!(charge_count(&conn, "e1"), 4);
+    }
+
+    #[test]
+    fn auto_pay_marque_paid_sinon_scheduled() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "auto", "-15 days", "custom", 10, true, "active");
+        insert_eng(&conn, "manuel", "-15 days", "custom", 10, false, "active");
+        roll_forward_inner(&conn).unwrap();
+
+        // auto_pay ⇒ statut 'paid' avec paid_on renseigné (LSV/SEPA réglé seul).
+        let auto_paid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges
+                 WHERE engagement_id = 'auto' AND status = 'paid' AND paid_on IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto_paid, charge_count(&conn, "auto"));
+
+        // sinon ⇒ 'scheduled', à confirmer par l'utilisateur.
+        let manuel_sched: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges
+                 WHERE engagement_id = 'manuel' AND status = 'scheduled' AND paid_on IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(manuel_sched, charge_count(&conn, "manuel"));
+    }
+
+    #[test]
+    fn one_shot_ne_roule_jamais() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-100 days", "one_shot", 1, false, "active");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0);
+        assert_eq!(charge_count(&conn, "e1"), 0);
+    }
+
+    #[test]
+    fn engagement_non_actif_est_ignore() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, false, "ended");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0);
+        assert_eq!(charge_count(&conn, "e1"), 0);
+    }
+
+    #[test]
+    fn roll_forward_plafonne_a_1000_iterations() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-5000 days", "custom", 1, false, "active");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 1000);
+        assert_eq!(charge_count(&conn, "e1"), 1000);
+    }
+
+    #[test]
+    fn auto_pay_genere_des_charges_presumees_pas_les_autres() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "auto", "-15 days", "custom", 10, true, "active");
+        insert_eng(&conn, "manuel", "-15 days", "custom", 10, false, "active");
+        roll_forward_inner(&conn).unwrap();
+
+        // auto_pay : charges 'paid' MAIS présumées (is_presumed = 1).
+        let auto_presumed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='auto' AND is_presumed=1 AND status='paid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto_presumed, charge_count(&conn, "auto"));
+
+        // non auto : 'scheduled', non présumé (aucun paiement affirmé).
+        let manuel_presumed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='manuel' AND is_presumed=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(manuel_presumed, 0);
+    }
+
+    #[test]
+    fn roll_forward_charges_idempotent_sur_les_dates() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, true, "active");
+        roll_forward_inner(&conn).unwrap();
+        let before = charge_count(&conn, "e1");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0, "second passage : aucune charge ajoutée");
+        assert_eq!(charge_count(&conn, "e1"), before);
+    }
+
+    #[test]
+    fn migration_en_lot_convertit_tous_les_abonnements() {
+        let (_tmp, db) = open_db();
+        {
+            let conn = db.conn.lock().unwrap();
+            // Deux abonnements + un paiement sur le premier.
+            for (id, name) in [("s1", "Netflix"), ("s2", "Spotify")] {
+                conn.execute(
+                    "INSERT INTO subscriptions
+                     (id, name, start_date, next_renewal_date, billing_cycle, cycle_interval, price, currency)
+                     VALUES (?1, ?2, date('now','-1 years'), date('now','+10 days'), 'monthly', 1, 12.0, 'CHF')",
+                    rusqlite::params![id, name],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, is_presumed)
+                 VALUES ('p1','s1', date('now','-1 months'), 12.0, 'CHF', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let migrated = {
+            // migrate_all_* prend State ; on appelle le cœur via une transaction
+            // directe pour le test unitaire.
+            let mut conn = db.conn.lock().unwrap();
+            let ids: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT id FROM subscriptions").unwrap();
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            let tx = conn.transaction().unwrap();
+            for id in &ids {
+                migrate_one_subscription(&tx, id, "other", None).unwrap();
+            }
+            tx.commit().unwrap();
+            ids.len()
+        };
+        assert_eq!(migrated, 2);
+
+        let conn = db.conn.lock().unwrap();
+        // Plus aucun abonnement, deux engagements créés, le paiement devenu charge payée.
+        let subs: i64 = conn.query_row("SELECT COUNT(*) FROM subscriptions", [], |r| r.get(0)).unwrap();
+        assert_eq!(subs, 0);
+        let engs: i64 = conn.query_row("SELECT COUNT(*) FROM engagements", [], |r| r.get(0)).unwrap();
+        assert_eq!(engs, 2);
+        let paid: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement_charges WHERE status='paid'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(paid, 1);
+    }
+
+    #[test]
+    fn confirmer_une_charge_leve_la_presomption() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-5 days", "custom", 10, true, "active");
+        roll_forward_inner(&conn).unwrap();
+        let charge_id: String = conn
+            .query_row("SELECT id FROM engagement_charges WHERE engagement_id='e1' LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("UPDATE engagement_charges SET is_presumed=0 WHERE id=?1", [&charge_id]).unwrap();
+        let still_presumed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='e1' AND is_presumed=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still_presumed, 0);
+    }
 }

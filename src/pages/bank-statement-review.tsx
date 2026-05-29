@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { useToast } from "@/components/ui/toast"
 import { formatPrice, formatDate, cn } from "@/lib/utils"
 import { getAiSettings } from "@/lib/ai-settings"
@@ -200,6 +201,8 @@ export function BankStatementReviewPage() {
   const [pickerSearch, setPickerSearch] = useState("")
   const [learnRule, setLearnRule] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>("date")
+  // Message d'un doublon potentiel détecté à la création depuis une transaction.
+  const [duplicatePrompt, setDuplicatePrompt] = useState<string | null>(null)
 
   // Reference data for the "Créer un achat" inline form on orphan
   // transactions. Loaded alongside the candidate pool so opening the
@@ -480,21 +483,41 @@ export function BankStatementReviewPage() {
       toast("Prix invalide", "error")
       return
     }
+    await createItemFromTx(false)
+  }
+
+  // Création effective ; `force` court-circuite le garde-fou anti-doublon.
+  const createItemFromTx = async (force: boolean) => {
+    if (!createItemFor || !createItemForm) return
+    const price = parseFloat(createItemForm.purchase_price)
     try {
-      await api.createItemFromTransaction(createItemFor.id, {
-        description: createItemForm.description.trim() || "Achat",
-        purchase_date: createItemForm.purchase_date,
-        purchase_price: price,
-        currency: createItemForm.currency,
-        merchant_id: createItemForm.merchant_id,
-        location_id: createItemForm.location_id,
-        payment_card_id: createItemForm.payment_card_id || undefined,
-        notes: createItemForm.notes || undefined,
-      })
+      await api.createItemFromTransaction(
+        createItemFor.id,
+        {
+          description: createItemForm.description.trim() || "Achat",
+          purchase_date: createItemForm.purchase_date,
+          purchase_price: price,
+          currency: createItemForm.currency,
+          merchant_id: createItemForm.merchant_id,
+          location_id: createItemForm.location_id,
+          payment_card_id: createItemForm.payment_card_id || undefined,
+          notes: createItemForm.notes || undefined,
+        },
+        force,
+      )
+      setDuplicatePrompt(null)
       toast("Achat créé et rapproché", "success")
       cancelCreateItemForm()
       await load()
     } catch (err) {
+      const msg = String(err)
+      // Doublon détecté : on propose à l'utilisateur de confirmer la création.
+      const marker = "DUPLICATE:"
+      const idx = msg.indexOf(marker)
+      if (!force && idx >= 0) {
+        setDuplicatePrompt(msg.slice(idx + marker.length).trim())
+        return
+      }
       toast(`Erreur: ${err}`, "error")
     }
   }
@@ -886,6 +909,16 @@ export function BankStatementReviewPage() {
           })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={duplicatePrompt !== null}
+        title="Article similaire déjà saisi"
+        message={`Un achat très proche existe déjà : ${duplicatePrompt ?? ""}.\n\nIl a peut-être déjà été enregistré via le scanner. Créer quand même un nouvel article ?`}
+        confirmLabel="Créer quand même"
+        cancelLabel="Annuler"
+        onConfirm={() => createItemFromTx(true)}
+        onCancel={() => setDuplicatePrompt(null)}
+      />
     </div>
   )
 }

@@ -4,7 +4,6 @@ import { AppLayout } from "@/components/layout/app-layout"
 import { ToastProvider } from "@/components/ui/toast"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { UnlockPage } from "@/pages/unlock"
-import { DashboardPage } from "@/pages/dashboard"
 import { ItemsPage } from "@/pages/items"
 import { ItemDetailPage } from "@/pages/item-detail"
 import { TicketsPage } from "@/pages/tickets"
@@ -28,6 +27,7 @@ import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
 import { HouseholdSettings } from "@/pages/settings-household"
+import { MerchantRulesSettings } from "@/pages/settings-merchant-rules"
 import { ScanPage } from "@/pages/scan"
 import { ScanReviewPage } from "@/pages/scan-review"
 import { CeMoisPage } from "@/pages/ce-mois"
@@ -200,7 +200,8 @@ function AppContent() {
           <Route path="/impots" element={<ErrorBoundary><TaxesPage /></ErrorBoundary>} />
           <Route path="/banque" element={<ErrorBoundary><BanquePage /></ErrorBoundary>} />
           <Route path="/bank-statements/:id/review" element={<ErrorBoundary><BankStatementReviewPage /></ErrorBoundary>} />
-          <Route path="/dashboard" element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
+          {/* Dashboard fusionné dans Finances (3.2) — redirection pour les liens existants. */}
+          <Route path="/dashboard" element={<Navigate to="/finances" replace />} />
           <Route path="/scan" element={<ErrorBoundary><ScanPage /></ErrorBoundary>} />
           <Route path="/scan-review" element={<ErrorBoundary><ScanReviewPage /></ErrorBoundary>} />
           <Route path="/items" element={<ErrorBoundary><ItemsPage /></ErrorBoundary>} />
@@ -225,6 +226,7 @@ function AppContent() {
             <Route path="cartes" element={<ErrorBoundary><CardsPage /></ErrorBoundary>} />
             <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
+            <Route path="regles-marchand" element={<ErrorBoundary><MerchantRulesSettings /></ErrorBoundary>} />
           </Route>
           <Route path="/merchants" element={<Navigate to="/settings/marchands" replace />} />
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />

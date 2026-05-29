@@ -110,18 +110,23 @@ export function EngagementsPage() {
   const [category, setCategory] = useState<CategoryGroup>("all")
   const [search, setSearch] = useState("")
   const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
+  // Abonnements legacy restant à migrer (module déprécié).
+  const [legacySubCount, setLegacySubCount] = useState(0)
+  const [migrating, setMigrating] = useState(false)
   const { toast } = useToast()
 
   const load = async () => {
     try {
-      const [engData, credData, cardData] = await Promise.all([
+      const [engData, credData, cardData, subsData] = await Promise.all([
         api.getEngagements(),
         api.getCreditors(),
         api.getCards(),
+        api.getSubscriptions({ status: "all" }),
       ])
       setEngagements(engData)
       setCreditors(credData)
       setCards(cardData)
+      setLegacySubCount(subsData.length)
     } catch (e) {
       console.error(e)
       toast(`Erreur: ${e}`, "error")
@@ -136,6 +141,19 @@ export function EngagementsPage() {
     setForm(emptyForm())
     setEditing(null)
     setShowForm(false)
+  }
+
+  const handleMigrateAll = async () => {
+    setMigrating(true)
+    try {
+      const n = await api.migrateAllSubscriptionsToEngagements()
+      toast(`${n} abonnement(s) migré(s) vers les engagements (type « autre », à préciser).`, "success")
+      await load()
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    } finally {
+      setMigrating(false)
+    }
   }
 
   const handleEdit = (e: api.Engagement) => {
@@ -320,6 +338,19 @@ export function EngagementsPage() {
 
   return (
     <div className="space-y-6">
+      {legacySubCount > 0 && (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400 sm:flex-row sm:items-center sm:justify-between">
+          <span className="flex items-center gap-2">
+            <AlarmClock className="h-4 w-4 shrink-0" />
+            Le module « Abonnements » est déprécié au profit des Engagements.
+            Tu as {legacySubCount} abonnement(s) à migrer (paiements conservés ;
+            type « autre » à préciser ensuite).
+          </span>
+          <Button size="sm" onClick={handleMigrateAll} disabled={migrating}>
+            {migrating ? "Migration…" : "Tout migrer vers Engagements"}
+          </Button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">{t("engagements.title")}</h2>

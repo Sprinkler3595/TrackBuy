@@ -13,12 +13,10 @@ import {
   ShoppingBag,
   Shield,
   Ticket,
-  Repeat,
   HandCoins,
   Undo2,
   ScanLine,
   LineChart,
-  LayoutDashboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -46,7 +44,9 @@ const navSections: NavSection[] = [
     items: [
       { to: "/items", icon: ShoppingBag, labelKey: "nav.items" },
       { to: "/warranties", icon: Shield, labelKey: "nav.warranties" },
-      { to: "/subscriptions", icon: Repeat, labelKey: "nav.subscriptions" },
+      // Module Abonnements déprécié au profit des Engagements : retiré de la
+      // navigation. La page reste accessible (/subscriptions) le temps de la
+      // migration, proposée via une bannière sur la page Engagements.
       { to: "/tickets", icon: Ticket, labelKey: "nav.tickets" },
       { to: "/incomes", icon: HandCoins, labelKey: "nav.incomes" },
       { to: "/reimbursements", icon: Undo2, labelKey: "nav.reimbursements" },
@@ -56,8 +56,8 @@ const navSections: NavSection[] = [
     headingKey: "nav.section.tools",
     items: [
       { to: "/scan", icon: ScanLine, labelKey: "nav.scan" },
+      // Dashboard fusionné dans Finances (3.2) : une seule vue d'analyse.
       { to: "/finances", icon: LineChart, labelKey: "nav.finances" },
-      { to: "/dashboard", icon: LayoutDashboard, labelKey: "nav.dashboard" },
     ],
   },
 ]

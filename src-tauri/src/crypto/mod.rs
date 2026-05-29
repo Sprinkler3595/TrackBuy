@@ -122,3 +122,121 @@ pub fn decrypt_data(key: &[u8; 32], encrypted: &[u8]) -> Result<Vec<u8>, CryptoE
         .decrypt(nonce, ciphertext)
         .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Paramètres Argon2id volontairement réduits pour que les tests restent
+    // rapides — le but ici est de vérifier le déterminisme, pas la robustesse.
+    fn fast_params() -> Argon2Params {
+        Argon2Params {
+            m_cost_kib: 8,
+            t_cost: 1,
+            p_cost: 1,
+            version: 0x13,
+        }
+    }
+
+    #[test]
+    fn derive_key_est_deterministe() {
+        let salt = [42u8; 16];
+        let p = fast_params();
+        let k1 = derive_key("hunter2", &salt, &p).unwrap();
+        let k2 = derive_key("hunter2", &salt, &p).unwrap();
+        assert_eq!(&*k1, &*k2, "même mot de passe + sel + params ⇒ même clé");
+    }
+
+    #[test]
+    fn derive_key_change_avec_le_sel() {
+        let p = fast_params();
+        let k1 = derive_key("hunter2", &[1u8; 16], &p).unwrap();
+        let k2 = derive_key("hunter2", &[2u8; 16], &p).unwrap();
+        assert_ne!(&*k1, &*k2, "un sel différent doit produire une clé différente");
+    }
+
+    #[test]
+    fn derive_key_change_avec_le_mot_de_passe() {
+        let salt = [7u8; 16];
+        let p = fast_params();
+        let k1 = derive_key("hunter2", &salt, &p).unwrap();
+        let k2 = derive_key("hunter3", &salt, &p).unwrap();
+        assert_ne!(&*k1, &*k2);
+    }
+
+    #[test]
+    fn derive_key_change_avec_les_params() {
+        let salt = [7u8; 16];
+        let k1 = derive_key("hunter2", &salt, &fast_params()).unwrap();
+        let k2 = derive_key(
+            "hunter2",
+            &salt,
+            &Argon2Params {
+                t_cost: 2,
+                ..fast_params()
+            },
+        )
+        .unwrap();
+        assert_ne!(&*k1, &*k2, "des paramètres différents changent la clé dérivée");
+    }
+
+    #[test]
+    fn derive_key_refuse_version_inconnue() {
+        let err = derive_key(
+            "x",
+            &[0u8; 16],
+            &Argon2Params {
+                version: 0x99,
+                ..fast_params()
+            },
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn encrypt_decrypt_round_trip() {
+        let key = [3u8; 32];
+        let plaintext = b"facture Migros 2026 - CHF 84.20";
+        let ct = encrypt_data(&key, plaintext).unwrap();
+        // Le nonce de 12 octets est préfixé : la sortie est plus longue.
+        assert!(ct.len() > plaintext.len() + 12);
+        let pt = decrypt_data(&key, &ct).unwrap();
+        assert_eq!(pt, plaintext);
+    }
+
+    #[test]
+    fn encrypt_produit_des_nonces_distincts() {
+        let key = [3u8; 32];
+        let a = encrypt_data(&key, b"meme contenu").unwrap();
+        let b = encrypt_data(&key, b"meme contenu").unwrap();
+        // Nonce aléatoire ⇒ deux chiffrés du même clair diffèrent.
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn decrypt_echoue_avec_mauvaise_cle() {
+        let ct = encrypt_data(&[3u8; 32], b"secret").unwrap();
+        assert!(decrypt_data(&[4u8; 32], &ct).is_err());
+    }
+
+    #[test]
+    fn decrypt_echoue_sur_donnee_alteree() {
+        let key = [3u8; 32];
+        let mut ct = encrypt_data(&key, b"secret").unwrap();
+        // Corruption d'un octet du tag/ciphertext ⇒ Poly1305 doit rejeter.
+        let last = ct.len() - 1;
+        ct[last] ^= 0xff;
+        assert!(decrypt_data(&key, &ct).is_err());
+    }
+
+    #[test]
+    fn decrypt_refuse_entree_trop_courte() {
+        assert!(decrypt_data(&[0u8; 32], &[0u8; 4]).is_err());
+    }
+
+    #[test]
+    fn generate_salt_non_constant() {
+        // Extrêmement improbable d'obtenir deux sels identiques.
+        assert_ne!(generate_salt(), generate_salt());
+    }
+}

@@ -73,7 +73,19 @@ pub fn backup_vault(state: State<'_, AppState>, destination: String) -> Result<S
     };
     let final_path = validate_write_target(&final_raw)?;
 
-    let file = std::fs::File::create(&final_path)
+    write_vault_archive(&vault_dir, &vault_name, &final_path)?;
+    Ok(final_path.to_string_lossy().to_string())
+}
+
+/// Écrit l'archive `.tbvbak` (manifest + vault.db chiffré + salt + params +
+/// pièces jointes déjà chiffrées). Extrait de `backup_vault` pour être
+/// testable sans `State`. N'altère rien sur le disque hors de `final_path`.
+fn write_vault_archive(
+    vault_dir: &Path,
+    vault_name: &str,
+    final_path: &Path,
+) -> Result<(), String> {
+    let file = std::fs::File::create(final_path)
         .map_err(|e| format!("Failed to create backup file: {}", e))?;
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -81,7 +93,7 @@ pub fn backup_vault(state: State<'_, AppState>, destination: String) -> Result<S
     // Manifest first
     let manifest = serde_json::json!({
         "format": "tbvbak",
-        "format_version": 1,
+        "format_version": CURRENT_BACKUP_FORMAT_VERSION,
         "vault_name": vault_name,
         "created_at": Local::now().to_rfc3339(),
     });
@@ -122,7 +134,7 @@ pub fn backup_vault(state: State<'_, AppState>, destination: String) -> Result<S
     }
 
     zip.finish().map_err(|e| e.to_string())?;
-    Ok(final_path.to_string_lossy().to_string())
+    Ok(())
 }
 
 /// Inspect a `.tbvbak` file: returns the vault name stored in its manifest
@@ -283,6 +295,50 @@ pub fn restore_backup(
         std::fs::remove_dir_all(&target_dir).ok();
     }
 
+    extract_vault_archive(&mut archive, &target_dir)?;
+
+    // Tell the frontend it must drop its "unlocked" state if we just nuked
+    // the active vault — otherwise it will keep firing IPC against a closed
+    // vault and surface confusing "Vault not unlocked" errors everywhere.
+    if overwrote_active {
+        let _ = app.emit("vault-locked", "restore-overwrite");
+    }
+
+    Ok(name)
+}
+
+fn add_file_to_zip(
+    zip: &mut ZipWriter<std::fs::File>,
+    source: std::path::PathBuf,
+    archive_name: &str,
+    opts: SimpleFileOptions,
+) -> Result<(), String> {
+    if !source.exists() {
+        return Ok(()); // best-effort: skip missing optional files
+    }
+    zip.start_file(archive_name, opts)
+        .map_err(|e| e.to_string())?;
+    let mut f = std::fs::File::open(&source)
+        .map_err(|e| format!("Failed to open {}: {}", source.display(), e))?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        zip.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Extrait les entrées connues d'une archive `.tbvbak` dans `target_dir`
+/// (vault.db, salt.bin, argon2_params.json, files/*), en rejetant toute entrée
+/// qui tenterait de sortir du dossier cible. Extrait de `restore_backup` pour
+/// être testable. Retourne le nombre d'entrées écrites.
+fn extract_vault_archive(
+    archive: &mut ZipArchive<std::fs::File>,
+    target_dir: &Path,
+) -> Result<usize, String> {
     std::fs::create_dir_all(target_dir.join("files"))
         .map_err(|e| format!("Failed to create vault dir: {}", e))?;
 
@@ -326,39 +382,7 @@ pub fn restore_backup(
     if entries_extracted == 0 {
         return Err("Sauvegarde vide ou corrompue".to_string());
     }
-
-    // Tell the frontend it must drop its "unlocked" state if we just nuked
-    // the active vault — otherwise it will keep firing IPC against a closed
-    // vault and surface confusing "Vault not unlocked" errors everywhere.
-    if overwrote_active {
-        let _ = app.emit("vault-locked", "restore-overwrite");
-    }
-
-    Ok(name)
-}
-
-fn add_file_to_zip(
-    zip: &mut ZipWriter<std::fs::File>,
-    source: std::path::PathBuf,
-    archive_name: &str,
-    opts: SimpleFileOptions,
-) -> Result<(), String> {
-    if !source.exists() {
-        return Ok(()); // best-effort: skip missing optional files
-    }
-    zip.start_file(archive_name, opts)
-        .map_err(|e| e.to_string())?;
-    let mut f = std::fs::File::open(&source)
-        .map_err(|e| format!("Failed to open {}: {}", source.display(), e))?;
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        zip.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    Ok(entries_extracted)
 }
 
 #[tauri::command]
@@ -447,7 +471,8 @@ pub fn export_engagements_csv(state: State<'_, AppState>) -> Result<String, Stri
                     e.status, e.next_due_date, e.contract_start_date, e.contract_end_date,
                     e.payment_method, e.auto_pay, p.name as parent_name,
                     (SELECT COALESCE(SUM(amount), 0) FROM engagement_charges
-                     WHERE engagement_id = e.id AND status = 'paid') as total_paid,
+                     WHERE engagement_id = e.id AND status = 'paid'
+                       AND is_presumed = 0) as total_paid,
                     e.notes
              FROM engagements e
              LEFT JOIN creditors cr ON e.creditor_id = cr.id
@@ -1065,5 +1090,105 @@ fn escape_csv(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::storage;
+    use crate::util::test_support::{test_key, TempDir};
+    use zip::ZipArchive;
+
+    /// Round-trip complet : on construit un coffre (db chiffrée + salt + params
+    /// + pièce jointe chiffrée), on écrit l'archive `.tbvbak`, on l'extrait dans
+    /// un autre dossier, puis on rouvre la base et on relit la pièce jointe.
+    #[test]
+    fn backup_puis_restore_round_trip() {
+        let src = TempDir::new();
+        let key = test_key();
+
+        // 1. Coffre source : base SQLCipher + une ligne, salt/params, 1 PJ chiffrée.
+        {
+            let db = Database::open(src.path(), &key).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO merchants (id, name) VALUES ('m1', 'Migros')",
+                [],
+            )
+            .unwrap();
+        }
+        std::fs::write(src.path().join("salt.bin"), [9u8; 16]).unwrap();
+        std::fs::write(src.path().join("argon2_params.json"), b"{\"x\":1}").unwrap();
+        let att = b"contenu chiffre de la facture";
+        let stored = storage::save_attachment(src.path(), "att-1", att, &key).unwrap();
+
+        // 2. Écriture de l'archive.
+        let backup_dir = TempDir::new();
+        let backup_path = backup_dir.path().join("coffre.tbvbak");
+        write_vault_archive(src.path(), "Maison", &backup_path).unwrap();
+        assert!(backup_path.exists());
+
+        // 3. Extraction dans un coffre cible vierge.
+        let dst = TempDir::new();
+        let file = std::fs::File::open(&backup_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        let n = extract_vault_archive(&mut archive, dst.path()).unwrap();
+        assert!(n >= 4, "manifest exclu, mais db+salt+params+1 PJ attendus");
+
+        // salt et params restaurés à l'identique.
+        assert_eq!(std::fs::read(dst.path().join("salt.bin")).unwrap(), [9u8; 16]);
+
+        // 4. Réouverture avec la même clé + relecture de la donnée et de la PJ.
+        let db = Database::open(dst.path(), &key).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM merchants WHERE id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Migros");
+
+        let restored_path = storage::attachments_dir(dst.path()).join(&stored);
+        let decrypted = storage::read_attachment(restored_path.to_str().unwrap(), &key).unwrap();
+        assert_eq!(decrypted, att);
+    }
+
+    #[test]
+    fn extract_rejette_archive_avec_chemin_traversant() {
+        // Une archive malveillante avec une entrée connue mais hors-dossier
+        // doit être refusée (et de toute façon, seules les entrées connues
+        // sont écrites). Ici on vérifie le garde is_safe_zip_entry.
+        assert!(!is_safe_zip_entry("../evil"));
+        assert!(!is_safe_zip_entry("/etc/passwd"));
+        assert!(!is_safe_zip_entry("files/../../x"));
+        assert!(is_safe_zip_entry("files/abc.enc"));
+        assert!(is_safe_zip_entry("vault.db"));
+    }
+
+    #[test]
+    fn round_trip_preserve_le_format_version() {
+        let src = TempDir::new();
+        let key = test_key();
+        {
+            let _db = Database::open(src.path(), &key).unwrap();
+        }
+        let backup_dir = TempDir::new();
+        let backup_path = backup_dir.path().join("c.tbvbak");
+        write_vault_archive(src.path(), "Maison", &backup_path).unwrap();
+
+        let file = std::fs::File::open(&backup_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        let mut manifest_str = String::new();
+        archive
+            .by_name("manifest.json")
+            .unwrap()
+            .read_to_string(&mut manifest_str)
+            .unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_str).unwrap();
+        assert_eq!(
+            manifest.get("format_version").and_then(|v| v.as_i64()),
+            Some(CURRENT_BACKUP_FORMAT_VERSION)
+        );
+        assert_eq!(manifest.get("format").and_then(|v| v.as_str()), Some("tbvbak"));
     }
 }

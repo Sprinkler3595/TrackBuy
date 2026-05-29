@@ -16,9 +16,41 @@
 //! sur 200 transactions d'un coup.
 
 use serde::{Deserialize, Serialize};
+use rusqlite::Connection;
 use tauri::State;
+use uuid::Uuid;
 
 use crate::commands::auth::AppState;
+
+/// Règle de classification définie par l'utilisateur, stockée en base
+/// (`merchant_rules`). Complète et surcharge la table statique `PATTERNS`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MerchantRule {
+    pub id: String,
+    /// Sous-chaîne cherchée dans le libellé (comparée en MAJUSCULES).
+    pub needle: String,
+    pub merchant: String,
+    pub category: Option<String>,
+    pub tax_category: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MerchantRuleInput {
+    pub needle: String,
+    pub merchant: String,
+    pub category: Option<String>,
+    pub tax_category: Option<String>,
+}
+
+/// Forme interne, normalisée (needle en MAJUSCULES) pour le matching.
+struct UserRule {
+    needle_upper: String,
+    merchant: String,
+    category: Option<String>,
+    tax_category: Option<String>,
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Classification {
@@ -209,7 +241,13 @@ const CITIES: &[&str] = &[
     "GRAND-SACONNEX", "CAROUGE", "MEYRIN", "ONEX", "LANCY", "VERNIER",
 ];
 
+/// Version pure (table intégrée uniquement) — utilisée par les tests et comme
+/// repli quand aucune règle utilisateur ne correspond.
 pub(crate) fn classify_description(desc: &str) -> Classification {
+    classify_description_with(desc, &[])
+}
+
+fn classify_description_with(desc: &str, user_rules: &[UserRule]) -> Classification {
     let upper = desc.to_uppercase();
 
     // 1) Mode de paiement (signaux courants des banques suisses).
@@ -235,13 +273,27 @@ pub(crate) fn classify_description(desc: &str) -> Classification {
     let mut tax_category: Option<String> = None;
     let mut confidence = 0.0_f32;
 
-    for p in PATTERNS {
-        if contains_word(&upper, p.needle) {
-            merchant = Some(p.merchant.to_string());
-            category = Some(p.category.to_string());
-            tax_category = p.tax_category.map(|s| s.to_string());
-            confidence = 0.85;
+    // 2a) Règles utilisateur d'abord : elles surchargent la table intégrée.
+    for r in user_rules {
+        if contains_word(&upper, &r.needle_upper) {
+            merchant = Some(r.merchant.clone());
+            category = r.category.clone();
+            tax_category = r.tax_category.clone();
+            confidence = 0.9;
             break;
+        }
+    }
+
+    // 2b) Repli sur la table statique si aucune règle utilisateur n'a matché.
+    if merchant.is_none() {
+        for p in PATTERNS {
+            if contains_word(&upper, p.needle) {
+                merchant = Some(p.merchant.to_string());
+                category = Some(p.category.to_string());
+                tax_category = p.tax_category.map(|s| s.to_string());
+                confidence = 0.85;
+                break;
+            }
         }
     }
 
@@ -295,20 +347,137 @@ pub struct ClassifyResult {
     pub classification: Classification,
 }
 
+/// Charge les règles utilisateur (normalisées) depuis la base.
+fn load_user_rules(conn: &Connection) -> Result<Vec<UserRule>, String> {
+    let mut stmt = conn
+        .prepare("SELECT needle, merchant, category, tax_category FROM merchant_rules")
+        .map_err(|e| e.to_string())?;
+    let rules = stmt
+        .query_map([], |row| {
+            let needle: String = row.get(0)?;
+            Ok(UserRule {
+                needle_upper: needle.to_uppercase(),
+                merchant: row.get(1)?,
+                category: row.get(2)?,
+                tax_category: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rules)
+}
+
 /// Classe un lot de transactions d'un coup (typiquement toutes les
-/// lignes d'un relevé) — évite un round-trip par ligne.
+/// lignes d'un relevé) — évite un round-trip par ligne. Les règles
+/// utilisateur sont chargées une seule fois et appliquées en priorité.
 #[tauri::command]
 pub fn classify_transactions(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     items: Vec<ClassifyRequest>,
 ) -> Result<Vec<ClassifyResult>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let user_rules = load_user_rules(&conn)?;
+
     Ok(items
         .into_iter()
         .map(|r| ClassifyResult {
-            classification: classify_description(&r.description),
+            classification: classify_description_with(&r.description, &user_rules),
             id: r.id,
         })
         .collect())
+}
+
+fn row_to_merchant_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<MerchantRule> {
+    Ok(MerchantRule {
+        id: row.get(0)?,
+        needle: row.get(1)?,
+        merchant: row.get(2)?,
+        category: row.get(3)?,
+        tax_category: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+    })
+}
+
+const MERCHANT_RULE_COLUMNS: &str =
+    "id, needle, merchant, category, tax_category, created_at, updated_at";
+
+#[tauri::command]
+pub fn list_merchant_rules(state: State<'_, AppState>) -> Result<Vec<MerchantRule>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let sql = format!("SELECT {} FROM merchant_rules ORDER BY merchant", MERCHANT_RULE_COLUMNS);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rules = stmt
+        .query_map([], row_to_merchant_rule)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rules)
+}
+
+#[tauri::command]
+pub fn create_merchant_rule(
+    state: State<'_, AppState>,
+    rule: MerchantRuleInput,
+) -> Result<MerchantRule, String> {
+    let needle = rule.needle.trim();
+    let merchant = rule.merchant.trim();
+    if needle.is_empty() || merchant.is_empty() {
+        return Err("Le motif et le nom du marchand sont obligatoires.".to_string());
+    }
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO merchant_rules (id, needle, merchant, category, tax_category)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![id, needle, merchant, rule.category, rule.tax_category],
+    )
+    .map_err(|e| e.to_string())?;
+    let sql = format!("SELECT {} FROM merchant_rules WHERE id = ?1", MERCHANT_RULE_COLUMNS);
+    conn.query_row(&sql, [&id], row_to_merchant_rule)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_merchant_rule(
+    state: State<'_, AppState>,
+    id: String,
+    rule: MerchantRuleInput,
+) -> Result<MerchantRule, String> {
+    let needle = rule.needle.trim();
+    let merchant = rule.merchant.trim();
+    if needle.is_empty() || merchant.is_empty() {
+        return Err("Le motif et le nom du marchand sont obligatoires.".to_string());
+    }
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE merchant_rules SET needle = ?1, merchant = ?2, category = ?3,
+         tax_category = ?4, updated_at = datetime('now') WHERE id = ?5",
+        rusqlite::params![needle, merchant, rule.category, rule.tax_category, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let sql = format!("SELECT {} FROM merchant_rules WHERE id = ?1", MERCHANT_RULE_COLUMNS);
+    conn.query_row(&sql, [&id], row_to_merchant_rule)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_merchant_rule(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute("DELETE FROM merchant_rules WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -354,5 +523,33 @@ mod tests {
     fn unknown_merchant_no_match() {
         let c = classify_description("VIREMENT BANCAIRE INTERNE");
         assert!(c.merchant.is_none());
+    }
+
+    #[test]
+    fn regle_utilisateur_reconnait_un_marchand_inconnu() {
+        let rules = vec![UserRule {
+            needle_upper: "BOULANGERIE DU COIN".to_string(),
+            merchant: "Boulangerie du Coin".to_string(),
+            category: Some("courses".to_string()),
+            tax_category: None,
+        }];
+        let c = classify_description_with("ACHAT BOULANGERIE DU COIN LAUSANNE", &rules);
+        assert_eq!(c.merchant.as_deref(), Some("Boulangerie du Coin"));
+        assert_eq!(c.category.as_deref(), Some("courses"));
+        assert!(c.confidence >= 0.9);
+    }
+
+    #[test]
+    fn regle_utilisateur_surcharge_la_table_integree() {
+        // L'utilisateur veut sa propre étiquette pour Migros.
+        let rules = vec![UserRule {
+            needle_upper: "MIGROS".to_string(),
+            merchant: "Migros (perso)".to_string(),
+            category: Some("alimentation".to_string()),
+            tax_category: None,
+        }];
+        let c = classify_description_with("APPLE PAY MIGROS MARIN", &rules);
+        assert_eq!(c.merchant.as_deref(), Some("Migros (perso)"));
+        assert_eq!(c.category.as_deref(), Some("alimentation"));
     }
 }

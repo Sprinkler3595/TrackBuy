@@ -181,6 +181,8 @@ export interface SubscriptionPayment {
   payment_card_id: string | null
   notes: string | null
   created_at: string
+  // true = paiement présumé généré par le roll-forward, en attente de confirmation.
+  is_presumed: boolean
   card_name?: string | null
 }
 
@@ -213,6 +215,9 @@ export const unlockVault = (vaultName: string, password: string) =>
 
 export const lockVault = () =>
   invoke<void>("lock_vault")
+
+export const changeMasterPassword = (oldPassword: string, newPassword: string) =>
+  invoke<void>("change_master_password", { oldPassword, newPassword })
 
 export const listVaults = () =>
   invoke<VaultInfo[]>("list_vaults")
@@ -593,6 +598,10 @@ export const logSubscriptionPayment = (payment: {
 export const deleteSubscriptionPayment = (id: string) =>
   invoke<void>("delete_subscription_payment", { id })
 
+// Confirme un paiement présumé (le débit a bien eu lieu) → is_presumed = false.
+export const confirmSubscriptionPayment = (id: string) =>
+  invoke<void>("confirm_subscription_payment", { id })
+
 export const getSubscriptionMembers = (subscriptionId: string) =>
   invoke<SubscriptionMember[]>("get_subscription_members", { subscriptionId })
 
@@ -701,6 +710,8 @@ export interface EngagementCharge {
   notes: string | null
   created_at: string
   updated_at: string
+  // true = charge présumée (auto_pay générée par le roll-forward), à confirmer.
+  is_presumed: boolean
   card_name?: string | null
 }
 
@@ -817,6 +828,10 @@ export const markChargePaid = (
 export const deleteEngagementCharge = (id: string) =>
   invoke<void>("delete_engagement_charge", { id })
 
+// Confirme une charge présumée (auto_pay générée par le roll-forward).
+export const confirmEngagementCharge = (id: string) =>
+  invoke<EngagementCharge>("confirm_engagement_charge", { id })
+
 // Engagement revisions (contract amendments)
 export const getEngagementRevisions = (engagementId: string) =>
   invoke<EngagementRevision[]>("get_engagement_revisions", { engagementId })
@@ -843,6 +858,11 @@ export const migrateSubscriptionToEngagement = (
     engagementType,
     creditorId,
   })
+
+// Migre TOUS les abonnements restants vers des engagements (type « other » par
+// défaut). Retourne le nombre migré. Module Abonnements déprécié.
+export const migrateAllSubscriptionsToEngagements = () =>
+  invoke<number>("migrate_all_subscriptions_to_engagements")
 
 // Polymorphic attachments
 export const getEngagementAttachments = (engagementId: string) =>
@@ -1295,8 +1315,11 @@ export const createItemFromTransaction = (
     expiration_date?: string
     redemption_url?: string
     redeemed_at?: string
-  }
-) => invoke<Item>("create_item_from_transaction", { txId, item })
+  },
+  // Quand un article très proche existe déjà, l'appel échoue avec un message
+  // préfixé « DUPLICATE: ». Relancer avec force=true pour créer malgré tout.
+  force?: boolean,
+) => invoke<Item>("create_item_from_transaction", { txId, item, force })
 
 /// Orphan-tx flow: enqueue a "facture à fournir plus tard" carrying the
 /// bank line's amount/date/currency. The user uploads the actual PDF
@@ -1494,14 +1517,20 @@ export interface ToReceiveLine {
   days_until: number
 }
 
+export interface CurrencyTotal {
+  currency: string
+  amount: number
+}
+
 export interface ThisMonthSummary {
-  to_pay_total_chf: number
   to_pay_lines: ToPayLine[]
-  to_receive_total_chf: number
   to_receive_lines: ToReceiveLine[]
+  // Sous-totaux par devise, sans conversion : aucune devise n'est masquée.
+  to_pay_totals: CurrencyTotal[]
+  to_receive_totals: CurrencyTotal[]
+  net_estimate_totals: CurrencyTotal[]
   inbox_pending_transactions: number
   inbox_pending_invoices: number
-  net_estimate_chf: number
 }
 
 export const getThisMonth = () =>
@@ -1535,3 +1564,33 @@ export interface ClassifyResult extends Classification {
 export const classifyTransactions = (
   items: Array<{ id: string; description: string }>,
 ) => invoke<ClassifyResult[]>("classify_transactions", { items })
+
+// Règles de classification marchand définies par l'utilisateur (extensibles).
+export interface MerchantRule {
+  id: string
+  needle: string
+  merchant: string
+  category: string | null
+  tax_category: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface MerchantRuleInput {
+  needle: string
+  merchant: string
+  category?: string | null
+  tax_category?: string | null
+}
+
+export const listMerchantRules = () =>
+  invoke<MerchantRule[]>("list_merchant_rules")
+
+export const createMerchantRule = (rule: MerchantRuleInput) =>
+  invoke<MerchantRule>("create_merchant_rule", { rule })
+
+export const updateMerchantRule = (id: string, rule: MerchantRuleInput) =>
+  invoke<MerchantRule>("update_merchant_rule", { id, rule })
+
+export const deleteMerchantRule = (id: string) =>
+  invoke<void>("delete_merchant_rule", { id })

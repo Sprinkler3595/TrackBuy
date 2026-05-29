@@ -73,10 +73,111 @@ impl Drop for Database {
     }
 }
 
+/// Re-chiffre un fichier SQLCipher avec une nouvelle clé via `PRAGMA rekey`.
+///
+/// Ouvre `db_path` avec `old_key`, vérifie que la clé est correcte (lecture de
+/// `sqlite_master`), puis applique `PRAGMA rekey` vers `new_key`. Le fichier est
+/// réécrit en place et fermé proprement (checkpoint WAL). Utilisé par la
+/// rotation du mot de passe maître sur une *copie* de la base, afin que
+/// l'original reste lisible avec l'ancienne clé en cas d'échec.
+pub fn rekey_db_file(
+    db_path: &Path,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<(), String> {
+    let conn = Connection::open(db_path)
+        .map_err(|e| format!("Failed to open database for rekey: {}", e))?;
+
+    let hex_old = hex_encode(old_key);
+    conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex_old))
+        .map_err(|e| format!("Failed to set cipher key: {}", e))?;
+
+    // Vérifie l'ancienne clé : une clé fausse fait échouer la première lecture.
+    conn.execute_batch("SELECT count(*) FROM sqlite_master;")
+        .map_err(|_| "Mot de passe incorrect".to_string())?;
+
+    let hex_new = hex_encode(new_key);
+    conn.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", hex_new))
+        .map_err(|e| format!("Échec du re-chiffrement de la base (rekey): {}", e))?;
+
+    // Replie le WAL dans le fichier principal pour que la copie soit autonome.
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
+    drop(conn);
+    Ok(())
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         s.push_str(&format!("{:02x}", b));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::test_support::{test_key, TempDir};
+
+    #[test]
+    fn open_initialise_le_schema_a_la_version_courante() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        let db = Database::open(tmp.path(), &key).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, migrations::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn reouverture_est_idempotente_et_preserve_les_donnees() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        {
+            let db = Database::open(tmp.path(), &key).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO merchants (id, name) VALUES ('m1', 'Migros')",
+                [],
+            )
+            .unwrap();
+        } // fermeture (checkpoint WAL via Drop)
+
+        // Réouverture : les migrations ne doivent rien casser ni rejouer.
+        let db = Database::open(tmp.path(), &key).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM merchants WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Migros");
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, migrations::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn ouverture_avec_mauvaise_cle_echoue() {
+        let tmp = TempDir::new();
+        let key = test_key();
+        {
+            let _db = Database::open(tmp.path(), &key).unwrap();
+        }
+        let mut wrong = *key;
+        wrong[0] ^= 0xff;
+        // `Database` n'implémente pas Debug, donc pas de `unwrap_err()` :
+        // on inspecte le Result à la main.
+        let err = match Database::open(tmp.path(), &wrong) {
+            Ok(_) => panic!("ouverture avec mauvaise clé aurait dû échouer"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("Mot de passe incorrect"),
+            "erreur inattendue: {err}"
+        );
+    }
 }

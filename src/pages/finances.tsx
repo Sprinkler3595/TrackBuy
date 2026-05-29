@@ -7,7 +7,7 @@ import {
   AreaChart, Area,
   CartesianGrid, XAxis, YAxis, Tooltip, Legend,
 } from "recharts"
-import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon } from "lucide-react"
+import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon, AlertCircle, ShoppingBag, Shield, Paperclip } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ErrorPanel } from "@/components/ui/error-panel"
@@ -132,33 +132,51 @@ export function FinancesPage() {
 
   // --------- Derived KPIs (monthly equivalents on the live entities) ---------
 
+  // Les KPI mensuels sont SANS conversion de change : on ne somme que les
+  // entités dans la devise d'affichage (DEFAULT_CURRENCY) et on signale
+  // séparément l'existence de montants en devise étrangère, plutôt que de les
+  // mélanger silencieusement dans un total étiqueté CHF (cf. correctif 2.1).
   const monthlyIncome = useMemo(() => incomes
-    .filter((i) => i.current_amount != null && i.billing_cycle !== "one_shot")
+    .filter((i) => i.current_amount != null && i.billing_cycle !== "one_shot" && i.currency === DEFAULT_CURRENCY)
     .reduce((acc, i) => acc + monthlyEquivalent(i.current_amount as number, i.billing_cycle, i.cycle_interval), 0),
     [incomes],
   )
 
   const monthlyEngagement = useMemo(() => engagements
-    .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot")
+    .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot" && e.currency === DEFAULT_CURRENCY)
     .reduce((acc, e) => acc + monthlyEquivalent(e.current_amount as number, e.billing_cycle, e.cycle_interval), 0),
     [engagements],
   )
 
-  const monthlySubs = useMemo(() => subs.reduce((acc, s) => {
-    const n = Math.max(1, s.cycle_interval)
-    switch (s.billing_cycle) {
-      case "monthly":   return acc + s.price / n
-      case "quarterly": return acc + s.price / (3 * n)
-      case "yearly":    return acc + s.price / (12 * n)
-      case "custom":    return acc + (s.price / n) * 30.44
-    }
-    return acc
-  }, 0), [subs])
+  const monthlySubs = useMemo(() => subs
+    .filter((s) => s.currency === DEFAULT_CURRENCY)
+    .reduce((acc, s) => {
+      const n = Math.max(1, s.cycle_interval)
+      switch (s.billing_cycle) {
+        case "monthly":   return acc + s.price / n
+        case "quarterly": return acc + s.price / (3 * n)
+        case "yearly":    return acc + s.price / (12 * n)
+        case "custom":    return acc + (s.price / n) * 30.44
+      }
+      return acc
+    }, 0), [subs])
+
+  // Devises étrangères présentes mais NON incluses dans les KPI ci-dessus.
+  const foreignCurrencies = useMemo(() => {
+    const set = new Set<string>()
+    incomes.forEach((i) => { if (i.current_amount != null && i.billing_cycle !== "one_shot" && i.currency !== DEFAULT_CURRENCY) set.add(i.currency) })
+    engagements.forEach((e) => { if (e.current_amount != null && e.billing_cycle !== "one_shot" && e.currency !== DEFAULT_CURRENCY) set.add(e.currency) })
+    subs.forEach((s) => { if (s.currency !== DEFAULT_CURRENCY) set.add(s.currency) })
+    upcomingCharges.forEach((c) => { if (c.currency !== DEFAULT_CURRENCY) set.add(c.currency) })
+    return Array.from(set).sort()
+  }, [incomes, engagements, subs, upcomingCharges])
 
   const totalMonthlyExpense = monthlyEngagement + monthlySubs
   const ratio = monthlyIncome > 0 ? (totalMonthlyExpense / monthlyIncome) * 100 : 0
   const remaining = monthlyIncome - totalMonthlyExpense
-  const dueIn30 = upcomingCharges.reduce((acc, c) => acc + c.amount, 0)
+  const dueIn30 = upcomingCharges
+    .filter((c) => c.currency === DEFAULT_CURRENCY)
+    .reduce((acc, c) => acc + c.amount, 0)
 
   // ----- Chart-friendly merges of the backend per-month series -----
 
@@ -270,7 +288,7 @@ export function FinancesPage() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Finances</h2>
           <p className="text-muted-foreground">
-            Analyse {windowMonths} mois — revenus, dépenses, ratios et évolution des prix
+            Analyse {windowMonths} mois — revenus, dépenses, ratios, patrimoine et évolution des prix
           </p>
           {stats && (
             <p className="text-xs text-muted-foreground mt-1">
@@ -312,7 +330,7 @@ export function FinancesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              <MaskedAmount amount={monthlyIncome} currency="CHF" visible={amountsVisible} />
+              <MaskedAmount amount={monthlyIncome} currency={DEFAULT_CURRENCY} visible={amountsVisible} />
             </div>
             <p className="text-xs text-muted-foreground">{incomes.length} source(s)</p>
           </CardContent>
@@ -324,7 +342,7 @@ export function FinancesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              <MaskedAmount amount={totalMonthlyExpense} currency="CHF" visible={amountsVisible} />
+              <MaskedAmount amount={totalMonthlyExpense} currency={DEFAULT_CURRENCY} visible={amountsVisible} />
             </div>
             <p className="text-xs text-muted-foreground">Engagements + abos en ligne</p>
           </CardContent>
@@ -348,7 +366,7 @@ export function FinancesPage() {
           </CardHeader>
           <CardContent>
             <div className={`text-2xl font-bold ${remaining < 0 ? "text-destructive" : ""}`}>
-              <MaskedAmount amount={remaining} currency="CHF" visible={amountsVisible} />
+              <MaskedAmount amount={remaining} currency={DEFAULT_CURRENCY} visible={amountsVisible} />
             </div>
             <p className="text-xs text-muted-foreground">Avant achats ponctuels</p>
           </CardContent>
@@ -364,6 +382,67 @@ export function FinancesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Indicateur explicite : des montants en devise étrangère existent mais
+          ne sont PAS convertis ni inclus dans les KPI ci-dessus. */}
+      {foreignCurrencies.length > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>
+            Les KPI sont en {DEFAULT_CURRENCY} uniquement. Des montants en{" "}
+            <span className="font-medium">{foreignCurrencies.join(", ")}</span>{" "}
+            existent mais ne sont pas convertis (aucune table de taux) et ne sont donc pas inclus.
+          </span>
+        </div>
+      )}
+
+      {/* 1bis. Patrimoine / inventaire (fusion de l'ancien Dashboard) */}
+      {stats && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Achats actifs</CardTitle>
+              <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.active_items}</div>
+              <p className="text-xs text-muted-foreground">{stats.total_items} au total</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Valeur du parc</CardTitle>
+              <Wallet className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                <MaskedAmount amount={stats.total_value} currency={stats.display_currency} visible={amountsVisible} />
+              </div>
+              <p className="text-xs text-muted-foreground">Achats actifs en {stats.display_currency}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Garanties</CardTitle>
+              <Shield className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.total_warranties}</div>
+              <p className="text-xs text-muted-foreground">suivies</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Pièces jointes</CardTitle>
+              <Paperclip className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.total_attachments}</div>
+              <p className="text-xs text-muted-foreground">chiffrées</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* 2. Revenus vs dépenses */}
       <Card>
