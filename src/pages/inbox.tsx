@@ -1,10 +1,11 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import {
   ArrowRight,
   Banknote,
   FileSpreadsheet,
   FileText,
+  Loader2,
   QrCode,
   ScanLine,
   Upload,
@@ -15,8 +16,16 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
+import { scanQrFromBytes, scanQrFromFile } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
 
 /// Unified inbox: anywhere an "to-process" item arrives. Each source has its
 /// own panel with a clear next action. Counts on the right come from the
@@ -28,6 +37,67 @@ export function InboxPage() {
   const [qrModalOpen, setQrModalOpen] = useState(false)
   const [qrPayload, setQrPayload] = useState("")
   const [camtOpen, setCamtOpen] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // A scanner returns the "SPC…" payload (or null). Decode it and hand off to
+  // the review modal exactly like the manual-paste path; on no-match, fall
+  // back to that paste modal rather than leaving the user stuck.
+  async function runScan(scan: () => Promise<string | null>) {
+    setScanning(true)
+    try {
+      const payload = await scan()
+      if (!payload) {
+        toast(
+          "Aucune QR-facture suisse détectée sur ce document. Vous pouvez coller le texte manuellement.",
+          "error",
+        )
+        setQrModalOpen(true)
+        return
+      }
+      const decoded = await api.decodeQrbill(payload)
+      sessionStorage.setItem("qrbill-pending", JSON.stringify(decoded))
+      window.dispatchEvent(new Event("qrbill-decoded"))
+    } catch (e) {
+      toast(String(e), "error")
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  // Primary entry point: native file dialog under Tauri, HTML <input> in the
+  // browser. Mirrors scan.tsx so behaviour is consistent across the app.
+  async function pickAndScan() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog")
+      const selected = await open({
+        multiple: false,
+        title: "Choisir une photo ou un PDF de facture",
+        filters: [
+          { name: "Factures (image ou PDF)", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "pdf"] },
+        ],
+      })
+      if (!selected) return
+      const path = selected as string
+      const b64 = await api.readBinaryFileBase64(path)
+      void runScan(() => scanQrFromBytes(base64ToBytes(b64), path.toLowerCase().endsWith(".pdf")))
+    } catch {
+      // Not running under Tauri (or dialog unavailable) → use the file input.
+      fileInputRef.current?.click()
+    }
+  }
+
+  function onFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = "" // allow re-picking the same file
+    if (file) void runScan(() => scanQrFromFile(file))
+  }
+
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault()
+    const file = e.dataTransfer.files?.[0]
+    if (file) void runScan(() => scanQrFromFile(file))
+  }
 
   return (
     <div className="space-y-6">
@@ -53,15 +123,47 @@ export function InboxPage() {
               </Badge>
             </div>
             <CardDescription>
-              Collez le contenu d'un QR-code (norme SIX SPC) reçu par la poste,
-              par e-mail ou via votre e-banking.
+              Prenez en photo ou déposez le PDF d'une facture reçue par la poste
+              ou par e-mail — le QR-code est lu automatiquement.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => setQrModalOpen(true)} className="w-full">
-              <ScanLine className="mr-2 h-4 w-4" />
-              Décoder une QR-facture
-            </Button>
+            <div
+              onDrop={onDrop}
+              onDragOver={(e) => e.preventDefault()}
+              className="rounded-lg border-2 border-dashed border-muted-foreground/25 p-4 text-center"
+            >
+              <Button onClick={pickAndScan} className="w-full" disabled={scanning}>
+                {scanning ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Lecture du QR-code…
+                  </>
+                ) : (
+                  <>
+                    <ScanLine className="mr-2 h-4 w-4" />
+                    Photo ou PDF d'une facture
+                  </>
+                )}
+              </Button>
+              <p className="mt-2 text-xs text-muted-foreground">
+                ou glissez le fichier ici
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setQrModalOpen(true)}
+              className="mt-2 w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
+            >
+              Coller le texte du QR-code manuellement
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={onFileInputChange}
+            />
           </CardContent>
         </Card>
 
