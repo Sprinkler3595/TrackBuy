@@ -17,7 +17,6 @@ import {
   Undo2,
   ScanLine,
   LineChart,
-  LayoutDashboard,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -57,8 +56,8 @@ const navSections: NavSection[] = [
     headingKey: "nav.section.tools",
     items: [
       { to: "/scan", icon: ScanLine, labelKey: "nav.scan" },
+      // Dashboard fusionné dans Finances (3.2) : une seule vue d'analyse.
       { to: "/finances", icon: LineChart, labelKey: "nav.finances" },
-      { to: "/dashboard", icon: LayoutDashboard, labelKey: "nav.dashboard" },
     ],
   },
 ]

@@ -7,7 +7,7 @@ import {
   AreaChart, Area,
   CartesianGrid, XAxis, YAxis, Tooltip, Legend,
 } from "recharts"
-import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon, AlertCircle } from "lucide-react"
+import { TrendingUp, TrendingDown, Wallet, BarChart3, PieChart as PieIcon, AlertCircle, ShoppingBag, Shield, Paperclip } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ErrorPanel } from "@/components/ui/error-panel"
@@ -288,7 +288,7 @@ export function FinancesPage() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Finances</h2>
           <p className="text-muted-foreground">
-            Analyse {windowMonths} mois — revenus, dépenses, ratios et évolution des prix
+            Analyse {windowMonths} mois — revenus, dépenses, ratios, patrimoine et évolution des prix
           </p>
           {stats && (
             <p className="text-xs text-muted-foreground mt-1">
@@ -393,6 +393,54 @@ export function FinancesPage() {
             <span className="font-medium">{foreignCurrencies.join(", ")}</span>{" "}
             existent mais ne sont pas convertis (aucune table de taux) et ne sont donc pas inclus.
           </span>
+        </div>
+      )}
+
+      {/* 1bis. Patrimoine / inventaire (fusion de l'ancien Dashboard) */}
+      {stats && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Achats actifs</CardTitle>
+              <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.active_items}</div>
+              <p className="text-xs text-muted-foreground">{stats.total_items} au total</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Valeur du parc</CardTitle>
+              <Wallet className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">
+                <MaskedAmount amount={stats.total_value} currency={stats.display_currency} visible={amountsVisible} />
+              </div>
+              <p className="text-xs text-muted-foreground">Achats actifs en {stats.display_currency}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Garanties</CardTitle>
+              <Shield className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.total_warranties}</div>
+              <p className="text-xs text-muted-foreground">suivies</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Pièces jointes</CardTitle>
+              <Paperclip className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stats.total_attachments}</div>
+              <p className="text-xs text-muted-foreground">chiffrées</p>
+            </CardContent>
+          </Card>
         </div>
       )}
 

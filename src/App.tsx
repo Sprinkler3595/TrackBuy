@@ -4,7 +4,6 @@ import { AppLayout } from "@/components/layout/app-layout"
 import { ToastProvider } from "@/components/ui/toast"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { UnlockPage } from "@/pages/unlock"
-import { DashboardPage } from "@/pages/dashboard"
 import { ItemsPage } from "@/pages/items"
 import { ItemDetailPage } from "@/pages/item-detail"
 import { TicketsPage } from "@/pages/tickets"
@@ -201,7 +200,8 @@ function AppContent() {
           <Route path="/impots" element={<ErrorBoundary><TaxesPage /></ErrorBoundary>} />
           <Route path="/banque" element={<ErrorBoundary><BanquePage /></ErrorBoundary>} />
           <Route path="/bank-statements/:id/review" element={<ErrorBoundary><BankStatementReviewPage /></ErrorBoundary>} />
-          <Route path="/dashboard" element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
+          {/* Dashboard fusionné dans Finances (3.2) — redirection pour les liens existants. */}
+          <Route path="/dashboard" element={<Navigate to="/finances" replace />} />
           <Route path="/scan" element={<ErrorBoundary><ScanPage /></ErrorBoundary>} />
           <Route path="/scan-review" element={<ErrorBoundary><ScanReviewPage /></ErrorBoundary>} />
           <Route path="/items" element={<ErrorBoundary><ItemsPage /></ErrorBoundary>} />
