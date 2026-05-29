@@ -135,6 +135,42 @@ function ToReceiveRow({ line }: { line: api.ToReceiveLine }) {
   )
 }
 
+/**
+ * Affiche une liste de sous-totaux par devise. Aucune conversion : chaque
+ * devise est rendue sur sa propre ligne, montant + code devise. `signed`
+ * colore selon le signe (pour le solde net) et préfixe les positifs d'un « + ».
+ */
+function CurrencyTotals({
+  totals,
+  signed = false,
+}: {
+  totals: api.CurrencyTotal[]
+  signed?: boolean
+}) {
+  if (totals.length === 0) {
+    return <div className="truncate text-lg font-semibold tabular-nums">{formatPrice(0, "CHF")}</div>
+  }
+  return (
+    <div className="space-y-0.5">
+      {totals.map((t) => (
+        <div
+          key={t.currency}
+          className={`truncate text-lg font-semibold tabular-nums ${
+            signed
+              ? t.amount >= 0
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-destructive"
+              : ""
+          }`}
+        >
+          {signed && t.amount >= 0 ? "+" : ""}
+          {formatPrice(t.amount, t.currency)}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function CeMoisPage() {
   const { locale } = useI18n()
   const [summary, setSummary] = useState<api.ThisMonthSummary | null>(null)
@@ -204,7 +240,8 @@ export function CeMoisPage() {
         </div>
       )}
 
-      {/* Net summary */}
+      {/* Net summary — sous-totaux PAR devise, aucune conversion, aucune
+          devise masquée (cf. correctif 2.1). */}
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <CardContent className="flex items-center gap-3 p-4">
@@ -213,9 +250,7 @@ export function CeMoisPage() {
             </div>
             <div className="min-w-0">
               <div className="text-xs text-muted-foreground">À payer (30 j)</div>
-              <div className="truncate text-lg font-semibold tabular-nums">
-                {formatPrice(summary.to_pay_total_chf, "CHF")}
-              </div>
+              <CurrencyTotals totals={summary.to_pay_totals} />
             </div>
           </CardContent>
         </Card>
@@ -226,9 +261,7 @@ export function CeMoisPage() {
             </div>
             <div className="min-w-0">
               <div className="text-xs text-muted-foreground">À encaisser (30 j)</div>
-              <div className="truncate text-lg font-semibold tabular-nums">
-                {formatPrice(summary.to_receive_total_chf, "CHF")}
-              </div>
+              <CurrencyTotals totals={summary.to_receive_totals} />
             </div>
           </CardContent>
         </Card>
@@ -239,16 +272,7 @@ export function CeMoisPage() {
             </div>
             <div className="min-w-0">
               <div className="text-xs text-muted-foreground">Solde net estimé</div>
-              <div
-                className={`truncate text-lg font-semibold tabular-nums ${
-                  summary.net_estimate_chf >= 0
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : "text-destructive"
-                }`}
-              >
-                {summary.net_estimate_chf >= 0 ? "+" : ""}
-                {formatPrice(summary.net_estimate_chf, "CHF")}
-              </div>
+              <CurrencyTotals totals={summary.net_estimate_totals} signed />
             </div>
           </CardContent>
         </Card>

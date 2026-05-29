@@ -3,7 +3,7 @@ import { ShoppingBag, Shield, DollarSign, TrendingUp, Bell, Calendar, Tag, Repea
 import { Link } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { formatPrice, formatDate, daysUntil } from "@/lib/utils"
+import { formatPrice, formatDate, daysUntil, DEFAULT_CURRENCY } from "@/lib/utils"
 import { monthlyEquivalent as engagementMonthlyEquivalent } from "@/lib/finance"
 import { MaskedAmount, useAmountsVisible } from "@/components/features/amount-masked"
 import { useI18n } from "@/lib/i18n"
@@ -82,15 +82,30 @@ export function DashboardPage() {
   const activeItems = items.filter((i) => i.status === "active")
   const totalValue = activeItems.reduce((sum, i) => sum + i.purchase_price, 0)
   const recentItems = [...items].slice(0, 5)
-  const monthlyCost = subs.reduce((sum, s) => sum + monthlyEquivalent(s), 0)
+  // KPI mensuels SANS conversion : on ne somme que la devise d'affichage et on
+  // signale séparément les devises étrangères, au lieu de les mélanger dans un
+  // total étiqueté CHF (cf. correctif 2.1).
+  const monthlyCost = subs
+    .filter((s) => s.currency === DEFAULT_CURRENCY)
+    .reduce((sum, s) => sum + monthlyEquivalent(s), 0)
   const engagementMonthly = engagements
-    .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot")
+    .filter((e) => e.current_amount != null && e.billing_cycle !== "one_shot" && e.currency === DEFAULT_CURRENCY)
     .reduce((acc, e) => acc + engagementMonthlyEquivalent(e.current_amount as number, e.billing_cycle, e.cycle_interval), 0)
-  const dueIn30 = upcomingCharges.reduce((acc, c) => acc + c.amount, 0)
+  const dueIn30 = upcomingCharges
+    .filter((c) => c.currency === DEFAULT_CURRENCY)
+    .reduce((acc, c) => acc + c.amount, 0)
   const monthlyIncome = incomes
-    .filter((i) => i.current_amount != null && i.billing_cycle !== "one_shot")
+    .filter((i) => i.current_amount != null && i.billing_cycle !== "one_shot" && i.currency === DEFAULT_CURRENCY)
     .reduce((acc, i) => acc + engagementMonthlyEquivalent(i.current_amount as number, i.billing_cycle, i.cycle_interval), 0)
   const totalMonthlyExpense = monthlyCost + engagementMonthly
+  const dashboardForeignCurrencies = (() => {
+    const set = new Set<string>()
+    incomes.forEach((i) => { if (i.current_amount != null && i.billing_cycle !== "one_shot" && i.currency !== DEFAULT_CURRENCY) set.add(i.currency) })
+    engagements.forEach((e) => { if (e.current_amount != null && e.billing_cycle !== "one_shot" && e.currency !== DEFAULT_CURRENCY) set.add(e.currency) })
+    subs.forEach((s) => { if (s.currency !== DEFAULT_CURRENCY) set.add(s.currency) })
+    upcomingCharges.forEach((c) => { if (c.currency !== DEFAULT_CURRENCY) set.add(c.currency) })
+    return Array.from(set).sort()
+  })()
   const expenseRatio = monthlyIncome > 0 ? (totalMonthlyExpense / monthlyIncome) * 100 : 0
   const remaining = monthlyIncome - totalMonthlyExpense
   // Sum of pending + claimed + (partial - already received) — the actual
@@ -207,7 +222,7 @@ export function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                <MaskedAmount amount={monthlyIncome} currency="CHF" visible={amountsVisible} />
+                <MaskedAmount amount={monthlyIncome} currency={DEFAULT_CURRENCY} visible={amountsVisible} />
               </div>
               <p className="text-xs text-muted-foreground">{incomes.length} source(s) active(s)</p>
             </CardContent>
@@ -233,11 +248,23 @@ export function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className={`text-2xl font-bold ${remaining < 0 ? "text-destructive" : ""}`}>
-                <MaskedAmount amount={remaining} currency="CHF" visible={amountsVisible} />
+                <MaskedAmount amount={remaining} currency={DEFAULT_CURRENCY} visible={amountsVisible} />
               </div>
               <p className="text-xs text-muted-foreground">Avant achats ponctuels et imprévus</p>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* Devises étrangères non converties / non incluses dans les KPI. */}
+      {dashboardForeignCurrencies.length > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>
+            Indicateurs financiers en {DEFAULT_CURRENCY} uniquement. Montants en{" "}
+            <span className="font-medium">{dashboardForeignCurrencies.join(", ")}</span>{" "}
+            non convertis (aucune table de taux) et non inclus.
+          </span>
         </div>
       )}
 

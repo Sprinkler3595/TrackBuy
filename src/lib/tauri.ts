@@ -1497,14 +1497,20 @@ export interface ToReceiveLine {
   days_until: number
 }
 
+export interface CurrencyTotal {
+  currency: string
+  amount: number
+}
+
 export interface ThisMonthSummary {
-  to_pay_total_chf: number
   to_pay_lines: ToPayLine[]
-  to_receive_total_chf: number
   to_receive_lines: ToReceiveLine[]
+  // Sous-totaux par devise, sans conversion : aucune devise n'est masquée.
+  to_pay_totals: CurrencyTotal[]
+  to_receive_totals: CurrencyTotal[]
+  net_estimate_totals: CurrencyTotal[]
   inbox_pending_transactions: number
   inbox_pending_invoices: number
-  net_estimate_chf: number
 }
 
 export const getThisMonth = () =>

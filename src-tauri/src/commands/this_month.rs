@@ -41,15 +41,54 @@ pub struct ToReceiveLine {
     pub days_until: i64,
 }
 
+/// Sous-total monétaire pour une devise donnée. On expose un total PAR devise
+/// plutôt qu'un montant unique en CHF : sans table de taux de change, additionner
+/// des CHF, EUR et USD produirait un nombre sans unité et masquerait
+/// silencieusement les montants en devise étrangère.
+#[derive(Debug, Serialize)]
+pub struct CurrencyTotal {
+    pub currency: String,
+    pub amount: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ThisMonthSummary {
-    pub to_pay_total_chf: f64,
     pub to_pay_lines: Vec<ToPayLine>,
-    pub to_receive_total_chf: f64,
     pub to_receive_lines: Vec<ToReceiveLine>,
+    /// Sous-totaux « à payer » par devise (CHF en tête, puis alphabétique).
+    pub to_pay_totals: Vec<CurrencyTotal>,
+    /// Sous-totaux « à encaisser » par devise.
+    pub to_receive_totals: Vec<CurrencyTotal>,
+    /// Solde net estimé par devise (encaissements − paiements, même devise).
+    /// Aucune conversion inter-devises : un solde n'a de sens qu'au sein d'une
+    /// même devise.
+    pub net_estimate_totals: Vec<CurrencyTotal>,
     pub inbox_pending_transactions: i64,
     pub inbox_pending_invoices: i64,
-    pub net_estimate_chf: f64,
+}
+
+/// Agrège des montants par devise sans aucune conversion. Tri : CHF d'abord,
+/// puis ordre alphabétique, pour un affichage stable.
+fn totals_by_currency<I>(items: I) -> Vec<CurrencyTotal>
+where
+    I: IntoIterator<Item = (String, f64)>,
+{
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, f64> = BTreeMap::new();
+    for (cur, amt) in items {
+        *map.entry(cur).or_insert(0.0) += amt;
+    }
+    let mut out: Vec<CurrencyTotal> = map
+        .into_iter()
+        .map(|(currency, amount)| CurrencyTotal { currency, amount })
+        .collect();
+    out.sort_by(|a, b| {
+        let rank = |c: &str| if c == "CHF" { 0 } else { 1 };
+        rank(&a.currency)
+            .cmp(&rank(&b.currency))
+            .then_with(|| a.currency.cmp(&b.currency))
+    });
+    out
 }
 
 #[tauri::command]
@@ -95,12 +134,6 @@ pub fn get_this_month(state: State<'_, AppState>) -> Result<ThisMonthSummary, St
         to_pay_lines.push(r.map_err(|e| e.to_string())?);
     }
 
-    let to_pay_total_chf: f64 = to_pay_lines
-        .iter()
-        .filter(|l| l.currency == "CHF")
-        .map(|l| l.amount)
-        .sum();
-
     let mut to_receive_lines: Vec<ToReceiveLine> = Vec::new();
     let mut stmt = conn
         .prepare(
@@ -134,11 +167,22 @@ pub fn get_this_month(state: State<'_, AppState>) -> Result<ThisMonthSummary, St
         to_receive_lines.push(r.map_err(|e| e.to_string())?);
     }
 
-    let to_receive_total_chf: f64 = to_receive_lines
-        .iter()
-        .filter(|l| l.currency == "CHF")
-        .map(|l| l.amount)
-        .sum();
+    // Sous-totaux par devise — aucune devise n'est masquée, aucune conversion.
+    let to_pay_totals =
+        totals_by_currency(to_pay_lines.iter().map(|l| (l.currency.clone(), l.amount)));
+    let to_receive_totals =
+        totals_by_currency(to_receive_lines.iter().map(|l| (l.currency.clone(), l.amount)));
+    let net_estimate_totals = {
+        use std::collections::BTreeMap;
+        let mut map: BTreeMap<String, f64> = BTreeMap::new();
+        for t in &to_receive_totals {
+            *map.entry(t.currency.clone()).or_insert(0.0) += t.amount;
+        }
+        for t in &to_pay_totals {
+            *map.entry(t.currency.clone()).or_insert(0.0) -= t.amount;
+        }
+        totals_by_currency(map)
+    };
 
     // Inbox counts: unreviewed bank statements + pending invoices.
     let inbox_pending_transactions: i64 = conn
@@ -159,12 +203,50 @@ pub fn get_this_month(state: State<'_, AppState>) -> Result<ThisMonthSummary, St
         .unwrap_or(0);
 
     Ok(ThisMonthSummary {
-        to_pay_total_chf,
         to_pay_lines,
-        to_receive_total_chf,
         to_receive_lines,
+        to_pay_totals,
+        to_receive_totals,
+        net_estimate_totals,
         inbox_pending_transactions,
         inbox_pending_invoices,
-        net_estimate_chf: to_receive_total_chf - to_pay_total_chf,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn totals_par_devise_naditionne_jamais_entre_devises() {
+        let totals = totals_by_currency(vec![
+            ("CHF".to_string(), 10.0),
+            ("EUR".to_string(), 5.0),
+            ("CHF".to_string(), 2.5),
+            ("USD".to_string(), 7.0),
+        ]);
+        // Une entrée par devise, CHF d'abord puis alphabétique.
+        assert_eq!(totals.len(), 3);
+        assert_eq!(totals[0].currency, "CHF");
+        assert!((totals[0].amount - 12.5).abs() < 1e-9);
+        assert_eq!(totals[1].currency, "EUR");
+        assert!((totals[1].amount - 5.0).abs() < 1e-9);
+        assert_eq!(totals[2].currency, "USD");
+        assert!((totals[2].amount - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn totals_par_devise_vide() {
+        assert!(totals_by_currency(Vec::<(String, f64)>::new()).is_empty());
+    }
+
+    #[test]
+    fn une_devise_etrangere_seule_nest_pas_masquee() {
+        // Régression du bug 2.1 : auparavant un total filtré sur CHF aurait
+        // renvoyé 0 et fait disparaître ce montant en EUR.
+        let totals = totals_by_currency(vec![("EUR".to_string(), 42.0)]);
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].currency, "EUR");
+        assert!((totals[0].amount - 42.0).abs() < 1e-9);
+    }
 }
