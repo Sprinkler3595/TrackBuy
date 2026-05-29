@@ -14,10 +14,14 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { ErrorPanel } from "@/components/ui/error-panel"
 import { formatPrice, cn } from "@/lib/utils"
+import { useI18n } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
-// French labels for the canonical engagement types.
+// French labels for the canonical engagement types. Keep in lockstep with the
+// backend EngagementType enum — missing entries fall back to the raw key,
+// which used to surface "tax_federal" verbatim instead of "Impôt fédéral".
 const ENGAGEMENT_TYPE_LABEL: Record<string, string> = {
   insurance_health: "LAMal",
   insurance_household: "RC ménage",
@@ -132,6 +136,7 @@ function ToReceiveRow({ line }: { line: api.ToReceiveLine }) {
 }
 
 export function CeMoisPage() {
+  const { locale } = useI18n()
   const [summary, setSummary] = useState<api.ThisMonthSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -162,16 +167,23 @@ export function CeMoisPage() {
     }
   }
 
-  if (loading || !summary) {
+  if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     )
   }
+  // Distinguishing the error path from the not-loaded path is what makes the
+  // spinner not turn into a forever-spinner when getThisMonth() throws.
+  if (error || !summary) {
+    return <ErrorPanel error={error ?? "Données indisponibles"} onRetry={() => { void load() }} />
+  }
 
   const today = new Date()
-  const monthLabel = new Intl.DateTimeFormat("fr-CH", {
+  // Heading follows the user's i18n choice (not the OS locale) — a French
+  // user on an English OS otherwise saw "May 2026" next to French chrome.
+  const monthLabel = new Intl.DateTimeFormat(locale === "fr" ? "fr-CH" : "en-US", {
     month: "long",
     year: "numeric",
   }).format(today)

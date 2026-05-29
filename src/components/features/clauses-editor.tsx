@@ -112,6 +112,13 @@ export function ClausesEditor({ value, onChange, readOnly = false }: ClausesEdit
     }
   }
 
+  // Suggestions are templates the user hasn't used yet. Avoids cluttering
+  // the UI with already-added keys.
+  const suggestions = useMemo(
+    () => COMMON_TEMPLATES.filter((tpl) => !rows.some((r) => r.key === tpl.key)),
+    [rows]
+  )
+
   // Read-only view used by the engagement overview tab.
   if (readOnly) {
     if (rows.length === 0) {
@@ -128,13 +135,6 @@ export function ClausesEditor({ value, onChange, readOnly = false }: ClausesEdit
       </dl>
     )
   }
-
-  // Suggestions are templates the user hasn't used yet. Avoids cluttering
-  // the UI with already-added keys.
-  const suggestions = useMemo(
-    () => COMMON_TEMPLATES.filter((tpl) => !rows.some((r) => r.key === tpl.key)),
-    [rows]
-  )
 
   return (
     <div className="space-y-3">

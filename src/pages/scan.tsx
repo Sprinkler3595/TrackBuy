@@ -426,7 +426,7 @@ async function pdfToImages(source: ArrayBuffer | string): Promise<string[]> {
     canvas.width = viewport.width
     canvas.height = viewport.height
     const ctx = canvas.getContext("2d")!
-    await page.render({ canvasContext: ctx, viewport }).promise
+    await page.render({ canvasContext: ctx, canvas, viewport }).promise
     images.push(canvas.toDataURL("image/png"))
   }
 
@@ -571,7 +571,7 @@ export function ScanPage() {
         setIsPdf(true)
         setPreviewUrl(null)
         try {
-          const images = await pdfToImages(data.buffer)
+          const images = await pdfToImages(data.buffer as ArrayBuffer)
           setPdfPageImages(images)
           setPreviewUrl(images[0] || null)
         } catch (err) {
@@ -581,7 +581,7 @@ export function ScanPage() {
       } else {
         setIsPdf(false)
         setPdfPageImages([])
-        const blob = new Blob([data])
+        const blob = new Blob([data as BlobPart])
         const url = URL.createObjectURL(blob)
         setPreviewUrl(url)
       }
@@ -603,6 +603,19 @@ export function ScanPage() {
     let worker: Tesseract.Worker | null = null
     let currentPage = 0
     try {
+      // Tesseract.createWorker reports any 404 as a generic "Failed to load"
+      // which is hopeless for a user. Probe the language file first so we
+      // can show an actionable message pointing at `npm run fetch-tessdata`.
+      try {
+        const probe = await fetch(`${TESSERACT_OPTIONS.langPath}/fra.traineddata`, { method: "HEAD" })
+        if (!probe.ok) throw new Error(`HTTP ${probe.status}`)
+      } catch {
+        const msg = "Données OCR absentes. Lancez `npm run fetch-tessdata` puis redémarrez l'application."
+        setError(msg)
+        setStatus("error")
+        toast(msg, "error")
+        return
+      }
       worker = await Tesseract.createWorker(["fra", "eng"], Tesseract.OEM.LSTM_ONLY, {
         workerPath: TESSERACT_OPTIONS.workerPath,
         corePath: TESSERACT_OPTIONS.corePath,

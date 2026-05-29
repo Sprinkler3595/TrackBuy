@@ -619,7 +619,15 @@ export function SubscriptionsPage() {
 
       {migrationTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setMigrationTarget(null)}>
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+          <div className="relative w-full max-w-md rounded-lg border bg-card p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setMigrationTarget(null)}
+              aria-label="Fermer"
+              className="absolute top-3 right-3 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
             <h3 className="text-lg font-semibold">Migrer vers Engagements</h3>
             <p className="text-sm text-muted-foreground mt-1">{migrationTarget.name}</p>
             <p className="text-xs text-muted-foreground mt-2">

@@ -674,7 +674,7 @@ interface TicketCardProps {
 }
 
 function TicketCard({ item, expanded, onToggleExpand, onEdit, onDelete, onToggleUsed }: TicketCardProps) {
-  const { t, locale } = useI18n()
+  const { t } = useI18n()
   const Icon = KIND_ICON[item.item_kind as DigitalKind] ?? Ticket
   const kindLabel =
     item.item_kind === "ticket" ? t("tickets.kindTicket")

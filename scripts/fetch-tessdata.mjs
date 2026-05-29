@@ -68,13 +68,24 @@ async function fetchAndHash(url) {
   return { buf, hash }
 }
 
+// CI flag to refuse unverified downloads. Add `--strict` once you have pinned
+// every SHA-256 in FILES above; the script then refuses to silently fetch any
+// entry whose `sha256` is still null.
+const STRICT = process.argv.includes("--strict")
+
 await mkdir(TESSDATA_DIR, { recursive: true })
 
 let failed = 0
+let unpinned = 0
 for (const file of FILES) {
   const dest = join(TESSDATA_DIR, file.name)
   if (await exists(dest)) {
     console.log(`  ✓ ${file.name} already present`)
+    continue
+  }
+  if (STRICT && !file.sha256) {
+    console.error(`  ✗ ${file.name}: --strict set but no sha256 pinned — refusing to fetch.`)
+    failed++
     continue
   }
   process.stdout.write(`  ↓ ${file.name} ... `)
@@ -86,6 +97,7 @@ for (const file of FILES) {
       continue
     }
     await writeFile(dest, buf)
+    if (!file.sha256) unpinned++
     console.log(`OK  (${buf.length} bytes, sha256=${hash})`)
   } catch (e) {
     console.error(`FAIL — ${e.message}`)
@@ -96,5 +108,11 @@ for (const file of FILES) {
 if (failed > 0) {
   console.error(`\n${failed} file(s) failed.`)
   process.exit(1)
+}
+if (unpinned > 0) {
+  console.warn(
+    `\nWARNING: ${unpinned} file(s) downloaded without a pinned SHA-256. ` +
+    `Copy the printed hashes into FILES[].sha256 above and re-run with --strict to verify supply-chain integrity.`,
+  )
 }
 console.log(`\nDone. ${FILES.length} file(s) in ${TESSDATA_DIR}`)

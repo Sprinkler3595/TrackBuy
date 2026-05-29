@@ -1,10 +1,29 @@
 use chrono::Local;
 use std::io::{Read, Write};
-use tauri::{AppHandle, State};
+use std::path::{Component, Path};
+use tauri::{AppHandle, Emitter, State};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::commands::auth::{get_vaults_dir, AppState};
 use crate::util::path::{validate_read_source, validate_write_target};
+
+/// Highest backup format this build knows how to restore.
+/// Bump together with any breaking change to manifest.json or the archive
+/// layout. Future-version backups are refused with a clear message.
+pub const CURRENT_BACKUP_FORMAT_VERSION: i64 = 1;
+
+/// Reject zip entries that aren't a single normal path component sequence —
+/// catches `..`, `..\`, absolute Linux paths (`/etc/...`), absolute Windows
+/// paths (`C:\...`) and NUL bytes. Stricter than the original substring check
+/// which let backslash-based escapes through on Windows.
+fn is_safe_zip_entry(entry_name: &str) -> bool {
+    if entry_name.is_empty() || entry_name.contains('\0') {
+        return false;
+    }
+    Path::new(entry_name)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)))
+}
 
 /// Create an encrypted backup of the active vault.
 ///
@@ -14,21 +33,25 @@ use crate::util::path::{validate_read_source, validate_write_target};
 /// password.
 #[tauri::command]
 pub fn backup_vault(state: State<'_, AppState>, destination: String) -> Result<String, String> {
-    let vault_dir_guard = state
-        .vault_dir
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let vault_dir = vault_dir_guard.as_ref().ok_or("No active vault")?;
+    // Snapshot what we need from the locked state, then drop the guards
+    // BEFORE the long zip loop — otherwise every other command (idle lock,
+    // UI refresh, manual lock) blocks for the entire backup duration.
+    let vault_dir = {
+        let guard = state
+            .vault_dir
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        guard.as_ref().ok_or("No active vault")?.clone()
+    };
 
-    let db_guard = state
-        .db
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-
-    // Checkpoint WAL so the main vault.db file contains everything.
     {
+        let db_guard = state
+            .db
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
         let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+        // Checkpoint WAL so the main vault.db file contains everything.
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
     }
 
@@ -125,6 +148,16 @@ pub fn inspect_backup(app: AppHandle, source: String) -> Result<serde_json::Valu
     if format != "tbvbak" {
         return Err("Format de sauvegarde inconnu".to_string());
     }
+    let format_version = manifest
+        .get("format_version")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if format_version > CURRENT_BACKUP_FORMAT_VERSION {
+        return Err(format!(
+            "Cette sauvegarde a été créée par une version plus récente de TrackBuy (format v{}, cette version supporte jusqu'à v{}). Mettez à jour l'application pour pouvoir la lire.",
+            format_version, CURRENT_BACKUP_FORMAT_VERSION
+        ));
+    }
     let vault_name = manifest
         .get("vault_name")
         .and_then(|v| v.as_str())
@@ -183,6 +216,20 @@ pub fn restore_backup(
         .map_err(|e| e.to_string())?;
     let manifest: serde_json::Value =
         serde_json::from_str(&manifest_str).map_err(|e| format!("Invalid manifest: {}", e))?;
+    let format = manifest.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    if format != "tbvbak" {
+        return Err("Format de sauvegarde inconnu".to_string());
+    }
+    let format_version = manifest
+        .get("format_version")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if format_version > CURRENT_BACKUP_FORMAT_VERSION {
+        return Err(format!(
+            "Cette sauvegarde a été créée par une version plus récente de TrackBuy (format v{}, cette version supporte jusqu'à v{}). Mettez à jour l'application avant de la restaurer.",
+            format_version, CURRENT_BACKUP_FORMAT_VERSION
+        ));
+    }
     let manifest_name = manifest
         .get("vault_name")
         .and_then(|v| v.as_str())
@@ -214,6 +261,7 @@ pub fn restore_backup(
 
     // If we're about to overwrite the currently-active vault, lock it first to
     // release the SQLCipher file handle.
+    let mut overwrote_active = false;
     if already_exists {
         let active = state
             .vault_dir
@@ -228,6 +276,7 @@ pub fn restore_backup(
                     .encryption_key
                     .lock()
                     .map_err(|_| "lock poisoned".to_string())? = None;
+                overwrote_active = true;
             }
         }
         // Clean previous content to avoid mixing old + new attachments.
@@ -242,8 +291,9 @@ pub fn restore_backup(
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let entry_name = entry.name().to_string();
 
-        // Reject anything that tries to escape the target dir
-        if entry_name.contains("..") || entry_name.starts_with('/') {
+        // Reject anything that tries to escape the target dir. Stricter than
+        // a substring check so `..\`, `C:\…`, and NUL bytes are caught too.
+        if !is_safe_zip_entry(&entry_name) {
             return Err(format!("Entrée d'archive suspecte: {}", entry_name));
         }
         // Only allow our known entries
@@ -275,6 +325,13 @@ pub fn restore_backup(
 
     if entries_extracted == 0 {
         return Err("Sauvegarde vide ou corrompue".to_string());
+    }
+
+    // Tell the frontend it must drop its "unlocked" state if we just nuked
+    // the active vault — otherwise it will keep firing IPC against a closed
+    // vault and surface confusing "Vault not unlocked" errors everywhere.
+    if overwrote_active {
+        let _ = app.emit("vault-locked", "restore-overwrite");
     }
 
     Ok(name)

@@ -14,7 +14,11 @@ interface ToastContextValue {
   toast: (message: string, type?: ToastType) => void
 }
 
-const ToastContext = createContext<ToastContextValue>({ toast: () => {} })
+const ToastContext = createContext<ToastContextValue>({
+  toast: () => {
+    /* default no-op until ToastProvider mounts */
+  },
+})
 
 export function useToast() {
   return useContext(ToastContext)
@@ -28,9 +32,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const addToast = useCallback((message: string, type: ToastType = "success") => {
     const id = nextId++
     setToasts((prev) => [...prev, { id, message, type }])
+    // Errors stay long enough to read a stack trace; others fade fast.
+    const ttl = type === "error" ? 8000 : 3000
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, 3000)
+    }, ttl)
   }, [])
 
   const removeToast = useCallback((id: number) => {

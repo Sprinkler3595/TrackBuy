@@ -142,6 +142,9 @@ fn insert_polymorphic_attachment(
     let key_bytes: &[u8; 32] = key;
 
     let file_path = storage::save_attachment(vault_dir, &id, &data, key_bytes)?;
+    // Resolve absolute path now so we can clean up if the INSERT fails —
+    // otherwise the .enc stays on disk, unreferenced and still decryptable.
+    let abs_file_path = storage::attachments_dir(vault_dir).join(&file_path);
 
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
@@ -162,7 +165,7 @@ fn insert_polymorphic_attachment(
         AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, None, Some(id)),
     };
 
-    conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT INTO attachments (id, item_id, order_id, subscription_id, engagement_id,
          engagement_charge_id, engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
          original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
@@ -171,7 +174,10 @@ fn insert_polymorphic_attachment(
             id, item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id,
             original_name, display, mime_type, file_path, size_bytes, att_type
         ],
-    ).map_err(|e| e.to_string())?;
+    ) {
+        let _ = storage::delete_attachment_file(&abs_file_path.to_string_lossy());
+        return Err(e.to_string());
+    }
 
     let select_sql = format!(
         "SELECT {} FROM attachments WHERE id = ?1",

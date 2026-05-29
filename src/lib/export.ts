@@ -1,5 +1,4 @@
 import type { Item } from "./tauri"
-import { formatPrice, formatDate } from "./utils"
 
 export function itemsToCsv(items: Item[]): string {
   const headers = [

@@ -393,6 +393,10 @@ export function ScanReviewPage() {
     // "Cet article ne fait pas partie d'un achat groupé".
     const shareInvoice = createdIds.length >= 2
     let pendingPromoted = false
+    // Tracks whether the attach-pending-invoice call was attempted but threw.
+    // If true we MUST keep the pending row + .enc on disk so the user can
+    // retry — otherwise the only copy of the receipt is destroyed.
+    let pendingAttachFailed = false
     if (createdIds.length > 0 && shared.invoiceFile) {
       try {
         const invoiceName = await harmonize("invoice", sharedCtx, shared.invoiceFile.name)
@@ -420,6 +424,7 @@ export function ScanReviewPage() {
         pendingPromoted = true
       } catch (err) {
         failures.push(`Facture (en attente): ${err}`)
+        pendingAttachFailed = true
       }
     }
     if (createdIds.length > 0 && shared.purchaseOrderFile) {
@@ -437,10 +442,17 @@ export function ScanReviewPage() {
       }
     }
 
-    // Drop the pending invoice from the queue when no items were created
-    // from it (so the file isn't orphaned). When pendingPromoted=true the
-    // attach_pending_invoice_to_item call already deleted the row.
-    if (pendingInvoiceId && !pendingPromoted && createdIds.length > 0) {
+    // Drop the pending invoice only when it was safely replaced by a fresh
+    // shared.invoiceFile (user chose another file) AND items were created.
+    // If attachPendingInvoiceToItem threw, the row + .enc must stay so the
+    // user can retry — otherwise we'd destroy the only copy of the receipt.
+    // When pendingPromoted=true the backend already deleted the row.
+    if (
+      pendingInvoiceId &&
+      !pendingPromoted &&
+      !pendingAttachFailed &&
+      createdIds.length > 0
+    ) {
       try {
         await api.deletePendingInvoice(pendingInvoiceId)
       } catch (err) {
@@ -648,7 +660,7 @@ export function ScanReviewPage() {
       <ConfirmDialog
         open={confirmQuit}
         title="Quitter sans créer ?"
-        message="Les articles saisis seront perdus. Tu peux aussi revenir plus tard — la facture est conservée tant que tu ne la quittes pas explicitement."
+        message="Les articles saisis seront perdus. Vous pouvez aussi revenir plus tard — la facture est conservée tant que vous ne la quittez pas explicitement."
         confirmLabel="Quitter"
         cancelLabel="Continuer la saisie"
         variant="destructive"
@@ -738,7 +750,7 @@ function RecapStep({ drafts, shared, onEdit, onAdd }: RecapStepProps) {
     <div className="space-y-4">
       {drafts.length === 0 ? (
         <p className="text-sm text-muted-foreground italic">
-          Aucun article. Clique sur "Ajouter un article" pour commencer.
+          Aucun article. Cliquez sur « Ajouter un article » pour commencer.
         </p>
       ) : (
         <ul className="space-y-1">

@@ -1,5 +1,9 @@
 use rusqlite::Connection;
 
+/// Highest schema version this build of TrackBuy knows how to read.
+/// Bump in lockstep with the last `migrate_vN` function declared below.
+pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
@@ -16,6 +20,16 @@ pub fn run(conn: &Connection) -> Result<(), String> {
             |row| row.get(0),
         )
         .unwrap_or(0);
+
+    // Refuse to open a vault that was written by a newer TrackBuy. Silently
+    // running on an unknown schema risks reading rows with missing columns,
+    // half-writing new ones, and corrupting the user's data over time.
+    if current_version > CURRENT_SCHEMA_VERSION {
+        return Err(format!(
+            "Ce coffre a été créé par une version plus récente de TrackBuy (schéma v{}, cette version supporte jusqu'à v{}). Mettez à jour l'application avant de l'ouvrir.",
+            current_version, CURRENT_SCHEMA_VERSION
+        ));
+    }
 
     if current_version < 1 {
         migrate_v1(conn)?;

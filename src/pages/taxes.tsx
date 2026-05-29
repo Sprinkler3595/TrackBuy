@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { Link } from "react-router-dom"
 import { ChevronDown, ChevronRight, Receipt, Users } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -244,12 +245,12 @@ export function TaxesPage() {
               {formatPrice(total, "CHF")}
             </div>
           </div>
-          <a
-            href="/settings/menage"
+          <Link
+            to="/settings/menage"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
           >
             Membres du ménage
-          </a>
+          </Link>
         </CardContent>
       </Card>
 

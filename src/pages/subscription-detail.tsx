@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { formatPrice, formatDate, daysUntil } from "@/lib/utils"
 import { I18nContext } from "@/lib/i18n"
@@ -25,6 +26,7 @@ export function SubscriptionDetailPage() {
   const [payments, setPayments] = useState<api.SubscriptionPayment[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [deleteSubOpen, setDeleteSubOpen] = useState(false)
   const [deletePaymentTarget, setDeletePaymentTarget] = useState<string | null>(null)
   const [deleteMemberTarget, setDeleteMemberTarget] = useState<string | null>(null)
@@ -36,6 +38,7 @@ export function SubscriptionDetailPage() {
 
   const load = async () => {
     if (!id) return
+    setLoading(true)
     try {
       const [s, mem, pay, cs] = await Promise.all([
         api.getSubscription(id),
@@ -48,20 +51,26 @@ export function SubscriptionDetailPage() {
       setPayments(pay)
       setCards(cs)
       setPaymentForm((f) => ({ ...f, amount: String(s.price), payment_card_id: s.payment_card_id ?? "" }))
+      setError(null)
     } catch (e) {
-      toast(`Erreur: ${e}`, "error")
+      const msg = String(e)
+      setError(msg)
+      toast(`Erreur: ${msg}`, "error")
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => { load() }, [id])
 
-  if (loading || !sub) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     )
+  }
+  if (error || !sub) {
+    return <ErrorPanel error={error ?? "Abonnement introuvable"} onRetry={() => { void load() }} />
   }
 
   const days = daysUntil(sub.next_renewal_date)

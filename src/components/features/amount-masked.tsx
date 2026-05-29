@@ -14,7 +14,7 @@ export function useAmountsVisible(): [boolean, (v: boolean) => void] {
     try { return localStorage.getItem(STORAGE_KEY) === "1" } catch { return false }
   })
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, visible ? "1" : "0") } catch {}
+    try { localStorage.setItem(STORAGE_KEY, visible ? "1" : "0") } catch { /* quota / private mode — preference is best-effort */ }
   }, [visible])
   return [visible, setVisible]
 }

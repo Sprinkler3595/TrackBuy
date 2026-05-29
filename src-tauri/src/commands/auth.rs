@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 use tauri::{Manager, State};
 use zeroize::Zeroizing;
 
@@ -16,10 +17,15 @@ pub struct AppState {
     pub unlock_attempts: Mutex<HashMap<String, AttemptState>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AttemptState {
     pub failures: u32,
-    pub locked_until: Option<Instant>,
+    /// Unix epoch seconds at which the lock expires. None = not locked.
+    /// SystemTime (not Instant) so the cooldown survives a process restart —
+    /// without persistence, an attacker can defeat the rate-limit by simply
+    /// killing the app between attempts.
+    #[serde(default)]
+    pub locked_until_epoch: Option<u64>,
 }
 
 impl AppState {
@@ -66,19 +72,28 @@ fn params_path(vault_dir: &PathBuf) -> PathBuf {
     vault_dir.join("argon2_params.json")
 }
 
-fn read_params(vault_dir: &PathBuf) -> Argon2Params {
+fn read_params(vault_dir: &PathBuf) -> Result<Argon2Params, String> {
     let path = params_path(vault_dir);
-    std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Argon2Params>(&bytes).ok())
-        .unwrap_or(Argon2Params {
-            // Legacy fallback for vaults created before per-vault Argon2 params
-            // were persisted (OWASP minimum: m=19456 KiB, t=2, p=1, v=0x13).
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Argon2Params>(&bytes).map_err(|e| {
+            format!(
+                "Paramètres Argon2id corrompus dans {}: {}. \
+                 Restaurez ce fichier depuis une sauvegarde — sans lui, \
+                 la clé dérivée ne correspondra pas et le coffre est irrécupérable.",
+                path.display(),
+                e
+            )
+        }),
+        // Only the absent-file case falls back to legacy OWASP defaults,
+        // for vaults created before per-vault Argon2 params were persisted.
+        Err(ref e) if e.kind() == io::ErrorKind::NotFound => Ok(Argon2Params {
             m_cost_kib: 19_456,
             t_cost: 2,
             p_cost: 1,
             version: 0x13,
-        })
+        }),
+        Err(e) => Err(format!("Impossible de lire {}: {}", path.display(), e)),
+    }
 }
 
 fn write_params(vault_dir: &PathBuf, params: &Argon2Params) -> Result<(), String> {
@@ -93,45 +108,103 @@ fn write_params(vault_dir: &PathBuf, params: &Argon2Params) -> Result<(), String
 const FAILURES_BEFORE_LOCK: u32 = 5;
 const BASE_LOCK_SECS: u64 = 5;
 const MAX_LOCK_SECS: u64 = 300; // 5 min
+const ATTEMPTS_FILE: &str = "attempts.json";
 
-fn check_locked(state: &State<'_, AppState>, vault_name: &str) -> Result<(), String> {
-    let map = state
-        .unlock_attempts
-        .lock()
-        .map_err(|_| "lock poisoned".to_string())?;
-    if let Some(att) = map.get(vault_name) {
-        if let Some(until) = att.locked_until {
-            let now = Instant::now();
-            if now < until {
-                let remaining = (until - now).as_secs() + 1;
-                return Err(format!(
-                    "Trop de tentatives. Attendez {} seconde(s).",
-                    remaining
-                ));
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn attempts_path(app: &tauri::AppHandle, vault_name: &str) -> Result<PathBuf, String> {
+    Ok(get_vault_path(app, vault_name)?.join(ATTEMPTS_FILE))
+}
+
+fn load_attempts(app: &tauri::AppHandle, vault_name: &str) -> AttemptState {
+    let path = match attempts_path(app, vault_name) {
+        Ok(p) => p,
+        Err(_) => {
+            return AttemptState {
+                failures: 0,
+                locked_until_epoch: None,
             }
+        }
+    };
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AttemptState>(&bytes).ok())
+        .unwrap_or(AttemptState {
+            failures: 0,
+            locked_until_epoch: None,
+        })
+}
+
+fn save_attempts(app: &tauri::AppHandle, vault_name: &str, att: &AttemptState) {
+    let path = match attempts_path(app, vault_name) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec(att) {
+        let _ = std::fs::write(&path, &bytes);
+    }
+}
+
+fn clear_attempts(app: &tauri::AppHandle, vault_name: &str) {
+    if let Ok(path) = attempts_path(app, vault_name) {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+fn check_locked(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    vault_name: &str,
+) -> Result<(), String> {
+    // Mirror disk state into memory for in-process callers that still read it.
+    let on_disk = load_attempts(app, vault_name);
+    {
+        let mut map = state
+            .unlock_attempts
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        map.insert(vault_name.to_string(), on_disk.clone());
+    }
+    if let Some(until) = on_disk.locked_until_epoch {
+        let now = now_epoch();
+        if now < until {
+            let remaining = until - now + 1;
+            return Err(format!(
+                "Trop de tentatives. Attendez {} seconde(s).",
+                remaining
+            ));
         }
     }
     Ok(())
 }
 
-fn record_failure(state: &State<'_, AppState>, vault_name: &str) {
+fn record_failure(app: &tauri::AppHandle, state: &State<'_, AppState>, vault_name: &str) {
+    let mut current = load_attempts(app, vault_name);
+    current.failures = current.failures.saturating_add(1);
+    if current.failures >= FAILURES_BEFORE_LOCK {
+        let over = current.failures - FAILURES_BEFORE_LOCK;
+        let secs = BASE_LOCK_SECS
+            .saturating_mul(1u64 << over.min(6)) // cap exponent
+            .min(MAX_LOCK_SECS);
+        current.locked_until_epoch =
+            Some(now_epoch() + Duration::from_secs(secs).as_secs());
+    }
+    save_attempts(app, vault_name, &current);
     if let Ok(mut map) = state.unlock_attempts.lock() {
-        let entry = map.entry(vault_name.to_string()).or_insert(AttemptState {
-            failures: 0,
-            locked_until: None,
-        });
-        entry.failures = entry.failures.saturating_add(1);
-        if entry.failures >= FAILURES_BEFORE_LOCK {
-            let over = entry.failures - FAILURES_BEFORE_LOCK;
-            let secs = BASE_LOCK_SECS
-                .saturating_mul(1u64 << over.min(6)) // cap exponent
-                .min(MAX_LOCK_SECS);
-            entry.locked_until = Some(Instant::now() + Duration::from_secs(secs));
-        }
+        map.insert(vault_name.to_string(), current);
     }
 }
 
-fn record_success(state: &State<'_, AppState>, vault_name: &str) {
+fn record_success(app: &tauri::AppHandle, state: &State<'_, AppState>, vault_name: &str) {
+    clear_attempts(app, vault_name);
     if let Ok(mut map) = state.unlock_attempts.lock() {
         map.remove(vault_name);
     }
@@ -189,11 +262,11 @@ pub fn unlock_vault(
 ) -> Result<(), String> {
     let password = Zeroizing::new(password);
 
-    check_locked(&state, &vault_name)?;
+    check_locked(&app, &state, &vault_name)?;
 
     let vault_dir = get_vault_path(&app, &vault_name)?;
     let salt = read_salt(&vault_dir)?;
-    let params = read_params(&vault_dir);
+    let params = read_params(&vault_dir)?;
     let key = crypto::derive_key(&password, &salt, &params)
         .map_err(|e| format!("Key derivation failed: {}", e))?;
 
@@ -202,13 +275,13 @@ pub fn unlock_vault(
         Err(e) => {
             // Wrong-password failures (and only those) feed the rate-limiter.
             if e.contains("Mot de passe incorrect") {
-                record_failure(&state, &vault_name);
+                record_failure(&app, &state, &vault_name);
             }
             return Err(e);
         }
     };
 
-    record_success(&state, &vault_name);
+    record_success(&app, &state, &vault_name);
     set_state(&state, db, vault_dir, key, vault_name)
 }
 

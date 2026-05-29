@@ -120,6 +120,7 @@ fn add_pending_invoice_impl(
     let key_bytes: &[u8; 32] = key;
 
     let file_path = storage::save_attachment(vault_dir, &id, &data, key_bytes)?;
+    let abs_file_path = storage::attachments_dir(vault_dir).join(&file_path);
 
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
@@ -134,11 +135,16 @@ fn add_pending_invoice_impl(
         if trimmed.is_empty() { None } else { Some(trimmed) }
     });
 
-    conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT INTO pending_invoices (id, label, notes, original_name, mime_type, file_path, size_bytes)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![id, label_norm, notes_norm, original_name, mime_type, file_path, size_bytes],
-    ).map_err(|e| e.to_string())?;
+    ) {
+        // INSERT failed: clean up the encrypted file we just wrote so it
+        // doesn't sit orphaned on disk (still decryptable with master key).
+        let _ = storage::delete_attachment_file(&abs_file_path.to_string_lossy());
+        return Err(e.to_string());
+    }
 
     let select_sql = format!(
         "SELECT {} FROM pending_invoices WHERE id = ?1",

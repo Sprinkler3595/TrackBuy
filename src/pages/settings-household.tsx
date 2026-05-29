@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/toast"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import * as api from "@/lib/tauri"
 
 const RELATIONS: { value: api.HouseholdRelation; label: string }[] = [
@@ -26,6 +27,7 @@ export function HouseholdSettings() {
   const [name, setName] = useState("")
   const [relation, setRelation] = useState<api.HouseholdRelation>("spouse")
   const [birthDate, setBirthDate] = useState("")
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null)
 
   async function load() {
     try {
@@ -60,12 +62,18 @@ export function HouseholdSettings() {
   }
 
   async function remove(id: string) {
-    if (!confirm("Supprimer ce membre du ménage ?")) return
+    setRemoveTarget(id)
+  }
+
+  async function confirmRemove() {
+    if (!removeTarget) return
     try {
-      await api.deleteHouseholdMember(id)
+      await api.deleteHouseholdMember(removeTarget)
       await load()
     } catch (e) {
       toast(String(e), "error")
+    } finally {
+      setRemoveTarget(null)
     }
   }
 
@@ -187,6 +195,16 @@ export function HouseholdSettings() {
           Importer la liste
         </Button>
       </div>
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title="Supprimer ce membre ?"
+        message="Le membre sera retiré du ménage. Les revenus et engagements existants ne sont pas affectés."
+        confirmLabel="Supprimer"
+        variant="destructive"
+        onConfirm={confirmRemove}
+        onCancel={() => setRemoveTarget(null)}
+      />
     </div>
   )
 }

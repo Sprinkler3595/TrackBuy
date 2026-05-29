@@ -51,10 +51,13 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
 
-  // Activate warranty + subscription + engagement notifications when unlocked
-  useWarrantyNotifications()
-  useSubscriptionNotifications()
-  useEngagementNotifications()
+  // Activate warranty + subscription + engagement notifications when unlocked.
+  // Gating on `unlocked` avoids firing IPC against a closed vault and
+  // schedules the first check immediately after unlock instead of up to 6h
+  // later.
+  useWarrantyNotifications(unlocked)
+  useSubscriptionNotifications(unlocked)
+  useEngagementNotifications(unlocked)
 
   useEffect(() => {
     async function check() {
@@ -87,9 +90,14 @@ function AppContent() {
     try {
       await api.unlockVault(name, password)
       // Catch up any missed renewal cycles before the dashboard renders, so
-      // the user sees a current view from the first paint.
-      try { await api.rollForwardDueSubscriptions() } catch { /* non-fatal */ }
-      try { await api.rollForwardDueEngagements() } catch { /* non-fatal */ }
+      // the user sees a current view from the first paint. Log failures so
+      // a silent skip doesn't quietly make "Ce mois" show zero charges due.
+      try { await api.rollForwardDueSubscriptions() } catch (e) {
+        console.error("rollForwardDueSubscriptions failed", e)
+      }
+      try { await api.rollForwardDueEngagements() } catch (e) {
+        console.error("rollForwardDueEngagements failed", e)
+      }
       setVaultName(name)
       setUnlocked(true)
       localStorage.setItem(LAST_VAULT_KEY, name)
@@ -121,8 +129,43 @@ function AppContent() {
   useIdleLock(handleLock, idleMinutes * 60_000, unlocked)
 
   const handleSwitchVault = useCallback(async (name: string, password: string) => {
-    await api.switchVault(name, password)
-    setVaultName(name)
+    try {
+      await api.switchVault(name, password)
+      setVaultName(name)
+    } catch (err) {
+      // switch_vault locks the old vault before unlocking the new one; if the
+      // new unlock fails (wrong password, missing salt…) the app is left in
+      // a zombie "unlocked=true" state pointing at nothing. Fall back to the
+      // unlock screen so the user can retry cleanly instead of chasing
+      // mysterious "Vault not unlocked" errors on every page.
+      setUnlocked(false)
+      setError(String(err))
+      throw err
+    }
+  }, [])
+
+  // The backend emits `vault-locked` when restore_backup nukes the currently
+  // active vault. Without this hook the front-end keeps thinking it's
+  // unlocked and every subsequent IPC call fails with a cryptic message.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event")
+        const off = await listen<string>("vault-locked", () => {
+          setUnlocked(false)
+        })
+        if (cancelled) off()
+        else unlisten = off
+      } catch {
+        /* event API not available in browser mode */
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (unlisten) unlisten()
+    }
   }, [])
 
   if (checking) {
@@ -155,31 +198,31 @@ function AppContent() {
           <Route path="/impots" element={<ErrorBoundary><TaxesPage /></ErrorBoundary>} />
           <Route path="/banque" element={<ErrorBoundary><BanquePage /></ErrorBoundary>} />
           <Route path="/bank-statements/:id/review" element={<ErrorBoundary><BankStatementReviewPage /></ErrorBoundary>} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/scan" element={<ScanPage />} />
-          <Route path="/scan-review" element={<ScanReviewPage />} />
-          <Route path="/items" element={<ItemsPage />} />
-          <Route path="/items/:id" element={<ItemDetailPage />} />
-          <Route path="/tickets" element={<TicketsPage />} />
-          <Route path="/subscriptions" element={<SubscriptionsPage />} />
-          <Route path="/subscriptions/:id" element={<SubscriptionDetailPage />} />
-          <Route path="/engagements" element={<EngagementsPage />} />
-          <Route path="/engagements/:id" element={<EngagementDetailPage />} />
-          <Route path="/incomes" element={<IncomesPage />} />
-          <Route path="/incomes/:id" element={<IncomeDetailPage />} />
-          <Route path="/reimbursements" element={<ReimbursementsPage />} />
-          <Route path="/finances" element={<FinancesPage />} />
+          <Route path="/dashboard" element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
+          <Route path="/scan" element={<ErrorBoundary><ScanPage /></ErrorBoundary>} />
+          <Route path="/scan-review" element={<ErrorBoundary><ScanReviewPage /></ErrorBoundary>} />
+          <Route path="/items" element={<ErrorBoundary><ItemsPage /></ErrorBoundary>} />
+          <Route path="/items/:id" element={<ErrorBoundary><ItemDetailPage /></ErrorBoundary>} />
+          <Route path="/tickets" element={<ErrorBoundary><TicketsPage /></ErrorBoundary>} />
+          <Route path="/subscriptions" element={<ErrorBoundary><SubscriptionsPage /></ErrorBoundary>} />
+          <Route path="/subscriptions/:id" element={<ErrorBoundary><SubscriptionDetailPage /></ErrorBoundary>} />
+          <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
+          <Route path="/engagements/:id" element={<ErrorBoundary><EngagementDetailPage /></ErrorBoundary>} />
+          <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
+          <Route path="/incomes/:id" element={<ErrorBoundary><IncomeDetailPage /></ErrorBoundary>} />
+          <Route path="/reimbursements" element={<ErrorBoundary><ReimbursementsPage /></ErrorBoundary>} />
+          <Route path="/finances" element={<ErrorBoundary><FinancesPage /></ErrorBoundary>} />
           <Route path="/bank-statements" element={<ErrorBoundary><BankStatementsPage /></ErrorBoundary>} />
-          <Route path="/warranties" element={<WarrantiesPage />} />
-          <Route path="/settings" element={<SettingsPage />}>
-            <Route index element={<GeneralSettings />} />
-            <Route path="menage" element={<HouseholdSettings />} />
-            <Route path="marchands" element={<MerchantsPage />} />
-            <Route path="creanciers" element={<CreditorsPage />} />
-            <Route path="lieux" element={<LocationsPage />} />
-            <Route path="cartes" element={<CardsPage />} />
-            <Route path="coffres" element={<VaultsPage onSwitchVault={handleSwitchVault} />} />
-            <Route path="nommage" element={<NamingSettings />} />
+          <Route path="/warranties" element={<ErrorBoundary><WarrantiesPage /></ErrorBoundary>} />
+          <Route path="/settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>}>
+            <Route index element={<ErrorBoundary><GeneralSettings /></ErrorBoundary>} />
+            <Route path="menage" element={<ErrorBoundary><HouseholdSettings /></ErrorBoundary>} />
+            <Route path="marchands" element={<ErrorBoundary><MerchantsPage /></ErrorBoundary>} />
+            <Route path="creanciers" element={<ErrorBoundary><CreditorsPage /></ErrorBoundary>} />
+            <Route path="lieux" element={<ErrorBoundary><LocationsPage /></ErrorBoundary>} />
+            <Route path="cartes" element={<ErrorBoundary><CardsPage /></ErrorBoundary>} />
+            <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
+            <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
           </Route>
           <Route path="/merchants" element={<Navigate to="/settings/marchands" replace />} />
           <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />
