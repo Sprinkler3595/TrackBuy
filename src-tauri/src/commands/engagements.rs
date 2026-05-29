@@ -56,7 +56,7 @@ const CHARGE_SELECT_COLUMNS: &str =
     "c.id, c.engagement_id, c.period_start, c.period_end, c.due_date, c.amount, c.currency,
      c.quantity, c.unit, c.unit_price, c.paid_on, c.status, c.payment_card_id,
      c.reference_number, c.invoice_number, c.notes, c.created_at, c.updated_at,
-     pc.name as card_name";
+     c.is_presumed, pc.name as card_name";
 
 fn row_to_charge(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementCharge> {
     Ok(EngagementCharge {
@@ -78,7 +78,8 @@ fn row_to_charge(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementCharge> 
         notes: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
-        card_name: row.get(18)?,
+        is_presumed: row.get::<_, i64>(18)? != 0,
+        card_name: row.get(19)?,
     })
 }
 
@@ -169,20 +170,36 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
             if current >= today {
                 break;
             }
-            let charge_id = Uuid::new_v4().to_string();
-            let (status, paid_on) = if auto_pay {
-                ("paid", Some(current.clone()))
-            } else {
-                ("scheduled", None::<String>)
-            };
-            conn.execute(
-                "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
-                 payment_card_id, paid_on, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status],
-            )
-            .map_err(|e| e.to_string())?;
-            inserted += 1;
+            // Garde anti-double-comptage : ne pas dupliquer une charge déjà
+            // présente pour cette échéance (saisie manuelle, exécution
+            // précédente du roll-forward, etc.).
+            let already: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM engagement_charges
+                     WHERE engagement_id = ?1 AND due_date = ?2",
+                    rusqlite::params![id, current],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if already == 0 {
+                let charge_id = Uuid::new_v4().to_string();
+                // auto_pay : marquée 'paid' mais PRÉSUMÉE (débit LSV/SEPA
+                // supposé, pas confirmé). Sinon 'scheduled' (rien n'est payé,
+                // donc pas de présomption à lever).
+                let (status, paid_on, is_presumed) = if auto_pay {
+                    ("paid", Some(current.clone()), 1)
+                } else {
+                    ("scheduled", None::<String>, 0)
+                };
+                conn.execute(
+                    "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
+                     payment_card_id, paid_on, status, is_presumed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status, is_presumed],
+                )
+                .map_err(|e| e.to_string())?;
+                inserted += 1;
+            }
             current = advance_date(conn, &current, &modifier)?;
         }
         conn.execute(
@@ -573,6 +590,32 @@ pub fn update_engagement_charge(
     Ok(())
 }
 
+/// Confirme une charge présumée (auto_pay générée par le roll-forward) : le
+/// débit a bien eu lieu. Bascule is_presumed à 0, sans toucher au reste.
+#[tauri::command]
+pub fn confirm_engagement_charge(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<EngagementCharge, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE engagement_charges SET is_presumed = 0, updated_at = datetime('now')
+         WHERE id = ?1",
+        [&id],
+    )
+    .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT {} FROM engagement_charges c
+         LEFT JOIN payment_cards pc ON c.payment_card_id = pc.id
+         WHERE c.id = ?1",
+        CHARGE_SELECT_COLUMNS
+    );
+    conn.query_row(&sql, [&id], row_to_charge)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn mark_charge_paid(
     state: State<'_, AppState>,
@@ -584,9 +627,11 @@ pub fn mark_charge_paid(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
+    // Confirmation explicite par l'utilisateur : is_presumed repasse à 0.
     conn.execute(
         "UPDATE engagement_charges SET status = 'paid', paid_on = ?1,
-         payment_card_id = COALESCE(?2, payment_card_id), updated_at = datetime('now')
+         payment_card_id = COALESCE(?2, payment_card_id), is_presumed = 0,
+         updated_at = datetime('now')
          WHERE id = ?3",
         rusqlite::params![paid_on, payment_card_id, id],
     )
@@ -907,5 +952,61 @@ mod tests {
         insert_eng(&conn, "e1", "-5000 days", "custom", 1, false, "active");
         assert_eq!(roll_forward_inner(&conn).unwrap(), 1000);
         assert_eq!(charge_count(&conn, "e1"), 1000);
+    }
+
+    #[test]
+    fn auto_pay_genere_des_charges_presumees_pas_les_autres() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "auto", "-15 days", "custom", 10, true, "active");
+        insert_eng(&conn, "manuel", "-15 days", "custom", 10, false, "active");
+        roll_forward_inner(&conn).unwrap();
+
+        // auto_pay : charges 'paid' MAIS présumées (is_presumed = 1).
+        let auto_presumed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='auto' AND is_presumed=1 AND status='paid'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auto_presumed, charge_count(&conn, "auto"));
+
+        // non auto : 'scheduled', non présumé (aucun paiement affirmé).
+        let manuel_presumed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='manuel' AND is_presumed=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(manuel_presumed, 0);
+    }
+
+    #[test]
+    fn roll_forward_charges_idempotent_sur_les_dates() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-35 days", "custom", 10, true, "active");
+        roll_forward_inner(&conn).unwrap();
+        let before = charge_count(&conn, "e1");
+        assert_eq!(roll_forward_inner(&conn).unwrap(), 0, "second passage : aucune charge ajoutée");
+        assert_eq!(charge_count(&conn, "e1"), before);
+    }
+
+    #[test]
+    fn confirmer_une_charge_leve_la_presomption() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-5 days", "custom", 10, true, "active");
+        roll_forward_inner(&conn).unwrap();
+        let charge_id: String = conn
+            .query_row("SELECT id FROM engagement_charges WHERE engagement_id='e1' LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        conn.execute("UPDATE engagement_charges SET is_presumed=0 WHERE id=?1", [&charge_id]).unwrap();
+        let still_presumed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='e1' AND is_presumed=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still_presumed, 0);
     }
 }

@@ -197,6 +197,17 @@ export function EngagementDetailPage() {
     }
   }
 
+  // Confirme une charge présumée (auto_pay générée par le roll-forward).
+  const handleConfirmCharge = async (chargeId: string) => {
+    try {
+      await api.confirmEngagementCharge(chargeId)
+      toast("Charge confirmée", "success")
+      await load()
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
   const handleDeleteCharge = async () => {
     if (!deleteChargeTarget) return
     try {
@@ -517,6 +528,7 @@ export function EngagementDetailPage() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className="font-medium">{formatDate(c.due_date)}</p>
                     {chargeStatusBadge(c.status)}
+                    {c.is_presumed && <Badge variant="warning">Présumé · à confirmer</Badge>}
                     {c.paid_on && <span className="text-xs text-muted-foreground">→ payée {formatDate(c.paid_on)}</span>}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1 flex gap-3 flex-wrap">
@@ -530,6 +542,11 @@ export function EngagementDetailPage() {
                   {c.status !== "paid" && (
                     <Button variant="ghost" size="icon" onClick={() => handleMarkPaid(c.id)} title={t("engagements.markPaid")}>
                       <CheckCircle2 className="h-4 w-4 text-green-600" />
+                    </Button>
+                  )}
+                  {c.is_presumed && (
+                    <Button variant="ghost" size="icon" onClick={() => handleConfirmCharge(c.id)} title="Confirmer le débit présumé">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                     </Button>
                   )}
                   <Button variant="ghost" size="icon" onClick={() => setDeleteChargeTarget(c.id)}>

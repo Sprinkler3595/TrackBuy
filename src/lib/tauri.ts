@@ -181,6 +181,8 @@ export interface SubscriptionPayment {
   payment_card_id: string | null
   notes: string | null
   created_at: string
+  // true = paiement présumé généré par le roll-forward, en attente de confirmation.
+  is_presumed: boolean
   card_name?: string | null
 }
 
@@ -596,6 +598,10 @@ export const logSubscriptionPayment = (payment: {
 export const deleteSubscriptionPayment = (id: string) =>
   invoke<void>("delete_subscription_payment", { id })
 
+// Confirme un paiement présumé (le débit a bien eu lieu) → is_presumed = false.
+export const confirmSubscriptionPayment = (id: string) =>
+  invoke<void>("confirm_subscription_payment", { id })
+
 export const getSubscriptionMembers = (subscriptionId: string) =>
   invoke<SubscriptionMember[]>("get_subscription_members", { subscriptionId })
 
@@ -704,6 +710,8 @@ export interface EngagementCharge {
   notes: string | null
   created_at: string
   updated_at: string
+  // true = charge présumée (auto_pay générée par le roll-forward), à confirmer.
+  is_presumed: boolean
   card_name?: string | null
 }
 
@@ -819,6 +827,10 @@ export const markChargePaid = (
 
 export const deleteEngagementCharge = (id: string) =>
   invoke<void>("delete_engagement_charge", { id })
+
+// Confirme une charge présumée (auto_pay générée par le roll-forward).
+export const confirmEngagementCharge = (id: string) =>
+  invoke<EngagementCharge>("confirm_engagement_charge", { id })
 
 // Engagement revisions (contract amendments)
 export const getEngagementRevisions = (engagementId: string) =>

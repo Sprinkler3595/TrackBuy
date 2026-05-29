@@ -471,7 +471,8 @@ pub fn export_engagements_csv(state: State<'_, AppState>) -> Result<String, Stri
                     e.status, e.next_due_date, e.contract_start_date, e.contract_end_date,
                     e.payment_method, e.auto_pay, p.name as parent_name,
                     (SELECT COALESCE(SUM(amount), 0) FROM engagement_charges
-                     WHERE engagement_id = e.id AND status = 'paid') as total_paid,
+                     WHERE engagement_id = e.id AND status = 'paid'
+                       AND is_presumed = 0) as total_paid,
                     e.notes
              FROM engagements e
              LEFT JOIN creditors cr ON e.creditor_id = cr.id

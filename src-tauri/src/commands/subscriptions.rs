@@ -111,14 +111,28 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
             if current >= today {
                 break;
             }
-            let payment_id = Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, payment_card_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![payment_id, id, current, price, currency, card_id],
-            )
-            .map_err(|e| e.to_string())?;
-            inserted += 1;
+            // Garde anti-double-comptage : si un paiement existe déjà pour cette
+            // échéance (p. ex. créé par mark_renewed), on ne le duplique pas —
+            // on avance simplement la date.
+            let already: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM subscription_payments
+                     WHERE subscription_id = ?1 AND paid_on = ?2",
+                    rusqlite::params![id, current],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if already == 0 {
+                let payment_id = Uuid::new_v4().to_string();
+                // is_presumed = 1 : le débit est SUPPOSÉ, pas confirmé.
+                conn.execute(
+                    "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, payment_card_id, is_presumed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+                    rusqlite::params![payment_id, id, current, price, currency, card_id],
+                )
+                .map_err(|e| e.to_string())?;
+                inserted += 1;
+            }
             current = advance_date(conn, &current, &modifier)?;
         }
         conn.execute(
@@ -404,13 +418,33 @@ fn mark_renewed_inner(conn: &Connection, id: &str) -> Result<Subscription, Strin
         )
         .map_err(|e| e.to_string())?;
 
-    let payment_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, payment_card_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![payment_id, id, current, price, currency, card_id],
-    )
-    .map_err(|e| e.to_string())?;
+    // Confirmation explicite : si un paiement présumé existe déjà pour cette
+    // échéance (généré par le roll-forward), on le CONFIRME (is_presumed = 0)
+    // au lieu d'en créer un second — évite le double-comptage. Sinon on insère
+    // un paiement confirmé.
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM subscription_payments
+             WHERE subscription_id = ?1 AND paid_on = ?2 LIMIT 1",
+            rusqlite::params![id, current],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(pid) = existing_id {
+        conn.execute(
+            "UPDATE subscription_payments SET is_presumed = 0 WHERE id = ?1",
+            [&pid],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        let payment_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, payment_card_id, is_presumed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            rusqlite::params![payment_id, id, current, price, currency, card_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     let modifier = cycle_modifier(&cycle, interval);
     let next = advance_date(conn, &current, &modifier)?;
@@ -443,7 +477,8 @@ fn row_to_payment(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubscriptionPayme
         payment_card_id: row.get(5)?,
         notes: row.get(6)?,
         created_at: row.get(7)?,
-        card_name: row.get(8)?,
+        is_presumed: row.get::<_, i64>(8)? != 0,
+        card_name: row.get(9)?,
     })
 }
 
@@ -459,7 +494,7 @@ pub fn get_subscription_payments(
     let mut stmt = conn
         .prepare(
             "SELECT p.id, p.subscription_id, p.paid_on, p.amount, p.currency,
-                    p.payment_card_id, p.notes, p.created_at,
+                    p.payment_card_id, p.notes, p.created_at, p.is_presumed,
                     pc.name as card_name
              FROM subscription_payments p
              LEFT JOIN payment_cards pc ON p.payment_card_id = pc.id
@@ -506,7 +541,7 @@ pub fn log_subscription_payment(
 
     conn.query_row(
         "SELECT p.id, p.subscription_id, p.paid_on, p.amount, p.currency,
-                p.payment_card_id, p.notes, p.created_at,
+                p.payment_card_id, p.notes, p.created_at, p.is_presumed,
                 pc.name as card_name
          FROM subscription_payments p
          LEFT JOIN payment_cards pc ON p.payment_card_id = pc.id
@@ -515,6 +550,21 @@ pub fn log_subscription_payment(
         row_to_payment,
     )
     .map_err(|e| e.to_string())
+}
+
+/// Confirme un paiement présumé (généré par le roll-forward) : le débit a bien
+/// eu lieu. Bascule is_presumed à 0 pour qu'il compte comme réellement payé.
+#[tauri::command]
+pub fn confirm_subscription_payment(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE subscription_payments SET is_presumed = 0 WHERE id = ?1",
+        [&id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -796,5 +846,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(distinct, 4);
+    }
+
+    #[test]
+    fn roll_forward_marque_les_paiements_comme_presumes() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_sub(&conn, "s1", "-35 days", "custom", 10, true, "active", None);
+        roll_forward_inner(&conn).unwrap();
+        let presumed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subscription_payments WHERE subscription_id='s1' AND is_presumed=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(presumed, 4, "toutes les lignes auto-générées sont présumées");
+    }
+
+    #[test]
+    fn roll_forward_est_idempotent_sur_les_dates() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_sub(&conn, "s1", "-35 days", "custom", 10, true, "active", None);
+        roll_forward_inner(&conn).unwrap();
+        let after_first = payment_count(&conn, "s1");
+        // Un second passage ne doit RIEN ajouter (garde anti-double-comptage).
+        let inserted_again = roll_forward_inner(&conn).unwrap();
+        assert_eq!(inserted_again, 0);
+        assert_eq!(payment_count(&conn, "s1"), after_first);
+    }
+
+    #[test]
+    fn mark_renewed_confirme_un_paiement_presume_existant() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_sub(&conn, "s1", "-35 days", "custom", 10, true, "active", None);
+        // Le roll-forward crée 4 paiements présumés et avance la date au futur.
+        roll_forward_inner(&conn).unwrap();
+        let count_before = payment_count(&conn, "s1");
+        // On replace l'échéance sur une date déjà payée (présumée) puis on
+        // confirme : aucune nouvelle ligne, et celle-ci passe à is_presumed=0.
+        conn.execute(
+            "UPDATE subscriptions SET next_renewal_date = (SELECT MIN(paid_on) FROM subscription_payments WHERE subscription_id='s1') WHERE id='s1'",
+            [],
+        )
+        .unwrap();
+        mark_renewed_inner(&conn, "s1").unwrap();
+        assert_eq!(payment_count(&conn, "s1"), count_before, "pas de doublon");
+        let confirmed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subscription_payments WHERE subscription_id='s1' AND is_presumed=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(confirmed, 1, "le paiement de cette échéance est confirmé");
     }
 }

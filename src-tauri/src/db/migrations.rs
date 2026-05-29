@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 14;
+pub const CURRENT_SCHEMA_VERSION: i64 = 15;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -72,6 +72,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 14 {
         migrate_v14(conn)?;
+    }
+    if current_version < 15 {
+        migrate_v15(conn)?;
     }
 
     Ok(())
@@ -1161,6 +1164,28 @@ fn migrate_v14(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (14);
         "
     ).map_err(|e| format!("Migration v14 failed: {}", e))?;
+
+    Ok(())
+}
+
+fn migrate_v15(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Lignes auto-générées par le roll-forward : un paiement/charge est
+        -- INSÉRÉ par cycle dépassé en SUPPOSANT que le débit a eu lieu. Ce
+        -- drapeau marque ces lignes comme « présumées / à confirmer » pour ne
+        -- pas les compter comme réellement payées tant que l'utilisateur ne
+        -- les a pas validées (cf. mark_renewed / mark_charge_paid / confirm_*).
+        --
+        -- Rétro-compatibilité : les lignes existantes prennent 0 (= confirmées).
+        -- On ne requalifie pas rétroactivement l'historique déjà saisi ; seules
+        -- les nouvelles lignes générées automatiquement seront marquées à 1.
+        ALTER TABLE subscription_payments ADD COLUMN is_presumed INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE engagement_charges ADD COLUMN is_presumed INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (15);
+        "
+    ).map_err(|e| format!("Migration v15 failed: {}", e))?;
 
     Ok(())
 }
