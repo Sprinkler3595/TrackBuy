@@ -73,6 +73,39 @@ impl Drop for Database {
     }
 }
 
+/// Re-chiffre un fichier SQLCipher avec une nouvelle clé via `PRAGMA rekey`.
+///
+/// Ouvre `db_path` avec `old_key`, vérifie que la clé est correcte (lecture de
+/// `sqlite_master`), puis applique `PRAGMA rekey` vers `new_key`. Le fichier est
+/// réécrit en place et fermé proprement (checkpoint WAL). Utilisé par la
+/// rotation du mot de passe maître sur une *copie* de la base, afin que
+/// l'original reste lisible avec l'ancienne clé en cas d'échec.
+pub fn rekey_db_file(
+    db_path: &Path,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<(), String> {
+    let conn = Connection::open(db_path)
+        .map_err(|e| format!("Failed to open database for rekey: {}", e))?;
+
+    let hex_old = hex_encode(old_key);
+    conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex_old))
+        .map_err(|e| format!("Failed to set cipher key: {}", e))?;
+
+    // Vérifie l'ancienne clé : une clé fausse fait échouer la première lecture.
+    conn.execute_batch("SELECT count(*) FROM sqlite_master;")
+        .map_err(|_| "Mot de passe incorrect".to_string())?;
+
+    let hex_new = hex_encode(new_key);
+    conn.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", hex_new))
+        .map_err(|e| format!("Échec du re-chiffrement de la base (rekey): {}", e))?;
+
+    // Replie le WAL dans le fichier principal pour que la copie soit autonome.
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").ok();
+    drop(conn);
+    Ok(())
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {

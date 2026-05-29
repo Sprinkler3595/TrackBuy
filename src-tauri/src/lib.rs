@@ -27,6 +27,7 @@ pub fn run() {
             commands::auth::create_vault,
             commands::auth::unlock_vault,
             commands::auth::lock_vault,
+            commands::auth::change_master_password,
             commands::auth::list_vaults,
             commands::auth::switch_vault,
             commands::auth::get_active_vault_location,

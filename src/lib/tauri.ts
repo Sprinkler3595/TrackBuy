@@ -214,6 +214,9 @@ export const unlockVault = (vaultName: string, password: string) =>
 export const lockVault = () =>
   invoke<void>("lock_vault")
 
+export const changeMasterPassword = (oldPassword: string, newPassword: string) =>
+  invoke<void>("change_master_password", { oldPassword, newPassword })
+
 export const listVaults = () =>
   invoke<VaultInfo[]>("list_vaults")
 
