@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff, KeyRound } from "lucide-react"
+import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff, KeyRound, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,7 @@ import {
   getAiSettings,
   saveAiSettings,
   defaultAiSettings,
+  isCloudProvider,
 } from "@/lib/ai-settings"
 
 function formatBytes(n: number, locale: "fr" | "en"): string {
@@ -304,6 +305,17 @@ export function GeneralSettings() {
                   </Button>
                 </div>
               </div>
+
+              {isCloudProvider(ai.provider) && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    {locale === "fr"
+                      ? "Fournisseur cloud : l'image et le texte des reçus/relevés sont envoyés à un service distant (Infomaniak). Cela sort du modèle « 100 % local ». Pour rester local, utilise Ollama. N'active l'IA cloud que pour des documents non sensibles."
+                      : "Cloud provider: receipt/statement image and text are sent to a remote service (Infomaniak). This leaves the “100% local” model. Use Ollama to stay local. Only enable cloud AI for non-sensitive documents."}
+                  </span>
+                </div>
+              )}
 
               {ai.provider === "infomaniak" ? (
                 <div className="grid gap-3 sm:grid-cols-2">
