@@ -139,8 +139,36 @@ export interface PendingInvoice {
   expected_amount: number | null
   expected_date: string | null
   currency: string | null
+  /// Données lues sur le ticket par l'OCR + extraction (voir migration v17).
+  /// `expected_*` ci-dessus portent montant/date/devise (clés de rapprochement).
+  extracted_merchant: string | null
+  extracted_invoice_number: string | null
+  extracted_tax_rate: number | null
+  extracted_price_excl_tax: number | null
+  extracted_warranty_months: number | null
+  /// null | 'pending' | 'extracted' | 'failed'
+  extraction_status: string | null
+  extracted_at: string | null
+  /// ExtractedReceipt sérialisé (conserve les lignes multi-articles).
+  extracted_json: string | null
   created_at: string
   updated_at: string
+}
+
+/// Payload de `set_pending_invoice_extraction` : résultat de la passe OCR +
+/// extraction lancée au dépôt d'un ticket dans l'inbox.
+export interface PendingInvoiceExtraction {
+  merchant: string | null
+  purchase_date: string | null
+  purchase_price: number | null
+  currency: string | null
+  invoice_number: string | null
+  tax_rate: number | null
+  price_excl_tax: number | null
+  warranty_months: number | null
+  extracted_json: string | null
+  /// 'extracted' | 'failed'
+  status: string
 }
 
 export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
@@ -406,6 +434,13 @@ export const updatePendingInvoice = (
   notes: string | null,
 ) =>
   invoke<PendingInvoice>("update_pending_invoice", { id, label, notes })
+// Persist the OCR + extraction result onto a stored receipt so it can be
+// matched to a bank line (writes expected_amount/date/currency + extracted_*).
+export const setPendingInvoiceExtraction = (
+  id: string,
+  extraction: PendingInvoiceExtraction,
+) =>
+  invoke<PendingInvoice>("set_pending_invoice_extraction", { id, extraction })
 export const deletePendingInvoice = (id: string) =>
   invoke<void>("delete_pending_invoice", { id })
 export const getPendingInvoiceData = (id: string) =>
@@ -1175,6 +1210,7 @@ export type BankTxTargetKind =
   | "subscription" | "subscription_payment"
   | "income" | "income_receipt"
   | "item" | "item_group" | "merchant" | "reimbursement"
+  | "pending_invoice"
 
 export interface BankStatementTransaction {
   id: string
@@ -1320,6 +1356,43 @@ export const createItemFromTransaction = (
   // préfixé « DUPLICATE: ». Relancer avec force=true pour créer malgré tout.
   force?: boolean,
 ) => invoke<Item>("create_item_from_transaction", { txId, item, force })
+
+/// Reçu stocké ↔ transaction : comptabilise l'achat à partir d'un ticket de
+/// l'inbox rapproché à une ligne bancaire. Crée l'article (champs déjà fusionnés
+/// côté frontend), pose `bank_transaction_id`, promeut la pièce du ticket en
+/// pièce jointe, marque la transaction `confirmed` et supprime la ligne pending.
+/// Échec préfixé « DUPLICATE: » si un article proche existe ; relancer force=true.
+export const bookItemFromReceiptMatch = (
+  txId: string,
+  pendingInvoiceId: string,
+  item: {
+    description: string
+    purchase_date: string
+    purchase_price: number
+    currency?: string
+    status?: string
+    merchant_id: string
+    location_id: string
+    payment_card_id?: string
+    notes?: string
+    invoice_number?: string
+    product_reference?: string
+    quantity?: number
+    price_excl_tax?: number
+    tax_rate?: number
+    order_id?: string
+    item_kind?: ItemKind
+  },
+  attachmentDisplayName?: string,
+  force?: boolean,
+) =>
+  invoke<Item>("book_item_from_receipt_match", {
+    txId,
+    pendingInvoiceId,
+    item,
+    attachmentDisplayName,
+    force,
+  })
 
 /// Orphan-tx flow: enqueue a "facture à fournir plus tard" carrying the
 /// bank line's amount/date/currency. The user uploads the actual PDF

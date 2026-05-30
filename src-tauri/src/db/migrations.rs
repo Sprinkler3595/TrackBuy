@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_SCHEMA_VERSION: i64 = 17;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -78,6 +78,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 16 {
         migrate_v16(conn)?;
+    }
+    if current_version < 17 {
+        migrate_v17(conn)?;
     }
 
     Ok(())
@@ -1214,6 +1217,39 @@ fn migrate_v16(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (16);
         "
     ).map_err(|e| format!("Migration v16 failed: {}", e))?;
+
+    Ok(())
+}
+
+// v17 — Auto-extraction des tickets stockés. On OCR'ise/extrait chaque reçu
+// déposé dans l'inbox pour qu'il porte marchand/montant/date exploitables, afin
+// que `suggest_matches_for_statement` puisse le proposer comme correspondance
+// d'une transaction bancaire. Les colonnes `expected_amount`/`expected_date`/
+// `currency` (ajoutées en v13) servent de clés de rapprochement canoniques ; les
+// `extracted_*` portent le reste des champs lus sur le ticket.
+fn migrate_v17(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE pending_invoices ADD COLUMN extracted_merchant TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_invoice_number TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_tax_rate REAL;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_price_excl_tax REAL;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_warranty_months INTEGER;
+        -- NULL | 'pending' | 'extracted' | 'failed'
+        ALTER TABLE pending_invoices ADD COLUMN extraction_status TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_at TEXT;
+        -- ExtractedReceipt sérialisé (conserve les lignes multi-articles pour un
+        -- futur 'éclater en plusieurs articles').
+        ALTER TABLE pending_invoices ADD COLUMN extracted_json TEXT;
+
+        -- Accélère le scan des candidats dans load_pending_invoice_candidates
+        -- (reçus avec un montant attendu dans une fenêtre de dates).
+        CREATE INDEX idx_pending_invoices_expected
+            ON pending_invoices(expected_date, expected_amount);
+
+        INSERT INTO schema_version (version) VALUES (17);
+        "
+    ).map_err(|e| format!("Migration v17 failed: {}", e))?;
 
     Ok(())
 }

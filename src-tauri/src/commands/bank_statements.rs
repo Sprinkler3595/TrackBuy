@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::commands::auth::AppState;
 use crate::commands::items::{fetch_item_by_id, insert_item_row};
 use crate::commands::pending_invoices::{
-    row_to_pending_invoice, PENDING_INVOICE_SELECT_COLUMNS,
+    promote_pending_invoice, row_to_pending_invoice, PENDING_INVOICE_SELECT_COLUMNS,
 };
 use crate::db::models::{
     BankMatchRule, BankStatement, BankStatementTransaction, CreateBankMatchRuleRequest,
@@ -221,6 +221,20 @@ struct ItemCandidate {
     merchant_name_normalized: String,
 }
 
+/// In-memory snapshot of a STORED-BUT-UNBOOKED receipt (pending invoice)
+/// carrying OCR-extracted data, so a bank line can be matched to a ticket
+/// the user dropped into the inbox before the statement arrived. Mirror of
+/// `ItemCandidate` for the new pending-invoice matching tier.
+struct PendingInvoiceCandidate {
+    id: String,
+    /// Receipt date, when the OCR found one. Matching falls back to
+    /// amount + merchant when this is None.
+    expected_date: Option<String>,
+    amount_cents: i64,
+    currency: String,
+    merchant_name_normalized: String,
+}
+
 /// Convert a price expressed as f64 (the DB column type) into integer
 /// cents for exact arithmetic. f64 to_int_unchecked is unsafe — round
 /// first to absorb the typical 0.0000000001 drift on REAL values.
@@ -407,6 +421,121 @@ fn match_single_item(
         }
     }
     best
+}
+
+/// Stored receipts (pending invoices) that carry an extracted amount and
+/// still have a file, aren't already tied to a bank transaction, and
+/// haven't been booked. These become match candidates so a bank line can
+/// be reconciled directly against a ticket dropped into the inbox.
+fn load_pending_invoice_candidates(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<PendingInvoiceCandidate>, String> {
+    let sql = "SELECT id, expected_date, expected_amount,
+                      COALESCE(currency, 'CHF'),
+                      COALESCE(extracted_merchant, '')
+               FROM pending_invoices
+               WHERE file_path IS NOT NULL
+                 AND expected_amount IS NOT NULL
+                 AND source_bank_tx_id IS NULL
+               ORDER BY expected_date";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let amount: f64 = row.get(2)?;
+            let merchant_name: String = row.get(4)?;
+            Ok(PendingInvoiceCandidate {
+                id: row.get(0)?,
+                expected_date: row.get(1)?,
+                amount_cents: to_cents(amount),
+                currency: row.get(3)?,
+                merchant_name_normalized: normalize_name(&merchant_name),
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Try to match the transaction to a stored receipt. Returns (pending_id, conf).
+/// Confidence rubric (debits only), mirror of `match_single_item` plus a
+/// dateless fallback:
+/// - exact amount + merchant hit + |Δdate| ≤ 3j  → 0.95
+/// - exact amount + merchant hit + |Δdate| ≤ 7j  → 0.85
+/// - exact amount + |Δdate| ≤ 3j                 → 0.70
+/// - exact amount + |Δdate| ≤ 7j                 → 0.55
+/// - exact amount + merchant hit, no receipt date → 0.60
+///
+/// `claimed` holds receipt ids already suggested for an earlier transaction
+/// in this pass, so one ticket can't be proposed for two bank lines.
+fn match_pending_invoice(
+    haystack: &str,
+    tx_amount_cents: i64,
+    tx_currency: &str,
+    tx_date: &str,
+    direction: &str,
+    candidates: &[PendingInvoiceCandidate],
+    claimed: &std::collections::HashSet<String>,
+) -> Option<(String, f64)> {
+    if direction != "debit" {
+        return None;
+    }
+    // (conf, -date_diff for tie-break, id) — pick highest conf, then smallest
+    // date gap, then lexicographically smallest id for determinism.
+    let mut best: Option<(f64, i64, String)> = None;
+    for c in candidates {
+        if claimed.contains(&c.id) {
+            continue;
+        }
+        // No FX conversion — currency must match exactly.
+        if !c.currency.eq_ignore_ascii_case(tx_currency) {
+            continue;
+        }
+        if (c.amount_cents - tx_amount_cents).abs() > AMOUNT_EPSILON_CENTS {
+            continue;
+        }
+        let merchant_hit = c.merchant_name_normalized.len() >= 3
+            && haystack.contains(&c.merchant_name_normalized);
+
+        let (conf, dd) = match c.expected_date.as_deref() {
+            Some(d) => {
+                let Some(dd) = date_diff_days(d, tx_date) else {
+                    continue;
+                };
+                if dd > ITEM_DATE_TOLERANCE_DAYS {
+                    continue;
+                }
+                let conf = match (merchant_hit, dd) {
+                    (true, x) if x <= 3 => 0.95,
+                    (true, _) => 0.85,
+                    (false, x) if x <= 3 => 0.70,
+                    (false, _) => 0.55,
+                };
+                (conf, dd)
+            }
+            // No receipt date: amount alone is too weak; require a merchant
+            // hit and assign a guarded confidence.
+            None => {
+                if !merchant_hit {
+                    continue;
+                }
+                (0.60, ITEM_DATE_TOLERANCE_DAYS)
+            }
+        };
+
+        let candidate = (conf, dd, c.id.clone());
+        best = match best {
+            Some((bc, bd, ref bid))
+                if bc > conf
+                    || (bc == conf && bd < dd)
+                    || (bc == conf && bd == dd && bid.as_str() <= candidate.2.as_str()) =>
+            {
+                best
+            }
+            _ => Some(candidate),
+        };
+    }
+    best.map(|(conf, _, id)| (id, conf))
 }
 
 /// Try to explain the transaction as the SUM of several same-day,
@@ -862,6 +991,14 @@ pub fn list_statement_transactions(
                         |row| row.get(0),
                     )
                     .ok(),
+                "pending_invoice" => conn
+                    .query_row(
+                        "SELECT COALESCE(extracted_merchant, label, original_name)
+                         FROM pending_invoices WHERE id = ?1",
+                        [target_id],
+                        |row| row.get(0),
+                    )
+                    .ok(),
                 _ => None,
             };
             r.match_target_label = label;
@@ -915,6 +1052,12 @@ pub fn suggest_matches_for_statement(
         period_start.as_deref(),
         period_end.as_deref(),
     )?;
+    // Stored receipts (inbox) carrying an extracted amount — matched after
+    // items so they don't shadow an already-booked purchase. `claimed` stops
+    // one ticket from being suggested for two different bank lines in the
+    // same pass.
+    let pending_invoice_candidates = load_pending_invoice_candidates(&conn)?;
+    let mut claimed_pending: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let txs: Vec<(String, String, Option<String>, f64, String, String, String)> = {
         let mut stmt = conn
@@ -1042,6 +1185,26 @@ pub fn suggest_matches_for_statement(
                 .map_err(|e| e.to_string())?;
                 updated += 1;
                 continue;
+            }
+        }
+
+        // 4) Stored receipts (pending invoices) the user dropped into the
+        // inbox before importing the statement. Runs last (items keep
+        // priority); matches on extracted amount + merchant + date window.
+        if matched.is_none() && direction == "debit" {
+            let amount_cents = to_cents(amount);
+            let needle_haystack = normalize_name(&haystack);
+            if let Some((pending_id, conf)) = match_pending_invoice(
+                &needle_haystack,
+                amount_cents,
+                &tx_currency,
+                &tx_date,
+                &direction,
+                &pending_invoice_candidates,
+                &claimed_pending,
+            ) {
+                claimed_pending.insert(pending_id.clone());
+                matched = Some(("pending_invoice".to_string(), pending_id, String::new(), conf));
             }
         }
 
@@ -1277,6 +1440,73 @@ pub fn create_item_from_transaction(
         rusqlite::params![new_id, tx_id],
     )
     .map_err(|e| e.to_string())?;
+
+    fetch_item_by_id(&conn, &new_id)
+}
+
+/// Comptabilise un achat à partir d'un couple (transaction bancaire, ticket
+/// stocké) rapproché : crée l'article avec les champs fusionnés (déjà fusionnés
+/// côté frontend selon la table de précédence), pose `bank_transaction_id`,
+/// promeut la pièce du ticket en pièce jointe de l'article, marque la
+/// transaction `confirmed`/`item`, et supprime la ligne pending — le tout
+/// atomiquement dans une seule transaction SQL.
+#[tauri::command]
+pub fn book_item_from_receipt_match(
+    state: State<'_, AppState>,
+    tx_id: String,
+    pending_invoice_id: String,
+    item: CreateItemRequest,
+    attachment_display_name: Option<String>,
+    force: Option<bool>,
+) -> Result<Item, String> {
+    let mut db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_mut().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Garde-fou anti-doublon, identique à create_item_from_transaction : le
+    // préfixe « DUPLICATE: » laisse le frontend proposer une confirmation.
+    if !force.unwrap_or(false) {
+        if let Some(dup) = find_duplicate_item(&conn, &item)? {
+            return Err(format!("DUPLICATE:{}", dup));
+        }
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let new_id = insert_item_row(&tx, &item)?;
+
+    tx.execute(
+        "UPDATE items SET bank_transaction_id = ?1, updated_at = datetime('now')
+         WHERE id = ?2",
+        rusqlite::params![tx_id, new_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Promotion de la pièce : déplace le fichier chiffré du ticket vers
+    // attachments (type 'invoice') et supprime la ligne pending. Réutilise le
+    // helper partagé avec attach_pending_invoice_to_item.
+    promote_pending_invoice(
+        &tx,
+        &pending_invoice_id,
+        Some(new_id.clone()),
+        None,
+        Some("invoice".to_string()),
+        attachment_display_name,
+    )?;
+
+    // Réconciliation : la transaction pointe désormais sur un vrai article
+    // (kind = 'item'), si bien que load_item_candidates l'exclura aux futurs
+    // passages (via bank_transaction_id).
+    tx.execute(
+        "UPDATE bank_statement_transactions SET match_status = 'confirmed',
+         match_target_kind = 'item', match_target_id = ?1,
+         match_group_ids = NULL, updated_at = datetime('now')
+         WHERE id = ?2",
+        rusqlite::params![new_id, tx_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| format!("Commit échoué: {}", e))?;
 
     fetch_item_by_id(&conn, &new_id)
 }
@@ -1581,5 +1811,235 @@ mod tests {
         assert!(find_duplicate_item(&conn, &req("2026-04-10", 199.90, "EUR"))
             .unwrap()
             .is_none());
+    }
+
+    // ---- Tier 4 : rapprochement avec un ticket stocké (pending invoice) ----
+
+    fn pic(
+        id: &str,
+        date: Option<&str>,
+        price: f64,
+        currency: &str,
+        merchant: &str,
+    ) -> PendingInvoiceCandidate {
+        PendingInvoiceCandidate {
+            id: id.to_string(),
+            expected_date: date.map(|s| s.to_string()),
+            amount_cents: to_cents(price),
+            currency: currency.to_string(),
+            merchant_name_normalized: normalize_name(merchant),
+        }
+    }
+
+    fn empty_claims() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    #[test]
+    fn recu_match_montant_marchand_meme_jour() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE 4565");
+        let m = match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        );
+        assert_eq!(m, Some(("p1".to_string(), 0.95)));
+    }
+
+    #[test]
+    fn recu_pas_de_match_si_montant_ecart() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE");
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(30.00),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn recu_pas_de_match_si_devise_differente() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "EUR", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE");
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn recu_pas_de_match_si_hors_fenetre_de_dates() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE");
+        // 30 jours d'écart > ITEM_DATE_TOLERANCE_DAYS.
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-05-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn recu_sans_date_match_sur_montant_et_marchand() {
+        let cands = vec![pic("p1", None, 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE 4565");
+        let m = match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        );
+        assert_eq!(m, Some(("p1".to_string(), 0.60)));
+    }
+
+    #[test]
+    fn recu_sans_date_et_sans_marchand_pas_de_match() {
+        // Montant seul, sans date ni signal marchand → trop faible.
+        let cands = vec![pic("p1", None, 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("PAIEMENT CARTE 9981");
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &empty_claims(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn recu_deja_reclame_est_ignore() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE");
+        let mut claimed = std::collections::HashSet::new();
+        claimed.insert("p1".to_string());
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "debit",
+            &cands,
+            &claimed,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn recu_credit_ignore() {
+        let cands = vec![pic("p1", Some("2026-04-10"), 24.50, "CHF", "Migros")];
+        let haystack = normalize_name("MIGROS-GENEVE");
+        assert!(match_pending_invoice(
+            &haystack,
+            to_cents(24.50),
+            "CHF",
+            "2026-04-10",
+            "credit",
+            &cands,
+            &empty_claims(),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn chargement_candidats_exclut_les_lignes_inexploitables() {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        let conn = db.conn.lock().unwrap();
+        // (a) reçu exploitable : fichier + montant + pas de tx source.
+        conn.execute(
+            "INSERT INTO pending_invoices (id, original_name, mime_type, file_path, size_bytes,
+             expected_amount, expected_date, currency, extracted_merchant)
+             VALUES ('ok','t.pdf','application/pdf','ok.enc',10,24.50,'2026-04-10','CHF','Migros')",
+            [],
+        )
+        .unwrap();
+        // (b) sans fichier (facture à fournir) → exclu.
+        conn.execute(
+            "INSERT INTO pending_invoices (id, original_name, mime_type, size_bytes, expected_amount)
+             VALUES ('nofile','x','',0,10.0)",
+            [],
+        )
+        .unwrap();
+        // (c) sans montant attendu → exclu.
+        conn.execute(
+            "INSERT INTO pending_invoices (id, original_name, mime_type, file_path, size_bytes)
+             VALUES ('noamount','x','','f.enc',5)",
+            [],
+        )
+        .unwrap();
+        // (d) déjà rattaché à une transaction → exclu. Le FK impose une vraie
+        // ligne de relevé/transaction, on la crée donc d'abord.
+        conn.execute(
+            "INSERT INTO bank_statements (id, currency, file_path, original_name, mime_type, size_bytes)
+             VALUES ('st1','CHF','s.enc','s.pdf','application/pdf',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bank_statement_transactions
+             (id, statement_id, transaction_date, raw_description, amount, currency, direction, match_status)
+             VALUES ('sometx','st1','2026-04-10','MIGROS',10.0,'CHF','debit','unmatched')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_invoices (id, original_name, mime_type, file_path, size_bytes,
+             expected_amount, source_bank_tx_id)
+             VALUES ('tied','x','','f.enc',5,10.0,'sometx')",
+            [],
+        )
+        .unwrap();
+
+        let cands = load_pending_invoice_candidates(&conn).unwrap();
+        let ids: Vec<&str> = cands.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["ok"]);
+    }
+
+    #[test]
+    fn migration_a_la_version_courante() {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        let conn = db.conn.lock().unwrap();
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, crate::db::migrations::CURRENT_SCHEMA_VERSION);
+        // Les colonnes v17 existent.
+        let has_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pending_invoices')
+                 WHERE name = 'extracted_merchant'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_col, 1);
     }
 }

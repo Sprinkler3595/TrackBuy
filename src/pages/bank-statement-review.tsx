@@ -164,6 +164,28 @@ interface CreateItemFormState {
   notes: string
 }
 
+/// Form state for the "valider & comptabiliser" step on a transaction matched
+/// to a stored receipt. Pre-filled by merging the bank line (price/date/devise)
+/// with the receipt's extracted fields (marchand/description/n° facture/TVA).
+interface ReceiptMergeFormState {
+  pendingInvoiceId: string
+  description: string
+  purchase_date: string
+  purchase_price: string
+  currency: string
+  merchant_id: string
+  location_id: string
+  payment_card_id: string
+  invoice_number: string
+  notes: string
+  // Champs du reçu transmis tels quels au backend (non éditables ici).
+  tax_rate: number | null
+  price_excl_tax: number | null
+  quantity: number | null
+  // Vrai si la devise du reçu diffère de celle de la transaction (pas de change).
+  currencyMismatch: boolean
+}
+
 /// Add `±days` days to a YYYY-MM-DD string. Used to widen the statement
 /// period when pre-filtering the item candidate pool client-side.
 function shiftIsoDate(iso: string | null, days: number): string | null {
@@ -213,11 +235,18 @@ export function BankStatementReviewPage() {
   const [createItemFor, setCreateItemFor] = useState<api.BankStatementTransaction | null>(null)
   const [createItemForm, setCreateItemForm] = useState<CreateItemFormState | null>(null)
 
+  // Stored receipts (inbox) keyed by id, so a `pending_invoice` suggestion can
+  // pre-fill the merge/validate form from the receipt's extracted fields.
+  const [pendingInvoices, setPendingInvoices] = useState<Record<string, api.PendingInvoice>>({})
+  const [receiptMergeFor, setReceiptMergeFor] = useState<api.BankStatementTransaction | null>(null)
+  const [receiptMergeForm, setReceiptMergeForm] = useState<ReceiptMergeFormState | null>(null)
+  const [receiptDuplicatePrompt, setReceiptDuplicatePrompt] = useState<string | null>(null)
+
   const load = async () => {
     if (!id) return
     setLoadError(null)
     try {
-      const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList] = await Promise.all([
+      const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList, pInvoices] = await Promise.all([
         api.getBankStatement(id),
         api.listStatementTransactions(id),
         api.getEngagements({ status: "active" }),
@@ -228,12 +257,14 @@ export function BankStatementReviewPage() {
         api.getMerchants(),
         api.getLocations(),
         api.getCards(),
+        api.listPendingInvoices(),
       ])
       setStatement(s)
       setTransactions(txs)
       setMerchants(mList)
       setLocations(lList)
       setCards(cList)
+      setPendingInvoices(Object.fromEntries(pInvoices.map((p) => [p.id, p])))
 
       // Lance la classification en arrière-plan dès qu'on a les
       // transactions. Pas bloquant — la liste s'affiche tout de suite et
@@ -418,6 +449,13 @@ export function BankStatementReviewPage() {
   const handleConfirm = async (txId: string) => {
     const tx = transactions.find((t) => t.id === txId)
     if (!tx || !tx.match_target_kind) return
+    // A stored-receipt match isn't a plain "assign target" — it books a new
+    // item by merging receipt + bank fields, so it opens a confirmation form
+    // rather than calling applyTransactionMatch (which has no booking logic).
+    if (tx.match_target_kind === "pending_invoice") {
+      openReceiptMergeForm(tx)
+      return
+    }
     // item_group suggestions carry their item ids in match_group_ids and
     // expose a NULL match_target_id (the order_id is minted on confirm).
     if (tx.match_target_kind !== "item_group" && !tx.match_target_id) return
@@ -435,6 +473,9 @@ export function BankStatementReviewPage() {
     try {
       for (const tx of suggested) {
         if (!tx.match_target_kind) continue
+        // Stored-receipt matches need the per-line merge/validate form — they
+        // can't be booked in bulk. Left as 'suggested' for the user to review.
+        if (tx.match_target_kind === "pending_invoice") continue
         if (tx.match_target_kind !== "item_group" && !tx.match_target_id) continue
         await api.applyTransactionMatch(tx.id, tx.match_target_kind, tx.match_target_id ?? "", learnRule)
       }
@@ -548,6 +589,115 @@ export function BankStatementReviewPage() {
       await api.ignoreTransaction(txId)
       await load()
     } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
+  /// Open the "valider & comptabiliser" form for a transaction matched to a
+  /// stored receipt. Field precedence: prix/date/devise ← banque (montant réglé
+  /// qui fait foi) ; description/marchand/n° facture/TVA ← reçu. On retombe sur
+  /// l'autre source quand un seul côté est renseigné.
+  const openReceiptMergeForm = (tx: api.BankStatementTransaction) => {
+    const inv = tx.match_target_id ? pendingInvoices[tx.match_target_id] : undefined
+    if (!inv) {
+      toast("Reçu introuvable (il a peut-être été supprimé). Relance les suggestions.", "error")
+      return
+    }
+    // The receipt's serialized ParsedReceipt carries the clean description /
+    // notes that the bank libellé lacks.
+    let receiptDescription: string | null = null
+    let receiptNotes: string | null = null
+    let receiptQuantity: number | null = null
+    if (inv.extracted_json) {
+      try {
+        const parsed = JSON.parse(inv.extracted_json) as {
+          description?: string | null; notes?: string | null; quantity?: number | null
+        }
+        receiptDescription = parsed.description ?? null
+        receiptNotes = parsed.notes ?? null
+        receiptQuantity = parsed.quantity ?? null
+      } catch { /* ignore malformed json */ }
+    }
+
+    const merchantName = inv.extracted_merchant ?? null
+    const guessedMerchant = findMerchantByName(merchantName ?? tx.raw_description, merchants)
+    const description = (receiptDescription || merchantName || tx.raw_description).slice(0, 80)
+    const notes = [
+      receiptNotes,
+      `Rapproché avec la transaction bancaire du ${formatDate(tx.transaction_date)}`,
+    ].filter(Boolean).join(" — ")
+
+    setReceiptMergeFor(tx)
+    setReceiptMergeForm({
+      pendingInvoiceId: inv.id,
+      description,
+      purchase_date: tx.transaction_date,
+      purchase_price: tx.amount.toFixed(2),
+      currency: tx.currency,
+      merchant_id: guessedMerchant?.id ?? "",
+      location_id: locations[0]?.id ?? "",
+      payment_card_id: "",
+      invoice_number: inv.extracted_invoice_number ?? "",
+      notes,
+      tax_rate: inv.extracted_tax_rate,
+      price_excl_tax: inv.extracted_price_excl_tax,
+      quantity: receiptQuantity,
+      currencyMismatch: inv.currency !== null && inv.currency !== tx.currency,
+    })
+  }
+
+  const cancelReceiptMergeForm = () => {
+    setReceiptMergeFor(null)
+    setReceiptMergeForm(null)
+  }
+
+  const submitReceiptMergeForm = async () => {
+    if (!receiptMergeFor || !receiptMergeForm) return
+    if (!receiptMergeForm.merchant_id) { toast("Marchand requis", "error"); return }
+    if (!receiptMergeForm.location_id) { toast("Lieu requis", "error"); return }
+    const price = parseFloat(receiptMergeForm.purchase_price)
+    if (Number.isNaN(price) || price <= 0) { toast("Prix invalide", "error"); return }
+    await bookReceiptMatch(false)
+  }
+
+  // Comptabilisation effective ; `force` court-circuite le garde-fou anti-doublon.
+  const bookReceiptMatch = async (force: boolean) => {
+    if (!receiptMergeFor || !receiptMergeForm) return
+    const f = receiptMergeForm
+    const price = parseFloat(f.purchase_price)
+    try {
+      await api.bookItemFromReceiptMatch(
+        receiptMergeFor.id,
+        f.pendingInvoiceId,
+        {
+          description: f.description.trim() || "Achat",
+          purchase_date: f.purchase_date,
+          purchase_price: price,
+          currency: f.currency,
+          merchant_id: f.merchant_id,
+          location_id: f.location_id,
+          payment_card_id: f.payment_card_id || undefined,
+          notes: f.notes || undefined,
+          invoice_number: f.invoice_number || undefined,
+          tax_rate: f.tax_rate ?? undefined,
+          price_excl_tax: f.price_excl_tax ?? undefined,
+          quantity: f.quantity ?? undefined,
+        },
+        undefined,
+        force,
+      )
+      setReceiptDuplicatePrompt(null)
+      toast("Achat créé, reçu attaché et transaction rapprochée", "success")
+      cancelReceiptMergeForm()
+      await load()
+    } catch (err) {
+      const msg = String(err)
+      const marker = "DUPLICATE:"
+      const idx = msg.indexOf(marker)
+      if (!force && idx >= 0) {
+        setReceiptDuplicatePrompt(msg.slice(idx + marker.length).trim())
+        return
+      }
       toast(`Erreur: ${err}`, "error")
     }
   }
@@ -703,6 +853,11 @@ export function BankStatementReviewPage() {
                               {t.match_target_kind === "item_group" ? "Achats groupés" : "Achat existant"}
                             </Badge>
                           )}
+                        {t.match_target_kind === "pending_invoice" && (
+                          <Badge variant="outline" className="text-[10px] border-blue-500/50 text-blue-600 dark:text-blue-300">
+                            Reçu stocké
+                          </Badge>
+                        )}
                         {t.match_target_kind && (t.match_target_id || t.match_target_label) && (
                           <span className="text-xs text-muted-foreground truncate">
                             → {candidateLabel(t.match_target_kind, t.match_target_id, t.match_target_label)}
@@ -903,6 +1058,119 @@ export function BankStatementReviewPage() {
                       </div>
                     </div>
                   )}
+
+                  {receiptMergeFor?.id === t.id && receiptMergeForm && (
+                    <div className="mt-3 pt-3 border-t space-y-3">
+                      <p className="text-sm font-medium flex items-center gap-2">
+                        <ShoppingBag className="h-4 w-4 text-blue-600" />
+                        Valider & comptabiliser ce reçu
+                      </p>
+                      {receiptMergeForm.currencyMismatch && (
+                        <p className="text-xs text-amber-600 bg-amber-500/10 rounded-md px-2 py-1.5">
+                          ⚠ La devise du reçu diffère de celle de la transaction ({receiptMergeForm.currency}).
+                          Aucune conversion n'est faite : l'achat sera enregistré en {receiptMergeForm.currency}.
+                        </p>
+                      )}
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                            <span>Description</span>
+                            <Badge variant="secondary" className="text-[9px]">Reçu</Badge>
+                          </label>
+                          <Input
+                            value={receiptMergeForm.description}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, description: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                            <span>Date</span>
+                            <Badge variant="secondary" className="text-[9px]">Banque</Badge>
+                          </label>
+                          <Input
+                            type="date"
+                            value={receiptMergeForm.purchase_date}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, purchase_date: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                            <span>Prix</span>
+                            <Badge variant="secondary" className="text-[9px]">Banque</Badge>
+                          </label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={receiptMergeForm.purchase_price}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, purchase_price: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                            <span>Marchand</span>
+                            <Badge variant="secondary" className="text-[9px]">Reçu</Badge>
+                          </label>
+                          <select
+                            value={receiptMergeForm.merchant_id}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, merchant_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Sélectionner...</option>
+                            {merchants.map((m) => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">Lieu</label>
+                          <select
+                            value={receiptMergeForm.location_id}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, location_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Sélectionner...</option>
+                            {locations.map((l) => (
+                              <option key={l.id} value={l.id}>{l.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                            <span>N° de facture</span>
+                            <Badge variant="secondary" className="text-[9px]">Reçu</Badge>
+                          </label>
+                          <Input
+                            value={receiptMergeForm.invoice_number}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, invoice_number: e.target.value })}
+                            placeholder="—"
+                          />
+                        </div>
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-xs font-medium text-muted-foreground">Carte de paiement (optionnel)</label>
+                          <select
+                            value={receiptMergeForm.payment_card_id}
+                            onChange={(e) => setReceiptMergeForm({ ...receiptMergeForm, payment_card_id: e.target.value })}
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">Aucune</option>
+                            {cards.map((c) => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Le reçu stocké sera attaché au nouvel achat puis retiré de l'inbox.
+                      </p>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={cancelReceiptMergeForm}>Annuler</Button>
+                        <Button size="sm" onClick={submitReceiptMergeForm}>
+                          <Check className="h-4 w-4" />
+                          Valider & comptabiliser
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )
@@ -918,6 +1186,16 @@ export function BankStatementReviewPage() {
         cancelLabel="Annuler"
         onConfirm={() => createItemFromTx(true)}
         onCancel={() => setDuplicatePrompt(null)}
+      />
+
+      <ConfirmDialog
+        open={receiptDuplicatePrompt !== null}
+        title="Article similaire déjà saisi"
+        message={`Un achat très proche existe déjà : ${receiptDuplicatePrompt ?? ""}.\n\nComptabiliser quand même ce reçu comme un nouvel article ?`}
+        confirmLabel="Comptabiliser quand même"
+        cancelLabel="Annuler"
+        onConfirm={() => bookReceiptMatch(true)}
+        onCancel={() => setReceiptDuplicatePrompt(null)}
       />
     </div>
   )

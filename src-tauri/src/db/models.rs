@@ -137,8 +137,38 @@ pub struct PendingInvoice {
     pub expected_amount: Option<f64>,
     pub expected_date: Option<String>,
     pub currency: Option<String>,
+    /// Champs lus sur le ticket par l'OCR + extraction IA/regex. `expected_*`
+    /// ci-dessus portent le montant/date/devise (clés de rapprochement) ; ces
+    /// colonnes portent le reste. Voir migration v17.
+    pub extracted_merchant: Option<String>,
+    pub extracted_invoice_number: Option<String>,
+    pub extracted_tax_rate: Option<f64>,
+    pub extracted_price_excl_tax: Option<f64>,
+    pub extracted_warranty_months: Option<i64>,
+    /// NULL | 'pending' | 'extracted' | 'failed'
+    pub extraction_status: Option<String>,
+    pub extracted_at: Option<String>,
+    /// `ExtractedReceipt` sérialisé (conserve les lignes multi-articles).
+    pub extracted_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Payload de `set_pending_invoice_extraction` : résultat de la passe OCR +
+/// extraction lancée au dépôt d'un ticket dans l'inbox.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PendingInvoiceExtraction {
+    pub merchant: Option<String>,
+    pub purchase_date: Option<String>,
+    pub purchase_price: Option<f64>,
+    pub currency: Option<String>,
+    pub invoice_number: Option<String>,
+    pub tax_rate: Option<f64>,
+    pub price_excl_tax: Option<f64>,
+    pub warranty_months: Option<i64>,
+    pub extracted_json: Option<String>,
+    /// 'extracted' | 'failed'
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
