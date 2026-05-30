@@ -136,6 +136,8 @@ RÈGLES :
 5. `currency` = "CHF" par défaut sur un relevé suisse.
 6. `reference` = suite de 26-27 chiffres BVR / QR-bill si présente. null sinon.
 7. `counterparty_iban` = IBAN visible (CH/LI commençant par "CH" ou "LI", 21 caractères). null sinon.
+8. `balance` = null (sauf indication de profil banque ci-dessous). `opening_balance` (racine) = null également.
+9. `location`, `original_amount`, `original_currency`, `exchange_rate` = null (sauf indication de profil banque ci-dessous).
 
 IGNORE absolument :
 - En-têtes (nom titulaire, adresse, IBAN du compte, période, BIC, numéro de compte)
@@ -145,12 +147,172 @@ IGNORE absolument :
 - Lignes purement de mise en page (numéros de page, « Page 1 / 4 »)
 
 EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
-{"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","reference":null,"counterparty_iban":"CH6330000011875037700"}]}
+{"opening_balance":null,"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","balance":null,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":"CH6330000011875037700","location":null,"original_amount":null,"original_currency":null,"exchange_rate":null}]}
 
 Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
-
+{BANK_HINT}
 TEXTE DU RELEVÉ (entre <<<>>>) :
 <<<{TEXT}>>>"#;
+
+// ===========================================================================
+// Registre de profils bancaires (reconnaissance adaptée par banque)
+// ===========================================================================
+//
+// Le prompt générique ci-dessus couvre les banques suisses (PostFinance, UBS,
+// Raiffeisen…). Certaines banques (Revolut, N26, Wise…) ont une mise en page
+// très différente : colonnes nommées autrement, devise étrangère, format de
+// date localisé, lignes de taux de change parasites, etc. Plutôt que de
+// gonfler le prompt générique, on injecte un « profil banque » ciblé.
+//
+// COMMENT AJOUTER UNE BANQUE :
+//   1. Ajoute une entrée `BankProfile` dans `BANK_PROFILES` ci-dessous.
+//      - `id`            : identifiant court en minuscules (ex. "revolut").
+//      - `display_name`  : nom lisible affiché/loggé (ex. "Revolut").
+//      - `detect_keywords` : mots-clés en MINUSCULES cherchés dans le texte
+//        du relevé pour l'auto-détection (ex. ["revolut", "revolt21"]).
+//      - `prompt_hint`   : section en français injectée dans le prompt
+//        décrivant la mise en page spécifique (colonnes, devise, format de
+//        date, lignes à ignorer…). Laisser vide ("") pour ne rien injecter.
+//   2. C'est tout. L'auto-détection et l'override par `bank_name` marchent
+//      automatiquement. Le profil `generic` (id "generic") reste le défaut.
+
+/// Profil de reconnaissance pour une banque donnée. Statique (`&'static`) :
+/// tous les profils sont des constantes connues à la compilation.
+pub struct BankProfile {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub detect_keywords: &'static [&'static str],
+    pub prompt_hint: &'static str,
+}
+
+/// Profil par défaut : aucune indication spécifique, le prompt générique
+/// (orienté banques suisses) s'applique tel quel.
+const GENERIC_PROFILE: BankProfile = BankProfile {
+    id: "generic",
+    display_name: "Banque générique",
+    detect_keywords: &[],
+    prompt_hint: "",
+};
+
+/// Indication ciblée pour les relevés Revolut. Encode les règles dérivées
+/// d'un vrai « Relevé CHF » Revolut (colonnes Argent sortant / entrant /
+/// Solde, devise dans le titre, dates françaises, lignes de taux de change…).
+const REVOLUT_HINT: &str = r#"
+PROFIL BANQUE : REVOLUT
+- Relevé Revolut (peut être en français ou en anglais). La devise du compte est indiquée dans le titre « Relevé CHF/EUR/USD … » et suffixe chaque montant (ex. « 9,95 CHF »). Utilise cette devise pour `currency`.
+- Colonnes du tableau : Date | Description | « Argent sortant » | « Argent entrant » | « Solde » (en anglais : Date | Description | Money out | Money in | Balance).
+- STRUCTURE DE LIGNE (capitale) : après le libellé, chaque ligne contient EXACTEMENT DEUX montants dans la devise du compte. Le PREMIER est le mouvement (soit Argent sortant, soit Argent entrant — l'AUTRE colonne est vide et a disparu du texte). Le SECOND est le SOLDE courant.
+- CHAMP `amount` = le PREMIER montant (le mouvement) UNIQUEMENT, positif. N'y mets JAMAIS le solde.
+- CHAMP `balance` = le SECOND montant (le solde courant après l'opération). REMPLIS-LE TOUJOURS — c'est obligatoire pour ce relevé : le code s'en sert pour calculer débit/crédit de façon fiable.
+- CHAMP `opening_balance` (à la racine, une seule fois) = le « Solde d'ouverture » du tout premier « Résumé du solde » (ex. 67,00). C'est le solde AVANT la première transaction.
+- `direction` : mets ta meilleure estimation (Argent sortant ⇒ "debit", Argent entrant ⇒ "credit"), mais ne t'inquiète pas si tu hésites : le code la recalcule à partir de `balance`/`opening_balance` (solde qui monte ⇒ credit, qui baisse ⇒ debit). L'essentiel est que `amount` et `balance` soient EXACTS.
+- Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` et `balance` doivent être des nombres positifs (le solde l'est toujours ici).
+- Dates en français à convertir en ISO : « 1 mars 2026 » ⇒ 2026-03-01 (mois : janvier, février, mars, avril, mai, juin, juillet, août, septembre, octobre, novembre, décembre).
+- La `description` est le nom du marchand de la première ligne (ex. « Holy Cow Steakhouse », « Migros », « OpenAI »). Les lignes « À : … » / « De : … » / « Carte : … » sont des détails : ne pas en faire des transactions (tu peux en tirer `counterparty_iban` seulement si un IBAN apparaît).
+- CHAMP `location` = la VILLE / le lieu de l'opération, lu dans la ligne « À : … » (DERNIER segment après la virgule). Ex. « À : Ls Holy Cow Lausanne T, Lausanne » ⇒ "Lausanne" ; « À : Openai *chatgpt Subscr, Dublin » ⇒ "Dublin" ; « À : Shell Quai-perrier, Neuchatel » ⇒ "Neuchatel". Mets null si aucune ville n'est lisible (ex. paiement purement en ligne sans lieu).
+- PAIEMENT EN DEVISE ÉTRANGÈRE — la ligne « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » N'EST PAS une transaction (ne crée jamais de transaction pour elle), MAIS elle décrit la transaction qui la précède. Reporte ses infos DANS cette transaction précédente :
+    • `original_amount` = le montant en devise étrangère affiché en fin de ligne (ex. 23,00€ ⇒ 23.00).
+    • `original_currency` = la devise d'origine (le symbole/■ code : € ⇒ "EUR", $ ⇒ "USD", £ ⇒ "GBP").
+    • `exchange_rate` = le taux Revolut « 1,00 [devise compte] = N [devise origine] » (ex. 1.10). Prends le taux Revolut, PAS le taux ECB entre parenthèses.
+  Le `amount` de la transaction reste le montant en devise du COMPTE (colonne Argent sortant/entrant, ex. 20,83 CHF) — jamais le montant étranger.
+  Si la transaction n'a pas de ligne de taux (paiement dans la devise du compte), `original_amount`/`original_currency`/`exchange_rate` = null.
+- Les lignes « Frais: 0,58 CHF » sont des frais déjà inclus dans le montant principal (colonne « Argent sortant ») : ne crée PAS de transaction séparée pour les frais ; le montant de la transaction est celui de la colonne « Argent sortant ».
+- « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant) : le solde MONTE.
+- IGNORER : « Résumé du solde », « Solde d'ouverture », « Solde de clôture », « Total », les en-têtes de colonnes, les numéros de page (« Page sur … »), et tout le texte légal/footer (mentions « Revolut Bank UAB », garantie des dépôts, etc.).
+
+EXEMPLE REVOLUT (lignes du relevé ⇒ JSON attendu). « Solde d'ouverture » = 60,00 CHF :
+  « 2 mars 2026  BP  2,95 CHF  57,05 CHF / À : Bp Yverdon-les-bains, Yverdon-les-b »  (mouvement 2,95 ; solde 57,05 ; baisse ⇒ debit ; ville Yverdon-les-b)
+  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (mouvement 650,00 ; solde 707,05 ; hausse ⇒ credit ; pas de ville)
+  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF / Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ / À : Openai *chatgpt Subscr, Dublin »  (mouvement 20,83 CHF ; solde 540,04 ; devise étrangère 23,00€ au taux 1,10 ; ville Dublin)
+  « 19 mars 2026  Shell  61,79 CHF  157,97 CHF / À : Shell Quai-perrier, Neuchatel »  (mouvement 61,79 ; solde 157,97 ; baisse ⇒ debit ; ville Neuchatel)
+  « 20 mars 2026  TechSmith  De : Fs*techsmith  212,65 CHF  370,62 CHF »  (REMBOURSEMENT : « De : » et solde 157,97→370,62 qui MONTE ⇒ credit 212,65)
+⇒ {"opening_balance":60.00,"transactions":[
+  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","balance":57.05,"reference":null,"counterparty_iban":null,"location":"Yverdon-les-b","original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","balance":707.05,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","balance":540.04,"reference":null,"counterparty_iban":null,"location":"Dublin","original_amount":23.00,"original_currency":"EUR","exchange_rate":1.10},
+  {"date":"2026-03-19","booking_date":null,"description":"Shell","amount":61.79,"currency":"CHF","direction":"debit","balance":157.97,"reference":null,"counterparty_iban":null,"location":"Neuchatel","original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-20","booking_date":null,"description":"TechSmith","amount":212.65,"currency":"CHF","direction":"credit","balance":370.62,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null}
+]}
+Remarque : 57,05 / 707,05 / 540,04 / 157,97 / 370,62 vont dans `balance` (jamais dans `amount`) ; 23,00€ va dans `original_amount` (jamais dans `amount`). Le même marchand peut être un débit (achat, « À : ») un jour et un crédit (remboursement, « De : ») un autre — fie-toi au solde.
+"#;
+
+const N26_HINT: &str = r#"
+PROFIL BANQUE : N26
+- Relevé N26 (banque mobile, souvent en EUR). La devise figure à côté de chaque montant ; utilise-la pour `currency`.
+- Les débits (paiements/retraits) sont négatifs, les crédits (entrées) positifs : déduis `direction` du signe et mets toujours `amount` positif.
+- IGNORER les lignes de solde (« Solde », « Balance ») et les en-têtes/pieds de page.
+"#;
+
+const WISE_HINT: &str = r#"
+PROFIL BANQUE : WISE
+- Relevé Wise (multi-devises). Chaque transaction porte sa propre devise ; utilise-la pour `currency`, ne suppose pas CHF.
+- Les frais Wise (« Fee », « Frais ») sont des lignes distinctes : ne les fusionne pas avec le montant principal sauf indication contraire.
+- IGNORER les lignes de solde et les conversions de change qui ne sont pas des transactions réelles.
+"#;
+
+/// Liste exhaustive des profils bancaires connus. Ajoute une entrée ici pour
+/// supporter une nouvelle banque (voir le commentaire « COMMENT AJOUTER UNE
+/// BANQUE » plus haut). Le profil générique n'est PAS dans cette liste : il
+/// sert de repli quand aucune entrée ne correspond.
+const BANK_PROFILES: &[BankProfile] = &[
+    BankProfile {
+        id: "revolut",
+        display_name: "Revolut",
+        detect_keywords: &["revolut", "revolut bank uab", "revolt21"],
+        prompt_hint: REVOLUT_HINT,
+    },
+    BankProfile {
+        id: "n26",
+        display_name: "N26",
+        detect_keywords: &["n26", "ntsbdeb1"],
+        prompt_hint: N26_HINT,
+    },
+    BankProfile {
+        id: "wise",
+        display_name: "Wise",
+        detect_keywords: &["wise", "transferwise"],
+        prompt_hint: WISE_HINT,
+    },
+];
+
+/// Résout le profil bancaire à utiliser.
+///
+/// Priorité :
+///   1. `bank` explicite (depuis `bank_name` côté JS) : match sur l'`id` ou le
+///      `display_name`, insensible à la casse, avec correspondance « contient »
+///      dans les deux sens (ex. "Compte Revolut" ⇒ profil "revolut").
+///   2. Auto-détection : on scanne le texte du relevé (en minuscules) à la
+///      recherche d'un `detect_keywords` de n'importe quel profil.
+///   3. Repli sur le profil générique.
+fn resolve_bank_profile(bank: &Option<String>, text: &str) -> &'static BankProfile {
+    if let Some(name) = bank {
+        let needle = name.trim().to_lowercase();
+        if !needle.is_empty() {
+            for p in BANK_PROFILES {
+                let id = p.id.to_lowercase();
+                let display = p.display_name.to_lowercase();
+                if needle == id
+                    || needle == display
+                    || needle.contains(&id)
+                    || id.contains(&needle)
+                    || needle.contains(&display)
+                    || display.contains(&needle)
+                {
+                    return p;
+                }
+            }
+        }
+    }
+
+    let haystack = text.to_lowercase();
+    for p in BANK_PROFILES {
+        if p.detect_keywords.iter().any(|kw| haystack.contains(kw)) {
+            return p;
+        }
+    }
+
+    &GENERIC_PROFILE
+}
 
 #[derive(Debug, Serialize)]
 pub struct ExtractedTransaction {
@@ -162,6 +324,13 @@ pub struct ExtractedTransaction {
     pub direction: String,
     pub reference: Option<String>,
     pub counterparty_iban: Option<String>,
+    /// Ville / lieu de la transaction (relevés Revolut : ligne « À : … »).
+    pub location: Option<String>,
+    /// Paiement en devise étrangère : montant d'origine, devise d'origine, et
+    /// taux appliqué (1 [devise compte] = N [devise origine]).
+    pub original_amount: Option<f64>,
+    pub original_currency: Option<String>,
+    pub exchange_rate: Option<f64>,
 }
 
 /// Schéma JSON strict pour structured outputs — interdit physiquement au
@@ -174,6 +343,10 @@ fn bank_statement_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            // `opening_balance` : solde AVANT la première transaction (depuis le
+            // « Résumé du solde » → « Solde d'ouverture »). null si absent. Sert
+            // à dériver la direction de la 1re transaction par variation de solde.
+            "opening_balance": {"type": ["number", "null"]},
             "transactions": {
                 "type": "array",
                 "items": {
@@ -185,18 +358,34 @@ fn bank_statement_schema() -> Value {
                         "amount": {"type": "number"},
                         "currency": {"type": "string"},
                         "direction": {"type": "string", "enum": ["debit", "credit"]},
+                        // `balance` : solde courant APRÈS la transaction (dernier
+                        // montant de la ligne). null si la mise en page n'a pas de
+                        // colonne solde. Quand il est présent et cohérent, le code
+                        // recalcule amount+direction par delta de solde (déterministe).
+                        "balance": {"type": ["number", "null"]},
                         "reference": {"type": ["string", "null"]},
-                        "counterparty_iban": {"type": ["string", "null"]}
+                        "counterparty_iban": {"type": ["string", "null"]},
+                        // Enrichissement (profils type Revolut). null si absent.
+                        // `location` : ville/lieu de l'opération.
+                        // `original_amount`/`original_currency` : montant et devise
+                        // d'origine d'un paiement à l'étranger.
+                        // `exchange_rate` : taux 1 [devise compte] = N [devise origine].
+                        "location": {"type": ["string", "null"]},
+                        "original_amount": {"type": ["number", "null"]},
+                        "original_currency": {"type": ["string", "null"]},
+                        "exchange_rate": {"type": ["number", "null"]}
                     },
                     "required": [
                         "date", "booking_date", "description", "amount",
-                        "currency", "direction", "reference", "counterparty_iban"
+                        "currency", "direction", "balance", "reference",
+                        "counterparty_iban", "location", "original_amount",
+                        "original_currency", "exchange_rate"
                     ],
                     "additionalProperties": false
                 }
             }
         },
-        "required": ["transactions"],
+        "required": ["opening_balance", "transactions"],
         "additionalProperties": false
     })
 }
@@ -205,8 +394,19 @@ fn bank_statement_schema() -> Value {
 pub async fn ai_extract_bank_statement(
     text: String,
     config: AiConfig,
+    bank: Option<String>,
 ) -> Result<Vec<ExtractedTransaction>, String> {
-    let prompt = BANK_EXTRACTION_PROMPT.replace("{TEXT}", &text);
+    // Choisit le profil banque (override `bank` explicite, sinon auto-détection
+    // depuis le texte, sinon générique) et injecte son indication dans le prompt.
+    let profile = resolve_bank_profile(&bank, &text);
+    let bank_hint = if profile.prompt_hint.trim().is_empty() {
+        String::from("\nPROFIL BANQUE : inconnu — déduis la mise en page à partir du texte.\n")
+    } else {
+        profile.prompt_hint.to_string()
+    };
+    let prompt = BANK_EXTRACTION_PROMPT
+        .replace("{BANK_HINT}", &bank_hint)
+        .replace("{TEXT}", &text);
     let schema = bank_statement_schema();
     let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
     let cleaned = strip_code_fences(&raw);
@@ -247,7 +447,13 @@ pub async fn ai_extract_bank_statement(
         ));
     }
 
+    let opening_balance = value.get("opening_balance").and_then(|v| v.as_f64());
+
     let mut out = Vec::with_capacity(arr.len());
+    // Solde courant déclaré par le modèle pour chaque transaction (dernier
+    // montant de la ligne). Parallèle à `out` ; sert à recalculer amount +
+    // direction de façon déterministe (voir reconcile_with_balances).
+    let mut balances: Vec<Option<f64>> = Vec::with_capacity(arr.len());
     for tx in arr {
         let date = tx.get("date").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let description = tx.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -263,6 +469,7 @@ pub async fn ai_extract_bank_statement(
         if date.is_empty() || description.trim().is_empty() || amount <= 0.0 {
             continue;
         }
+        balances.push(tx.get("balance").and_then(|v| v.as_f64()));
         out.push(ExtractedTransaction {
             date,
             booking_date: tx.get("booking_date").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -279,10 +486,70 @@ pub async fn ai_extract_bank_statement(
                 .get("counterparty_iban")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            location: tx
+                .get("location")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            original_amount: tx.get("original_amount").and_then(|v| v.as_f64()).map(|v| v.abs()),
+            original_currency: tx
+                .get("original_currency")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty()),
+            exchange_rate: tx.get("exchange_rate").and_then(|v| v.as_f64()),
         });
     }
 
+    // Correction déterministe par variation de solde (Revolut & toute banque
+    // dont le modèle remonte la colonne solde). Le modèle n'a plus à DEVINER
+    // débit/crédit (peu fiable quand la colonne vide a disparu du texte aplati) :
+    // on le calcule à partir des soldes, qui eux sont sans ambiguïté.
+    reconcile_with_balances(&mut out, &balances, opening_balance);
+
     Ok(out)
+}
+
+/// Recalcule `amount` et `direction` à partir des soldes courants, quand ils
+/// sont disponibles. C'est la source de vérité la plus fiable : sur un relevé
+/// au format « [mouvement] [solde] » (Revolut, etc.), le texte aplati perd la
+/// colonne vide (Argent sortant OU Argent entrant), si bien que le modèle ne
+/// peut pas distinguer un débit d'un crédit et confond parfois le solde avec le
+/// montant. La variation de solde, elle, est sans ambiguïté :
+///   solde_courant − solde_précédent = montant signé du mouvement.
+///
+/// Pour chaque transaction i (dans l'ordre du relevé) :
+///   - solde précédent = solde[i-1], ou `opening_balance` pour la première ;
+///   - signed = solde[i] − solde_précédent ;
+///   - si |signed| > 0 : `amount` = |signed| (arrondi 2 déc.),
+///     `direction` = "credit" si signed > 0 sinon "debit".
+///
+/// On ne touche RIEN si le solde de la ligne (ou le solde de référence) manque
+/// — comportement générique (banques suisses) préservé : le modèle ne remplit
+/// pas `balance`/`opening_balance` là-bas, donc `out` reste tel quel.
+fn reconcile_with_balances(
+    out: &mut [ExtractedTransaction],
+    balances: &[Option<f64>],
+    opening_balance: Option<f64>,
+) {
+    let mut prev_balance = opening_balance;
+    for (i, tx) in out.iter_mut().enumerate() {
+        let current = balances.get(i).copied().flatten();
+        if let (Some(prev), Some(cur)) = (prev_balance, current) {
+            let signed = cur - prev;
+            // Arrondi au centime pour absorber les erreurs de virgule flottante.
+            let amount = (signed.abs() * 100.0).round() / 100.0;
+            if amount > 0.0 {
+                tx.amount = amount;
+                tx.direction = if signed > 0.0 { "credit" } else { "debit" }.to_string();
+            }
+        }
+        // Avance le solde de référence dès qu'on a une valeur, même si on n'a
+        // pas pu corriger cette ligne (ex. 1re ligne sans opening_balance).
+        if current.is_some() {
+            prev_balance = current;
+        }
+    }
 }
 
 #[tauri::command]

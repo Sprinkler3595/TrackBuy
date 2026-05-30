@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 16;
+pub const CURRENT_SCHEMA_VERSION: i64 = 17;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -78,6 +78,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 16 {
         migrate_v16(conn)?;
+    }
+    if current_version < 17 {
+        migrate_v17(conn)?;
     }
 
     Ok(())
@@ -1214,6 +1217,31 @@ fn migrate_v16(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (16);
         "
     ).map_err(|e| format!("Migration v16 failed: {}", e))?;
+
+    Ok(())
+}
+
+fn migrate_v17(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Enrichissement par transaction extraite : localisation et paiement en
+        -- devise étrangère. Renseigné surtout pour les relevés Revolut, où la
+        -- ligne « À : … » porte la ville et où un paiement à l'étranger affiche
+        -- le montant d'origine et le taux de change appliqué.
+        --   location           : ville/lieu (ex. « Lausanne », « Dublin »).
+        --   original_amount     : montant dans la devise d'origine (ex. 23.00).
+        --   original_currency   : devise d'origine (ex. « EUR », « USD »).
+        --   exchange_rate       : taux appliqué, exprimé comme 1 [devise compte]
+        --                         = N [devise origine] (ex. 1.10 pour 1 CHF = 1,10 €).
+        -- Toutes NULL pour une transaction sans info correspondante.
+        ALTER TABLE bank_statement_transactions ADD COLUMN location TEXT;
+        ALTER TABLE bank_statement_transactions ADD COLUMN original_amount REAL;
+        ALTER TABLE bank_statement_transactions ADD COLUMN original_currency TEXT;
+        ALTER TABLE bank_statement_transactions ADD COLUMN exchange_rate REAL;
+
+        INSERT INTO schema_version (version) VALUES (17);
+        "
+    ).map_err(|e| format!("Migration v17 failed: {}", e))?;
 
     Ok(())
 }
