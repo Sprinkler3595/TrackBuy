@@ -388,6 +388,10 @@ export function BankStatementReviewPage() {
         direction: t.direction,
         reference_number: t.reference,
         counterparty_iban: t.counterparty_iban,
+        location: t.location,
+        original_amount: t.original_amount,
+        original_currency: t.original_currency,
+        exchange_rate: t.exchange_rate,
       })))
       // Run the first round of suggestions right after extraction so the
       // user lands on a partially-filled review screen.
@@ -710,6 +714,20 @@ export function BankStatementReviewPage() {
                           </span>
                         )}
                         {t.reference_number && <span className="text-xs text-muted-foreground/60 font-mono">{t.reference_number}</span>}
+                        {/* Localisation extraite par l'IA (ligne « À : … » sur
+                            Revolut). Distincte de la ville devinée par le
+                            classifier : ici c'est la donnée brute du relevé. */}
+                        {t.location && (
+                          <span className="text-xs text-muted-foreground">📍 {t.location}</span>
+                        )}
+                        {/* Paiement en devise étrangère : montant d'origine +
+                            taux Revolut appliqué. Ex. « 23.00 EUR @ 1.10 ». */}
+                        {t.original_amount != null && t.original_currency && (
+                          <Badge variant="outline" className="text-[10px]">
+                            🌍 {t.original_amount.toFixed(2)} {t.original_currency}
+                            {t.exchange_rate != null && ` @ ${t.exchange_rate}`}
+                          </Badge>
+                        )}
                       </div>
                       {/* Enrichissement auto-calculé : marchand canonique +
                           catégorie + mode de paiement détectés depuis le

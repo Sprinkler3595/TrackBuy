@@ -1201,6 +1201,10 @@ export interface BankStatementTransaction {
   created_at: string
   updated_at: string
   match_target_label?: string | null
+  location: string | null
+  original_amount: number | null
+  original_currency: string | null
+  exchange_rate: number | null
 }
 
 export interface ExtractedTransactionInput {
@@ -1212,6 +1216,10 @@ export interface ExtractedTransactionInput {
   direction: BankTxDirection
   reference_number?: string | null
   counterparty_iban?: string | null
+  location?: string | null
+  original_amount?: number | null
+  original_currency?: string | null
+  exchange_rate?: number | null
 }
 
 export interface BankMatchRule {
@@ -1241,6 +1249,10 @@ export interface ExtractedTransaction {
   direction: BankTxDirection
   reference: string | null
   counterparty_iban: string | null
+  location: string | null
+  original_amount: number | null
+  original_currency: string | null
+  exchange_rate: number | null
 }
 
 export const addBankStatement = (

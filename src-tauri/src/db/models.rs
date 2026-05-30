@@ -755,6 +755,14 @@ pub struct BankStatementTransaction {
     /// Display name of the matched target, joined for the review screen.
     #[serde(skip_deserializing)]
     pub match_target_label: Option<String>,
+    /// Ville / lieu de la transaction (ex. « Lausanne », « Dublin »), extrait
+    /// surtout des relevés Revolut (ligne « À : … »). NULL si inconnu.
+    pub location: Option<String>,
+    /// Paiement en devise étrangère : montant d'origine, devise d'origine, et
+    /// taux appliqué (1 [devise compte] = N [devise origine]). NULL sinon.
+    pub original_amount: Option<f64>,
+    pub original_currency: Option<String>,
+    pub exchange_rate: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -767,6 +775,14 @@ pub struct ExtractedTransactionInput {
     pub direction: String,
     pub reference_number: Option<String>,
     pub counterparty_iban: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub original_amount: Option<f64>,
+    #[serde(default)]
+    pub original_currency: Option<String>,
+    #[serde(default)]
+    pub exchange_rate: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

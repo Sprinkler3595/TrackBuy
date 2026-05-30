@@ -137,6 +137,7 @@ RÈGLES :
 6. `reference` = suite de 26-27 chiffres BVR / QR-bill si présente. null sinon.
 7. `counterparty_iban` = IBAN visible (CH/LI commençant par "CH" ou "LI", 21 caractères). null sinon.
 8. `balance` = null (sauf indication de profil banque ci-dessous). `opening_balance` (racine) = null également.
+9. `location`, `original_amount`, `original_currency`, `exchange_rate` = null (sauf indication de profil banque ci-dessous).
 
 IGNORE absolument :
 - En-têtes (nom titulaire, adresse, IBAN du compte, période, BIC, numéro de compte)
@@ -146,7 +147,7 @@ IGNORE absolument :
 - Lignes purement de mise en page (numéros de page, « Page 1 / 4 »)
 
 EXEMPLE DE RÉPONSE VALIDE (basée sur un vrai PostFinance) :
-{"opening_balance":null,"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","balance":null,"reference":null,"counterparty_iban":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":"CH6330000011875037700"}]}
+{"opening_balance":null,"transactions":[{"date":"2026-04-02","booking_date":"2026-04-01","description":"ACHAT/SHOPPING EN LIGNE DIGITEC GALAXUS ZÜRICH CARTE XXXX8750","amount":919.00,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},{"date":"2026-04-02","booking_date":"2026-04-01","description":"CRÉDIT POSTFINANCE CARD DIGITEC GALAXUS ZÜRICH","amount":91.00,"currency":"CHF","direction":"credit","balance":null,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},{"date":"2026-04-08","booking_date":"2026-04-08","description":"DÉBIT SUNRISE GMBH POSTFACH 8050 ZURICH","amount":1.30,"currency":"CHF","direction":"debit","balance":null,"reference":null,"counterparty_iban":"CH6330000011875037700","location":null,"original_amount":null,"original_currency":null,"exchange_rate":null}]}
 
 Réponds maintenant pour le relevé ci-dessous. JSON UNIQUEMENT. N'invente RIEN.
 {BANK_HINT}
@@ -208,25 +209,31 @@ PROFIL BANQUE : REVOLUT
 - Montants au format européen : séparateur décimal = virgule (« 1062,65 CHF » = 1062.65). `amount` et `balance` doivent être des nombres positifs (le solde l'est toujours ici).
 - Dates en français à convertir en ISO : « 1 mars 2026 » ⇒ 2026-03-01 (mois : janvier, février, mars, avril, mai, juin, juillet, août, septembre, octobre, novembre, décembre).
 - La `description` est le nom du marchand de la première ligne (ex. « Holy Cow Steakhouse », « Migros », « OpenAI »). Les lignes « À : … » / « De : … » / « Carte : … » sont des détails : ne pas en faire des transactions (tu peux en tirer `counterparty_iban` seulement si un IBAN apparaît).
-- IGNORER les lignes de taux de change du type « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » : ce n'est PAS une transaction et le montant en devise étrangère (ex. 23,00€) ne doit jamais être extrait.
+- CHAMP `location` = la VILLE / le lieu de l'opération, lu dans la ligne « À : … » (DERNIER segment après la virgule). Ex. « À : Ls Holy Cow Lausanne T, Lausanne » ⇒ "Lausanne" ; « À : Openai *chatgpt Subscr, Dublin » ⇒ "Dublin" ; « À : Shell Quai-perrier, Neuchatel » ⇒ "Neuchatel". Mets null si aucune ville n'est lisible (ex. paiement purement en ligne sans lieu).
+- PAIEMENT EN DEVISE ÉTRANGÈRE — la ligne « Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ » N'EST PAS une transaction (ne crée jamais de transaction pour elle), MAIS elle décrit la transaction qui la précède. Reporte ses infos DANS cette transaction précédente :
+    • `original_amount` = le montant en devise étrangère affiché en fin de ligne (ex. 23,00€ ⇒ 23.00).
+    • `original_currency` = la devise d'origine (le symbole/■ code : € ⇒ "EUR", $ ⇒ "USD", £ ⇒ "GBP").
+    • `exchange_rate` = le taux Revolut « 1,00 [devise compte] = N [devise origine] » (ex. 1.10). Prends le taux Revolut, PAS le taux ECB entre parenthèses.
+  Le `amount` de la transaction reste le montant en devise du COMPTE (colonne Argent sortant/entrant, ex. 20,83 CHF) — jamais le montant étranger.
+  Si la transaction n'a pas de ligne de taux (paiement dans la devise du compte), `original_amount`/`original_currency`/`exchange_rate` = null.
 - Les lignes « Frais: 0,58 CHF » sont des frais déjà inclus dans le montant principal (colonne « Argent sortant ») : ne crée PAS de transaction séparée pour les frais ; le montant de la transaction est celui de la colonne « Argent sortant ».
 - « Recharge sur Apple Pay via *XXXX » (et « De : *XXXX ») est un CRÉDIT (Argent entrant) : le solde MONTE.
 - IGNORER : « Résumé du solde », « Solde d'ouverture », « Solde de clôture », « Total », les en-têtes de colonnes, les numéros de page (« Page sur … »), et tout le texte légal/footer (mentions « Revolut Bank UAB », garantie des dépôts, etc.).
 
 EXEMPLE REVOLUT (lignes du relevé ⇒ JSON attendu). « Solde d'ouverture » = 60,00 CHF :
-  « 2 mars 2026  BP  2,95 CHF  57,05 CHF »            (mouvement 2,95 ; solde 57,05 ; 60,00→57,05 baisse ⇒ debit)
-  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (mouvement 650,00 ; solde 707,05 ; hausse ⇒ credit)
-  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF »  puis  « Taux Revolut = 1,00 CHF = 1,10€ … 23,00€ »  (mouvement 20,83 ; solde 540,04 ; 23,00€ = taux, ignoré)
-  « 19 mars 2026  Shell  61,79 CHF  157,97 CHF »     (mouvement 61,79 ; solde 157,97 ; baisse ⇒ debit)
+  « 2 mars 2026  BP  2,95 CHF  57,05 CHF / À : Bp Yverdon-les-bains, Yverdon-les-b »  (mouvement 2,95 ; solde 57,05 ; baisse ⇒ debit ; ville Yverdon-les-b)
+  « 6 mars 2026  Recharge sur Apple Pay via *4828  650,00 CHF  707,05 CHF »  (mouvement 650,00 ; solde 707,05 ; hausse ⇒ credit ; pas de ville)
+  « 11 mars 2026  OpenAI  20,83 CHF  540,04 CHF / Taux Revolut = 1,00 CHF = 1,10€ (taux ECB x 1,00 CHF = 1,11€) 23,00€ / À : Openai *chatgpt Subscr, Dublin »  (mouvement 20,83 CHF ; solde 540,04 ; devise étrangère 23,00€ au taux 1,10 ; ville Dublin)
+  « 19 mars 2026  Shell  61,79 CHF  157,97 CHF / À : Shell Quai-perrier, Neuchatel »  (mouvement 61,79 ; solde 157,97 ; baisse ⇒ debit ; ville Neuchatel)
   « 20 mars 2026  TechSmith  De : Fs*techsmith  212,65 CHF  370,62 CHF »  (REMBOURSEMENT : « De : » et solde 157,97→370,62 qui MONTE ⇒ credit 212,65)
 ⇒ {"opening_balance":60.00,"transactions":[
-  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","balance":57.05,"reference":null,"counterparty_iban":null},
-  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","balance":707.05,"reference":null,"counterparty_iban":null},
-  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","balance":540.04,"reference":null,"counterparty_iban":null},
-  {"date":"2026-03-19","booking_date":null,"description":"Shell","amount":61.79,"currency":"CHF","direction":"debit","balance":157.97,"reference":null,"counterparty_iban":null},
-  {"date":"2026-03-20","booking_date":null,"description":"TechSmith","amount":212.65,"currency":"CHF","direction":"credit","balance":370.62,"reference":null,"counterparty_iban":null}
+  {"date":"2026-03-02","booking_date":null,"description":"BP","amount":2.95,"currency":"CHF","direction":"debit","balance":57.05,"reference":null,"counterparty_iban":null,"location":"Yverdon-les-b","original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-06","booking_date":null,"description":"Recharge sur Apple Pay via *4828","amount":650.00,"currency":"CHF","direction":"credit","balance":707.05,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-11","booking_date":null,"description":"OpenAI","amount":20.83,"currency":"CHF","direction":"debit","balance":540.04,"reference":null,"counterparty_iban":null,"location":"Dublin","original_amount":23.00,"original_currency":"EUR","exchange_rate":1.10},
+  {"date":"2026-03-19","booking_date":null,"description":"Shell","amount":61.79,"currency":"CHF","direction":"debit","balance":157.97,"reference":null,"counterparty_iban":null,"location":"Neuchatel","original_amount":null,"original_currency":null,"exchange_rate":null},
+  {"date":"2026-03-20","booking_date":null,"description":"TechSmith","amount":212.65,"currency":"CHF","direction":"credit","balance":370.62,"reference":null,"counterparty_iban":null,"location":null,"original_amount":null,"original_currency":null,"exchange_rate":null}
 ]}
-Remarque : 57,05 / 707,05 / 540,04 / 157,97 / 370,62 vont dans `balance` (jamais dans `amount`) ; 23,00€ est un taux de change (jamais extrait). Le même marchand peut être un débit (achat, « À : ») un jour et un crédit (remboursement, « De : ») un autre — fie-toi au solde.
+Remarque : 57,05 / 707,05 / 540,04 / 157,97 / 370,62 vont dans `balance` (jamais dans `amount`) ; 23,00€ va dans `original_amount` (jamais dans `amount`). Le même marchand peut être un débit (achat, « À : ») un jour et un crédit (remboursement, « De : ») un autre — fie-toi au solde.
 "#;
 
 const N26_HINT: &str = r#"
@@ -317,6 +324,13 @@ pub struct ExtractedTransaction {
     pub direction: String,
     pub reference: Option<String>,
     pub counterparty_iban: Option<String>,
+    /// Ville / lieu de la transaction (relevés Revolut : ligne « À : … »).
+    pub location: Option<String>,
+    /// Paiement en devise étrangère : montant d'origine, devise d'origine, et
+    /// taux appliqué (1 [devise compte] = N [devise origine]).
+    pub original_amount: Option<f64>,
+    pub original_currency: Option<String>,
+    pub exchange_rate: Option<f64>,
 }
 
 /// Schéma JSON strict pour structured outputs — interdit physiquement au
@@ -350,12 +364,22 @@ fn bank_statement_schema() -> Value {
                         // recalcule amount+direction par delta de solde (déterministe).
                         "balance": {"type": ["number", "null"]},
                         "reference": {"type": ["string", "null"]},
-                        "counterparty_iban": {"type": ["string", "null"]}
+                        "counterparty_iban": {"type": ["string", "null"]},
+                        // Enrichissement (profils type Revolut). null si absent.
+                        // `location` : ville/lieu de l'opération.
+                        // `original_amount`/`original_currency` : montant et devise
+                        // d'origine d'un paiement à l'étranger.
+                        // `exchange_rate` : taux 1 [devise compte] = N [devise origine].
+                        "location": {"type": ["string", "null"]},
+                        "original_amount": {"type": ["number", "null"]},
+                        "original_currency": {"type": ["string", "null"]},
+                        "exchange_rate": {"type": ["number", "null"]}
                     },
                     "required": [
                         "date", "booking_date", "description", "amount",
                         "currency", "direction", "balance", "reference",
-                        "counterparty_iban"
+                        "counterparty_iban", "location", "original_amount",
+                        "original_currency", "exchange_rate"
                     ],
                     "additionalProperties": false
                 }
@@ -462,6 +486,18 @@ pub async fn ai_extract_bank_statement(
                 .get("counterparty_iban")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            location: tx
+                .get("location")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            original_amount: tx.get("original_amount").and_then(|v| v.as_f64()).map(|v| v.abs()),
+            original_currency: tx
+                .get("original_currency")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty()),
+            exchange_rate: tx.get("exchange_rate").and_then(|v| v.as_f64()),
         });
     }
 

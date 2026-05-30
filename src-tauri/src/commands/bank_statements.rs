@@ -71,7 +71,8 @@ const TX_COLUMNS: &str =
     "id, statement_id, transaction_date, booking_date, raw_description, cleaned_description,
      amount, currency, direction, reference_number, counterparty_iban,
      match_target_kind, match_target_id, match_confidence, match_rule_id, match_status,
-     review_notes, match_group_ids, created_at, updated_at";
+     review_notes, match_group_ids, created_at, updated_at,
+     location, original_amount, original_currency, exchange_rate";
 
 fn row_to_tx(row: &rusqlite::Row<'_>) -> rusqlite::Result<BankStatementTransaction> {
     Ok(BankStatementTransaction {
@@ -96,6 +97,10 @@ fn row_to_tx(row: &rusqlite::Row<'_>) -> rusqlite::Result<BankStatementTransacti
         created_at: row.get(18)?,
         updated_at: row.get(19)?,
         match_target_label: None,
+        location: row.get(20)?,
+        original_amount: row.get(21)?,
+        original_currency: row.get(22)?,
+        exchange_rate: row.get(23)?,
     })
 }
 
@@ -753,8 +758,10 @@ pub fn save_extracted_transactions(
             .execute(
                 "INSERT INTO bank_statement_transactions (id, statement_id, transaction_date,
              booking_date, raw_description, cleaned_description, amount, currency, direction,
-             reference_number, counterparty_iban, match_status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'unmatched')",
+             reference_number, counterparty_iban, match_status,
+             location, original_amount, original_currency, exchange_rate)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'unmatched',
+             ?12, ?13, ?14, ?15)",
                 rusqlite::params![
                     id,
                     statement_id,
@@ -767,6 +774,10 @@ pub fn save_extracted_transactions(
                     direction,
                     tx.reference_number,
                     tx.counterparty_iban,
+                    tx.location,
+                    tx.original_amount,
+                    tx.original_currency,
+                    tx.exchange_rate,
                 ],
             )
             .map_err(|e| e.to_string())?;
