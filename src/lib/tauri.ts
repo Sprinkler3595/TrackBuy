@@ -1237,6 +1237,10 @@ export interface BankStatementTransaction {
   created_at: string
   updated_at: string
   match_target_label?: string | null
+  location: string | null
+  original_amount: number | null
+  original_currency: string | null
+  exchange_rate: number | null
 }
 
 export interface ExtractedTransactionInput {
@@ -1248,6 +1252,10 @@ export interface ExtractedTransactionInput {
   direction: BankTxDirection
   reference_number?: string | null
   counterparty_iban?: string | null
+  location?: string | null
+  original_amount?: number | null
+  original_currency?: string | null
+  exchange_rate?: number | null
 }
 
 export interface BankMatchRule {
@@ -1277,6 +1285,10 @@ export interface ExtractedTransaction {
   direction: BankTxDirection
   reference: string | null
   counterparty_iban: string | null
+  location: string | null
+  original_amount: number | null
+  original_currency: string | null
+  exchange_rate: number | null
 }
 
 export const addBankStatement = (
@@ -1424,8 +1436,8 @@ export const updateMatchRule = (rule: BankMatchRule) =>
 export const deleteMatchRule = (id: string) =>
   invoke<void>("delete_match_rule", { id })
 
-export const aiExtractBankStatement = (text: string, config: unknown) =>
-  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config })
+export const aiExtractBankStatement = (text: string, config: unknown, bank?: string | null) =>
+  invoke<ExtractedTransaction[]>("ai_extract_bank_statement", { text, config, bank })
 
 // ===========================================================================
 // Swiss workflow (v14): household members, tax categories, QR-bill / CamT.053

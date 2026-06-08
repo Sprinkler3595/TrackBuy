@@ -70,6 +70,9 @@ TrackBuy centralise tes achats, factures, garanties, abonnements, engagements r�
 ### Banque
 - Import de relevés (PDF/OCR ou **CAMT.053** XML), extraction de transactions
 - **Rapprochement** des transactions avec achats/engagements (`suggest_matches_for_statement`, subset-sum pour commandes groupées)
+- **Reconnaissance adaptée par banque** : l'extraction IA s'ajuste à la banque du relevé via un registre de **profils** (mise en page, devise, format de date, lignes à ignorer) dans [ai.rs](src-tauri/src/commands/ai.rs). Profil générique par défaut (banques suisses : PostFinance, UBS, Raiffeisen) ; profil **Revolut** dédié, plus N26/Wise légers. Le profil est choisi par **auto-détection** sur le texte du relevé (mots-clés), ou forcé par le `bank_name` du relevé. **Ajouter une banque** = une seule entrée `BankProfile` (id, nom, mots-clés, indication de prompt) dans `BANK_PROFILES` — voir le commentaire « COMMENT AJOUTER UNE BANQUE » dans le fichier.
+- **Débit/crédit fiables par variation de solde** : pour les relevés où la colonne vide disparaît du texte (Revolut), le sens (débit/crédit) et le montant sont **recalculés en Rust** à partir des soldes successifs (`reconcile_with_balances`), plutôt que devinés par le modèle.
+- **Enrichissement par transaction** : extraction de la **localisation** (ville, depuis la ligne « À : … » sur Revolut) et des **paiements en devise étrangère** (montant d'origine, devise, taux Revolut appliqué). Stockés en base (colonnes `location`, `original_amount`, `original_currency`, `exchange_rate`) et affichés dans l'écran de revue.
 - Règles de matching réutilisables (`bank_match_rules`), création d'article/facture depuis une transaction (avec garde-fou anti-doublon)
 - **QR-facture suisse** : lecture du QR-code de paiement
 

@@ -243,6 +243,9 @@ const CITIES: &[&str] = &[
 
 /// Version pure (table intégrée uniquement) — utilisée par les tests et comme
 /// repli quand aucune règle utilisateur ne correspond.
+// Hors `cfg(test)`, seul `classify_description_with` est appelé : on tolère le
+// code mort pour ne pas polluer le build avec un warning sans intérêt.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn classify_description(desc: &str) -> Classification {
     classify_description_with(desc, &[])
 }
