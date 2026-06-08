@@ -3,13 +3,16 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::commands::auth::AppState;
-use crate::db::models::{Attachment, PendingInvoice};
+use crate::db::models::{Attachment, PendingInvoice, PendingInvoiceExtraction};
 use crate::storage;
 use crate::util::path::validate_read_source;
 
 pub(crate) const PENDING_INVOICE_SELECT_COLUMNS: &str =
     "id, label, notes, original_name, mime_type, file_path, size_bytes,
      source_bank_tx_id, expected_amount, expected_date, currency,
+     extracted_merchant, extracted_invoice_number, extracted_tax_rate,
+     extracted_price_excl_tax, extracted_warranty_months, extraction_status,
+     extracted_at, extracted_json,
      created_at, updated_at";
 
 pub(crate) fn row_to_pending_invoice(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingInvoice> {
@@ -25,8 +28,16 @@ pub(crate) fn row_to_pending_invoice(row: &rusqlite::Row<'_>) -> rusqlite::Resul
         expected_amount: row.get(8)?,
         expected_date: row.get(9)?,
         currency: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        extracted_merchant: row.get(11)?,
+        extracted_invoice_number: row.get(12)?,
+        extracted_tax_rate: row.get(13)?,
+        extracted_price_excl_tax: row.get(14)?,
+        extracted_warranty_months: row.get(15)?,
+        extraction_status: row.get(16)?,
+        extracted_at: row.get(17)?,
+        extracted_json: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
     })
 }
 
@@ -193,6 +204,69 @@ pub fn update_pending_invoice(
         .map_err(|e| e.to_string())
 }
 
+/// Persiste le résultat de la passe OCR + extraction sur un ticket de l'inbox.
+/// Écrit `expected_amount`/`expected_date`/`currency` (clés de rapprochement)
+/// + les colonnes `extracted_*`. Distincte de `update_pending_invoice` qui ne
+/// touche que label/notes (édition manuelle).
+#[tauri::command]
+pub fn set_pending_invoice_extraction(
+    state: State<'_, AppState>,
+    id: String,
+    extraction: PendingInvoiceExtraction,
+) -> Result<PendingInvoice, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let norm = |s: Option<String>| {
+        s.and_then(|v| {
+            let t = v.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+    };
+
+    let updated = conn.execute(
+        "UPDATE pending_invoices SET
+            expected_amount = ?2,
+            expected_date = ?3,
+            currency = COALESCE(?4, currency),
+            extracted_merchant = ?5,
+            extracted_invoice_number = ?6,
+            extracted_tax_rate = ?7,
+            extracted_price_excl_tax = ?8,
+            extracted_warranty_months = ?9,
+            extracted_json = ?10,
+            extraction_status = ?11,
+            extracted_at = datetime('now'),
+            updated_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![
+            id,
+            extraction.purchase_price,
+            norm(extraction.purchase_date),
+            norm(extraction.currency),
+            norm(extraction.merchant),
+            norm(extraction.invoice_number),
+            extraction.tax_rate,
+            extraction.price_excl_tax,
+            extraction.warranty_months,
+            norm(extraction.extracted_json),
+            extraction.status,
+        ],
+    ).map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Facture en attente introuvable".to_string());
+    }
+
+    let select_sql = format!(
+        "SELECT {} FROM pending_invoices WHERE id = ?1",
+        PENDING_INVOICE_SELECT_COLUMNS
+    );
+    conn.query_row(&select_sql, [&id], row_to_pending_invoice)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn delete_pending_invoice(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
@@ -287,24 +361,6 @@ pub fn attach_pending_invoice_to_item(
     let db = db_guard.as_mut().ok_or("Vault not unlocked")?;
     let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    // Read the pending row's metadata (label/notes are dropped — they were
-    // workflow helpers and don't survive the move).
-    let (pending_label, pending_original_name, pending_mime_type, pending_file_path, pending_size_bytes):
-        (Option<String>, String, String, Option<String>, i64) = conn
-        .query_row(
-            "SELECT label, original_name, mime_type, file_path, size_bytes
-             FROM pending_invoices WHERE id = ?1",
-            [&pending_invoice_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        )
-        .map_err(|e| format!("Facture en attente introuvable: {}", e))?;
-
-    // file_path is NULL for "expected invoice" rows materialized from an
-    // orphan bank transaction. There is no file to promote — the user must
-    // first upload the PDF/image into this pending row.
-    let pending_file_path = pending_file_path
-        .ok_or("Aucun fichier à attacher : importe d'abord le PDF/image dans la facture en attente")?;
-
     // Resolve order_id when caller wants the attachment shared across the
     // whole order (mirror of add_attachment's share_with_order branch).
     let (db_item_id, db_order_id): (Option<String>, Option<String>) =
@@ -324,14 +380,56 @@ pub fn attach_pending_invoice_to_item(
             (Some(item_id.clone()), None)
         };
 
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let attachment = promote_pending_invoice(
+        &tx,
+        &pending_invoice_id,
+        db_item_id,
+        db_order_id,
+        attachment_type,
+        display_name,
+    )?;
+    tx.commit().map_err(|e| format!("Commit échoué: {}", e))?;
+    Ok(attachment)
+}
+
+/// Déplace la pièce d'un `pending_invoices` vers la table `attachments`,
+/// rattachée à un article (ou partagée au niveau de l'`order`), puis supprime
+/// la ligne pending — le tout dans la transaction `tx` fournie par l'appelant
+/// (le ciphertext sur disque n'est pas touché). Partagé entre
+/// `attach_pending_invoice_to_item` et `book_item_from_receipt_match`.
+pub(crate) fn promote_pending_invoice(
+    tx: &rusqlite::Transaction<'_>,
+    pending_invoice_id: &str,
+    db_item_id: Option<String>,
+    db_order_id: Option<String>,
+    attachment_type: Option<String>,
+    display_name: Option<String>,
+) -> Result<Attachment, String> {
+    // Read the pending row's metadata (label/notes are dropped — they were
+    // workflow helpers and don't survive the move).
+    let (pending_label, pending_original_name, pending_mime_type, pending_file_path, pending_size_bytes):
+        (Option<String>, String, String, Option<String>, i64) = tx
+        .query_row(
+            "SELECT label, original_name, mime_type, file_path, size_bytes
+             FROM pending_invoices WHERE id = ?1",
+            [&pending_invoice_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .map_err(|e| format!("Facture en attente introuvable: {}", e))?;
+
+    // file_path is NULL for "expected invoice" rows materialized from an
+    // orphan bank transaction. There is no file to promote — the user must
+    // first upload the PDF/image into this pending row.
+    let pending_file_path = pending_file_path
+        .ok_or("Aucun fichier à attacher : importe d'abord le PDF/image dans la facture en attente")?;
+
     let new_id = Uuid::new_v4().to_string();
     let att_type = attachment_type.unwrap_or_else(|| "invoice".to_string());
     let display = display_name
         .filter(|s| !s.trim().is_empty())
         .or(pending_label.filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| pending_original_name.clone());
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     tx.execute(
         "INSERT INTO attachments (id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
@@ -348,10 +446,8 @@ pub fn attach_pending_invoice_to_item(
         [&pending_invoice_id],
     ).map_err(|e| format!("Suppression facture en attente échouée: {}", e))?;
 
-    tx.commit().map_err(|e| format!("Commit échoué: {}", e))?;
-
     // Read back the freshly-inserted row to return a complete Attachment.
-    conn.query_row(
+    tx.query_row(
         "SELECT id, item_id, order_id, subscription_id, engagement_id, engagement_charge_id,
                 engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
                 original_name, display_name, mime_type, file_path,

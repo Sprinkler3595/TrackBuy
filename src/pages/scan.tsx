@@ -42,7 +42,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { useI18n } from "@/lib/i18n"
-import { getAiSettings } from "@/lib/ai-settings"
+import { getAiSettings, type AiSettings } from "@/lib/ai-settings"
 import * as api from "@/lib/tauri"
 
 // Configure PDF.js worker (local bundle, no CDN)
@@ -441,6 +441,103 @@ async function pdfToImages(source: ArrayBuffer | string): Promise<string[]> {
   return images
 }
 
+/** Sentinel thrown by extractReceiptFromImages when OCR traineddata is absent. */
+const OCR_TESSDATA_MISSING = "OCR_TESSDATA_MISSING"
+
+/**
+ * Cœur OCR + extraction réutilisable : crée un worker Tesseract, prétraite puis
+ * reconnaît chaque page, lance le parseur regex (toujours) et l'extraction IA
+ * (si activée). Partagé entre le scan interactif (`runOcr`) et la passe
+ * d'extraction automatique au dépôt d'un ticket dans l'inbox.
+ */
+async function extractReceiptFromImages(
+  pages: string[],
+  aiSettings: AiSettings,
+  opts: { onProgress?: (pct: number) => void; onAiError?: (err: unknown) => void } = {},
+): Promise<ParsedReceipt> {
+  if (pages.length === 0) throw new Error("Aucune page à analyser")
+
+  // Probe the language file first so a missing traineddata surfaces as an
+  // actionable error rather than Tesseract's generic "Failed to load".
+  try {
+    const probe = await fetch(`${TESSERACT_OPTIONS.langPath}/fra.traineddata`, { method: "HEAD" })
+    if (!probe.ok) throw new Error(`HTTP ${probe.status}`)
+  } catch {
+    throw new Error(OCR_TESSDATA_MISSING)
+  }
+
+  let worker: Tesseract.Worker | null = null
+  let currentPage = 0
+  try {
+    worker = await Tesseract.createWorker(["fra", "eng"], Tesseract.OEM.LSTM_ONLY, {
+      workerPath: TESSERACT_OPTIONS.workerPath,
+      corePath: TESSERACT_OPTIONS.corePath,
+      langPath: TESSERACT_OPTIONS.langPath,
+      gzip: false,
+      logger: (m) => {
+        if (m.status === "recognizing text" && typeof m.progress === "number") {
+          opts.onProgress?.(Math.round(((currentPage + m.progress) / pages.length) * 100))
+        }
+      },
+    })
+    await worker.setParameters({
+      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: "1",
+    })
+
+    let fullText = ""
+    for (let i = 0; i < pages.length; i++) {
+      currentPage = i
+      const preprocessed = await preprocessImage(pages[i]).catch(() => pages[i])
+      const { data } = await worker.recognize(preprocessed)
+      fullText += data.text + "\n"
+    }
+    opts.onProgress?.(100)
+
+    let parsed: ParsedReceipt = parseReceiptText(fullText)
+    if (aiSettings.enabled) {
+      try {
+        const extracted = await api.aiExtractReceipt(fullText, aiSettings)
+        parsed = aiToParsed(extracted, fullText)
+      } catch (aiErr) {
+        console.warn("AI extraction failed, falling back to regex parser", aiErr)
+        opts.onAiError?.(aiErr)
+      }
+    }
+    return parsed
+  } finally {
+    if (worker) {
+      try { await worker.terminate() } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Read a Blob as a base64 data URL (for feeding images into the OCR pipeline). */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+}
+
+/** Map a parsed receipt to the extraction payload persisted on a pending invoice. */
+function parsedToExtraction(p: ParsedReceipt): api.PendingInvoiceExtraction {
+  return {
+    merchant: p.merchant || null,
+    purchase_date: p.date || null,
+    purchase_price: p.total,
+    currency: p.currency,
+    invoice_number: p.invoiceNumber,
+    tax_rate: p.taxRate,
+    price_excl_tax: p.priceExclTax,
+    warranty_months: p.warrantyMonths,
+    extracted_json: JSON.stringify(p),
+    status: "extracted",
+  }
+}
+
 type ScanStatus = "idle" | "scanning" | "done" | "error"
 
 export function ScanPage() {
@@ -472,6 +569,8 @@ export function ScanPage() {
   const [editNotes, setEditNotes] = useState("")
   const [confirmDeletePending, setConfirmDeletePending] = useState<api.PendingInvoice | null>(null)
   const [resumingId, setResumingId] = useState<string | null>(null)
+  // Pending invoices whose OCR + extraction pass is currently running.
+  const [extractingIds, setExtractingIds] = useState<Set<string>>(new Set())
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { toast } = useToast()
@@ -608,73 +707,72 @@ export function ScanPage() {
     const pages = isPdf && pdfPageImages.length > 0 ? pdfPageImages : (previewUrl ? [previewUrl] : [])
     if (pages.length === 0) return
 
-    let worker: Tesseract.Worker | null = null
-    let currentPage = 0
     try {
-      // Tesseract.createWorker reports any 404 as a generic "Failed to load"
-      // which is hopeless for a user. Probe the language file first so we
-      // can show an actionable message pointing at `npm run fetch-tessdata`.
-      try {
-        const probe = await fetch(`${TESSERACT_OPTIONS.langPath}/fra.traineddata`, { method: "HEAD" })
-        if (!probe.ok) throw new Error(`HTTP ${probe.status}`)
-      } catch {
+      const parsed = await extractReceiptFromImages(pages, getAiSettings(), {
+        onProgress: setProgress,
+        onAiError: (aiErr) => toast(`IA indisponible: ${aiErr}`, "error"),
+      })
+      setResult(parsed)
+      setSelectedItems(new Set(parsed.items.map((_, i) => i)))
+      setStatus("done")
+      toast(t("scan.scanComplete"), "success")
+    } catch (err) {
+      if (String(err).includes(OCR_TESSDATA_MISSING)) {
         const msg = "Données OCR absentes. Lancez `npm run fetch-tessdata` puis redémarrez l'application."
         setError(msg)
         setStatus("error")
         toast(msg, "error")
         return
       }
-      worker = await Tesseract.createWorker(["fra", "eng"], Tesseract.OEM.LSTM_ONLY, {
-        workerPath: TESSERACT_OPTIONS.workerPath,
-        corePath: TESSERACT_OPTIONS.corePath,
-        langPath: TESSERACT_OPTIONS.langPath,
-        gzip: false,
-        logger: (m) => {
-          if (m.status === "recognizing text" && typeof m.progress === "number") {
-            const overall = (currentPage + m.progress) / pages.length
-            setProgress(Math.round(overall * 100))
-          }
-        },
-      })
-      // PSM 6 = single uniform block of text (better than auto-3 for receipts where
-      // columns are tight). preserve_interword_spaces keeps the gap between the
-      // description column and the price column intact for the LLM to disambiguate.
-      await worker.setParameters({
-        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-        preserve_interword_spaces: "1",
-      })
-
-      let fullText = ""
-      for (let i = 0; i < pages.length; i++) {
-        currentPage = i
-        const preprocessed = await preprocessImage(pages[i]).catch(() => pages[i])
-        const { data } = await worker.recognize(preprocessed)
-        fullText += data.text + "\n"
-      }
-      setProgress(100)
-
-      const aiSettings = getAiSettings()
-      let parsed: ParsedReceipt = parseReceiptText(fullText)
-      if (aiSettings.enabled) {
-        try {
-          const extracted = await api.aiExtractReceipt(fullText, aiSettings)
-          parsed = aiToParsed(extracted, fullText)
-        } catch (aiErr) {
-          console.warn("AI extraction failed, falling back to regex parser", aiErr)
-          toast(`IA indisponible: ${aiErr}`, "error")
-        }
-      }
-      setResult(parsed)
-      setSelectedItems(new Set(parsed.items.map((_, i) => i)))
-      setStatus("done")
-      toast(t("scan.scanComplete"), "success")
-    } catch (err) {
       setError(String(err))
       setStatus("error")
       toast(t("scan.scanError"), "error")
-    } finally {
-      if (worker) {
-        try { await worker.terminate() } catch { /* ignore */ }
+    }
+  }
+
+  // Background extraction: after a receipt is dropped into the inbox, OCR +
+  // extract it so it carries merchant/amount/date and can be matched to a bank
+  // line later. Runs sequentially (Tesseract is heavy) and never touches the
+  // interactive scan state — only `extractingIds` for the per-row spinner.
+  const runBackgroundExtraction = async (invoices: api.PendingInvoice[]) => {
+    const targets = invoices.filter((inv) => inv.file_path !== null)
+    if (targets.length === 0) return
+    const aiSettings = getAiSettings()
+    for (const inv of targets) {
+      setExtractingIds((prev) => new Set(prev).add(inv.id))
+      try {
+        const dataUrl = await api.getPendingInvoiceData(inv.id)
+        const commaIdx = dataUrl.indexOf(",")
+        const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl
+        const bytes = base64ToBytes(b64)
+        const buf = bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ) as ArrayBuffer
+        const isFilePdf = inv.mime_type === "application/pdf"
+          || inv.original_name.toLowerCase().endsWith(".pdf")
+        const pages = isFilePdf
+          ? await pdfToImages(buf)
+          : [await blobToDataUrl(new Blob([buf], { type: inv.mime_type }))]
+
+        const parsed = await extractReceiptFromImages(pages, aiSettings)
+        await api.setPendingInvoiceExtraction(inv.id, parsedToExtraction(parsed))
+      } catch (err) {
+        console.warn("Extraction du ticket échouée", inv.id, err)
+        try {
+          await api.setPendingInvoiceExtraction(inv.id, {
+            merchant: null, purchase_date: null, purchase_price: null, currency: null,
+            invoice_number: null, tax_rate: null, price_excl_tax: null,
+            warranty_months: null, extracted_json: null, status: "failed",
+          })
+        } catch { /* ignore */ }
+      } finally {
+        setExtractingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(inv.id)
+          return next
+        })
+        await reloadPending()
       }
     }
   }
@@ -804,14 +902,16 @@ export function ScanPage() {
     if (!filePath) return
     setSavingPending(true)
     try {
-      await api.addPendingInvoice(
+      const created = await api.addPendingInvoice(
         filePath,
         savePendingLabel.trim() || null,
         savePendingNotes.trim() || null,
       )
-      toast("Facture mise en attente", "success")
+      toast("Facture mise en attente — extraction en cours…", "success")
       resetFile()
       await reloadPending()
+      // Fire-and-forget OCR + extraction so the ticket becomes matchable.
+      void runBackgroundExtraction([created])
     } catch (err) {
       toast(`Échec de la mise en attente: ${err}`, "error")
     } finally {
@@ -837,11 +937,13 @@ export function ScanPage() {
       const created = await api.addPendingInvoicesBatch(paths)
       const failed = paths.length - created.length
       if (failed === 0) {
-        toast(`${created.length} facture${created.length > 1 ? "s" : ""} en attente`, "success")
+        toast(`${created.length} facture${created.length > 1 ? "s" : ""} en attente — extraction en cours…`, "success")
       } else {
         toast(`${created.length}/${paths.length} importée(s) — ${failed} échec(s)`, "error")
       }
       await reloadPending()
+      // Fire-and-forget OCR + extraction so the tickets become matchable.
+      void runBackgroundExtraction(created)
     } catch (err) {
       toast(`Import impossible: ${err}`, "error")
     }
@@ -1001,6 +1103,9 @@ export function ScanPage() {
                 const Icon = isImage ? ImageIcon : FileText
                 const displayName = inv.label || inv.original_name
                 const isResuming = resumingId === inv.id
+                const isExtracting = extractingIds.has(inv.id) || inv.extraction_status === "pending"
+                const hasExtracted = inv.extraction_status === "extracted"
+                const extractionFailed = inv.extraction_status === "failed"
                 return (
                   <li key={inv.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
@@ -1029,6 +1134,38 @@ export function ScanPage() {
                           {inv.notes}
                         </p>
                       )}
+                      {/* Données extraites + statut de l'extraction OCR. */}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        {isExtracting ? (
+                          <Badge variant="secondary" className="gap-1">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Extraction…
+                          </Badge>
+                        ) : extractionFailed ? (
+                          <Badge variant="outline" className="text-amber-600 border-amber-500/40">
+                            Extraction échouée
+                          </Badge>
+                        ) : hasExtracted ? (
+                          <>
+                            {inv.extracted_merchant && (
+                              <Badge variant="secondary">{inv.extracted_merchant}</Badge>
+                            )}
+                            {inv.expected_amount !== null && (
+                              <Badge variant="outline">
+                                {inv.expected_amount.toFixed(2)} {inv.currency ?? "CHF"}
+                              </Badge>
+                            )}
+                            {inv.expected_date && (
+                              <Badge variant="outline">{inv.expected_date}</Badge>
+                            )}
+                            {!inv.extracted_merchant && inv.expected_amount === null && (
+                              <Badge variant="outline" className="text-muted-foreground">
+                                Rien d'exploitable
+                              </Badge>
+                            )}
+                          </>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="flex shrink-0 gap-1">
                       <Button
@@ -1043,6 +1180,21 @@ export function ScanPage() {
                         )}
                         Scanner
                       </Button>
+                      {!hasExtracted && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => void runBackgroundExtraction([inv])}
+                          disabled={isExtracting}
+                          title="Ré-extraire (OCR)"
+                        >
+                          {isExtracting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                      )}
                       <Button
                         size="icon"
                         variant="ghost"

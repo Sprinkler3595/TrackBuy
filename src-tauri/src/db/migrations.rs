@@ -1221,23 +1221,31 @@ fn migrate_v16(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+// v17 — Auto-extraction des tickets stockés. On OCR'ise/extrait chaque reçu
+// déposé dans l'inbox pour qu'il porte marchand/montant/date exploitables, afin
+// que `suggest_matches_for_statement` puisse le proposer comme correspondance
+// d'une transaction bancaire. Les colonnes `expected_amount`/`expected_date`/
+// `currency` (ajoutées en v13) servent de clés de rapprochement canoniques ; les
+// `extracted_*` portent le reste des champs lus sur le ticket.
 fn migrate_v17(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
-        -- Enrichissement par transaction extraite : localisation et paiement en
-        -- devise étrangère. Renseigné surtout pour les relevés Revolut, où la
-        -- ligne « À : … » porte la ville et où un paiement à l'étranger affiche
-        -- le montant d'origine et le taux de change appliqué.
-        --   location           : ville/lieu (ex. « Lausanne », « Dublin »).
-        --   original_amount     : montant dans la devise d'origine (ex. 23.00).
-        --   original_currency   : devise d'origine (ex. « EUR », « USD »).
-        --   exchange_rate       : taux appliqué, exprimé comme 1 [devise compte]
-        --                         = N [devise origine] (ex. 1.10 pour 1 CHF = 1,10 €).
-        -- Toutes NULL pour une transaction sans info correspondante.
-        ALTER TABLE bank_statement_transactions ADD COLUMN location TEXT;
-        ALTER TABLE bank_statement_transactions ADD COLUMN original_amount REAL;
-        ALTER TABLE bank_statement_transactions ADD COLUMN original_currency TEXT;
-        ALTER TABLE bank_statement_transactions ADD COLUMN exchange_rate REAL;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_merchant TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_invoice_number TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_tax_rate REAL;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_price_excl_tax REAL;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_warranty_months INTEGER;
+        -- NULL | 'pending' | 'extracted' | 'failed'
+        ALTER TABLE pending_invoices ADD COLUMN extraction_status TEXT;
+        ALTER TABLE pending_invoices ADD COLUMN extracted_at TEXT;
+        -- ExtractedReceipt sérialisé (conserve les lignes multi-articles pour un
+        -- futur 'éclater en plusieurs articles').
+        ALTER TABLE pending_invoices ADD COLUMN extracted_json TEXT;
+
+        -- Accélère le scan des candidats dans load_pending_invoice_candidates
+        -- (reçus avec un montant attendu dans une fenêtre de dates).
+        CREATE INDEX idx_pending_invoices_expected
+            ON pending_invoices(expected_date, expected_amount);
 
         INSERT INTO schema_version (version) VALUES (17);
         "
