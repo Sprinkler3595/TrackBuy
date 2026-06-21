@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 21;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -93,6 +93,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 21 {
         migrate_v21(conn)?;
+    }
+    if current_version < 22 {
+        migrate_v22(conn)?;
     }
 
     Ok(())
@@ -1422,6 +1425,33 @@ fn migrate_v21(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (21);
         "
     ).map_err(|e| format!("Migration v21 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Car insurance specifics for `engagement_type='insurance_car'`. Reuses the
+/// generic `vehicle_*` columns (v20) for the insured vehicle, and adds:
+///   - insurance_coverage        : 'rc' | 'partial_casco' | 'full_casco'.
+///   - insurance_franchise_casco : collision/full-casco deductible (CHF).
+///   - insurance_franchise_partial: partial-casco deductible (CHF).
+///   - insurance_bonus_pct       : no-claims bonus level (% of base premium).
+///   - insurance_options_json    : JSON array of extra-coverage slugs (parking
+///                                 damage, bonus protection, passengers, legal
+///                                 protection, assistance, new value…). Stored
+///                                 opaque — the backend never parses it.
+/// All NULL for non-insurance engagements.
+fn migrate_v22(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN insurance_coverage TEXT;
+        ALTER TABLE engagements ADD COLUMN insurance_franchise_casco REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_franchise_partial REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_bonus_pct REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_options_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (22);
+        "
+    ).map_err(|e| format!("Migration v22 failed: {}", e))?;
 
     Ok(())
 }

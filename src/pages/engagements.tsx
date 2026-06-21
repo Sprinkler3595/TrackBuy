@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, Layers, X } from "lucide-react"
+import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, Layers, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -17,6 +17,7 @@ import { ClausesEditor } from "@/components/features/clauses-editor"
 import { CancellationLetterModal } from "@/components/features/cancellation-letter"
 import { RentWizard } from "@/components/features/rent-wizard"
 import { LeasingWizard } from "@/components/features/leasing-wizard"
+import { CarInsuranceWizard } from "@/components/features/car-insurance-wizard"
 import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { AlarmClock } from "lucide-react"
 import * as api from "@/lib/tauri"
@@ -130,6 +131,7 @@ export function EngagementsPage() {
   const [showChooser, setShowChooser] = useState(false)
   const [showRentWizard, setShowRentWizard] = useState(false)
   const [showLeasingWizard, setShowLeasingWizard] = useState(false)
+  const [showCarInsuranceWizard, setShowCarInsuranceWizard] = useState(false)
   const { toast } = useToast()
 
   // Parking number/type only make sense for the "parking" type.
@@ -803,6 +805,18 @@ export function EngagementsPage() {
               </button>
               <button
                 className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); setShowCarInsuranceWizard(true) }}
+              >
+                <span className="rounded-lg bg-primary/10 p-2 text-primary"><ShieldCheck className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Assurance véhicule" : "Vehicle insurance"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Assistant guidé : RC/casco, franchises, options" : "Guided assistant: liability/casco, deductibles, options"}
+                  </span>
+                </span>
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
                 onClick={() => { setShowChooser(false); resetForm(); setShowForm(true) }}
               >
                 <span className="rounded-lg bg-muted p-2 text-muted-foreground"><Layers className="h-5 w-5" /></span>
@@ -831,6 +845,15 @@ export function EngagementsPage() {
           creditors={creditors}
           cards={cards}
           onClose={() => { setShowLeasingWizard(false); load() }}
+        />
+      )}
+
+      {showCarInsuranceWizard && (
+        <CarInsuranceWizard
+          creditors={creditors}
+          cards={cards}
+          engagements={engagements}
+          onClose={() => { setShowCarInsuranceWizard(false); load() }}
         />
       )}
     </div>

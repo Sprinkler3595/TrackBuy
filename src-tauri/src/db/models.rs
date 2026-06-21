@@ -392,6 +392,14 @@ pub struct Engagement {
     pub leasing_excess_km_cost: Option<f64>,
     /// Commercial discount / accepted offer, deducted from the down payment.
     pub leasing_discount: Option<f64>,
+    // Car insurance specifics (engagement_type='insurance_car'); NULL otherwise. v22.
+    /// 'rc' | 'partial_casco' | 'full_casco'.
+    pub insurance_coverage: Option<String>,
+    pub insurance_franchise_casco: Option<f64>,
+    pub insurance_franchise_partial: Option<f64>,
+    pub insurance_bonus_pct: Option<f64>,
+    /// JSON array of extra-coverage slugs; stored opaque.
+    pub insurance_options_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -441,6 +449,12 @@ pub struct CreateEngagementRequest {
     pub leasing_annual_mileage_km: Option<i32>,
     pub leasing_excess_km_cost: Option<f64>,
     pub leasing_discount: Option<f64>,
+    // Car insurance specifics (see Engagement). Optional on create/update.
+    pub insurance_coverage: Option<String>,
+    pub insurance_franchise_casco: Option<f64>,
+    pub insurance_franchise_partial: Option<f64>,
+    pub insurance_bonus_pct: Option<f64>,
+    pub insurance_options_json: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

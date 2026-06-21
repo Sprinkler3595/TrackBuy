@@ -18,6 +18,8 @@ const ENG_SELECT_COLUMNS: &str =
      e.leasing_vehicle_price, e.leasing_duration_months, e.leasing_down_payment,
      e.leasing_residual_value, e.leasing_interest_rate_pct, e.leasing_annual_mileage_km,
      e.leasing_excess_km_cost, e.leasing_discount,
+     e.insurance_coverage, e.insurance_franchise_casco, e.insurance_franchise_partial,
+     e.insurance_bonus_pct, e.insurance_options_json,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -64,11 +66,16 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         leasing_annual_mileage_km: row.get(33)?,
         leasing_excess_km_cost: row.get(34)?,
         leasing_discount: row.get(35)?,
-        created_at: row.get(36)?,
-        updated_at: row.get(37)?,
-        creditor_name: row.get(38)?,
-        card_name: row.get(39)?,
-        parent_name: row.get(40)?,
+        insurance_coverage: row.get(36)?,
+        insurance_franchise_casco: row.get(37)?,
+        insurance_franchise_partial: row.get(38)?,
+        insurance_bonus_pct: row.get(39)?,
+        insurance_options_json: row.get(40)?,
+        created_at: row.get(41)?,
+        updated_at: row.get(42)?,
+        creditor_name: row.get(43)?,
+        card_name: row.get(44)?,
+        parent_name: row.get(45)?,
     })
 }
 
@@ -353,9 +360,12 @@ pub fn create_engagement(
          vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
          leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
          leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
-         leasing_excess_km_cost, leasing_discount)
+         leasing_excess_km_cost, leasing_discount,
+         insurance_coverage, insurance_franchise_casco, insurance_franchise_partial,
+         insurance_bonus_pct, insurance_options_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                 ?36, ?37, ?38, ?39, ?40)",
         rusqlite::params![
             id,
             engagement.name,
@@ -392,6 +402,11 @@ pub fn create_engagement(
             engagement.leasing_annual_mileage_km,
             engagement.leasing_excess_km_cost,
             engagement.leasing_discount,
+            engagement.insurance_coverage,
+            engagement.insurance_franchise_casco,
+            engagement.insurance_franchise_partial,
+            engagement.insurance_bonus_pct,
+            engagement.insurance_options_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -426,8 +441,10 @@ pub fn update_engagement(
          leasing_duration_months = ?29, leasing_down_payment = ?30, leasing_residual_value = ?31,
          leasing_interest_rate_pct = ?32, leasing_annual_mileage_km = ?33, leasing_excess_km_cost = ?34,
          leasing_discount = ?35,
+         insurance_coverage = ?36, insurance_franchise_casco = ?37,
+         insurance_franchise_partial = ?38, insurance_bonus_pct = ?39, insurance_options_json = ?40,
          updated_at = datetime('now')
-         WHERE id = ?36",
+         WHERE id = ?41",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -464,6 +481,11 @@ pub fn update_engagement(
             engagement.leasing_annual_mileage_km,
             engagement.leasing_excess_km_cost,
             engagement.leasing_discount,
+            engagement.insurance_coverage,
+            engagement.insurance_franchise_casco,
+            engagement.insurance_franchise_partial,
+            engagement.insurance_bonus_pct,
+            engagement.insurance_options_json,
             engagement.id,
         ],
     )
@@ -1030,5 +1052,36 @@ mod tests {
         assert_eq!(eng.leasing_annual_mileage_km, Some(15000));
         assert_eq!(eng.leasing_excess_km_cost, Some(0.25));
         assert_eq!(eng.leasing_discount, Some(2000.0));
+    }
+
+    /// Guards the column-index alignment for the v22 car-insurance fields.
+    #[test]
+    fn row_to_engagement_mappe_les_champs_dassurance() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements
+             (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
+              vehicle_plate, insurance_coverage, insurance_franchise_casco,
+              insurance_franchise_partial, insurance_bonus_pct, insurance_options_json)
+             VALUES ('e1','Assurance auto','insurance_car','yearly',1,'CHF',0,'active',
+                     'VD 123456','full_casco', 1000.0, 200.0, 45.0,
+                     '[\"parking_damage\",\"bonus_protection\"]')",
+            [],
+        ).unwrap();
+
+        let sql = format!(
+            "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+            ENG_SELECT_COLUMNS, ENG_JOINS
+        );
+        let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
+
+        assert_eq!(eng.engagement_type, "insurance_car");
+        assert_eq!(eng.vehicle_plate.as_deref(), Some("VD 123456"));
+        assert_eq!(eng.insurance_coverage.as_deref(), Some("full_casco"));
+        assert_eq!(eng.insurance_franchise_casco, Some(1000.0));
+        assert_eq!(eng.insurance_franchise_partial, Some(200.0));
+        assert_eq!(eng.insurance_bonus_pct, Some(45.0));
+        assert_eq!(eng.insurance_options_json.as_deref(), Some("[\"parking_damage\",\"bonus_protection\"]"));
     }
 }

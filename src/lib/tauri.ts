@@ -592,6 +592,13 @@ export interface Engagement {
   leasing_annual_mileage_km: number | null
   leasing_excess_km_cost: number | null
   leasing_discount: number | null
+  // Car insurance specifics (engagement_type 'insurance_car'); null otherwise.
+  insurance_coverage: CarInsuranceCoverage | null
+  insurance_franchise_casco: number | null
+  insurance_franchise_partial: number | null
+  insurance_bonus_pct: number | null
+  /// JSON array of extra-coverage slugs (see CAR_INSURANCE_OPTIONS).
+  insurance_options_json: string | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -601,6 +608,9 @@ export interface Engagement {
 
 // Parking spot location, for parking engagements (usually a child of a rent).
 export type ParkingKind = "outdoor" | "collective_garage" | "box"
+
+// Car insurance coverage level: RC only, RC + partial casco, RC + full casco.
+export type CarInsuranceCoverage = "rc" | "partial_casco" | "full_casco"
 
 export interface EngagementCharge {
   id: string
@@ -706,6 +716,11 @@ export const createEngagement = (engagement: {
   leasing_annual_mileage_km?: number | null
   leasing_excess_km_cost?: number | null
   leasing_discount?: number | null
+  insurance_coverage?: CarInsuranceCoverage | null
+  insurance_franchise_casco?: number | null
+  insurance_franchise_partial?: number | null
+  insurance_bonus_pct?: number | null
+  insurance_options_json?: string | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>
