@@ -1,5 +1,5 @@
 import { useContext, useState } from "react"
-import { Home, Car, FileText, X, ChevronLeft, ChevronRight, Check } from "lucide-react"
+import { Home, Car, FileText, X, ChevronLeft, ChevronRight, Check, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/toast"
@@ -60,6 +60,29 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
   const [saving, setSaving] = useState(false)
   const [createdRentId, setCreatedRentId] = useState<string | null>(null)
   const [createdRentName, setCreatedRentName] = useState("")
+
+  // Local copy so a landlord created inline shows up immediately in the select.
+  const [creditorList, setCreditorList] = useState<api.Creditor[]>(creditors)
+  const [creatingCreditor, setCreatingCreditor] = useState(false)
+  const [newCreditorName, setNewCreditorName] = useState("")
+  const [savingCreditor, setSavingCreditor] = useState(false)
+
+  async function addCreditor() {
+    const nm = newCreditorName.trim()
+    if (!nm) return
+    setSavingCreditor(true)
+    try {
+      const c = await api.createCreditor({ name: nm, creditor_type: "landlord" })
+      setCreditorList((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      setCreditorId(c.id)
+      setCreatingCreditor(false)
+      setNewCreditorName("")
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+    } finally {
+      setSavingCreditor(false)
+    }
+  }
 
   // Step 1 — apartment lease.
   const [name, setName] = useState(fr ? "Loyer appartement" : "Apartment rent")
@@ -186,10 +209,31 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Bailleur / régie" : "Landlord / agency"}</label>
-                <select className={fieldCls} value={creditorId} onChange={(e) => setCreditorId(e.target.value)}>
-                  <option value="">—</option>
-                  {creditors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                {creatingCreditor ? (
+                  <div className="flex gap-2">
+                    <Input autoFocus value={newCreditorName} onChange={(e) => setNewCreditorName(e.target.value)}
+                      placeholder={fr ? "Nom du bailleur" : "Landlord name"}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCreditor() } }} />
+                    <Button type="button" size="sm" onClick={addCreditor} disabled={savingCreditor || !newCreditorName.trim()}>
+                      {fr ? "Ajouter" : "Add"}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost"
+                      onClick={() => { setCreatingCreditor(false); setNewCreditorName("") }}>
+                      {fr ? "Annuler" : "Cancel"}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <select className={fieldCls} value={creditorId} onChange={(e) => setCreditorId(e.target.value)}>
+                      <option value="">—</option>
+                      {creditorList.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                    <Button type="button" variant="outline" size="icon"
+                      title={fr ? "Nouveau bailleur" : "New landlord"} onClick={() => setCreatingCreditor(true)}>
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Compte / carte" : "Account / card"}</label>
