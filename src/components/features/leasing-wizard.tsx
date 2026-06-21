@@ -56,7 +56,7 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const fr = locale === "fr"
   const { toast } = useToast()
 
-  const [step, setStep] = useState<1 | 2 | 3>(1)
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1)
   const [saving, setSaving] = useState(false)
   const [createdId, setCreatedId] = useState<string | null>(null)
   const [createdName, setCreatedName] = useState("")
@@ -78,6 +78,16 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
     try {
       const c = await api.createCard({ name, is_credit_card: false })
       setCardList((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+      return null
+    }
+  }
+  async function createInsurer(name: string): Promise<api.Creditor | null> {
+    try {
+      const c = await api.createCreditor({ name, creditor_type: "insurer" })
+      setCreditorList((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
       return c
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
@@ -110,9 +120,19 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const [excessKm, setExcessKm] = useState("")
   const [payMethod, setPayMethod] = useState<api.EngagementPaymentMethod>("direct_debit")
 
+  // Step 3 — mandatory comprehensive insurance (casco), created as a child of
+  // the leasing. On by default since it's compulsory for the whole term.
+  const [addInsurance, setAddInsurance] = useState(true)
+  const [insurerId, setInsurerId] = useState("")
+  const [insurancePremium, setInsurancePremium] = useState("")
+  const [insuranceCycle, setInsuranceCycle] = useState<api.EngagementBillingCycle>("yearly")
+
   const monthlyValue = parseFloat(monthly)
+  const insurancePremiumValue = parseFloat(insurancePremium)
   const step1Valid = name.trim().length > 0
   const step2Valid = !Number.isNaN(monthlyValue) && monthlyValue > 0
+  // The insurance step only blocks if the user opted in but left the premium empty/invalid.
+  const step3Valid = !addInsurance || (!Number.isNaN(insurancePremiumValue) && insurancePremiumValue > 0)
 
   // Net up-front payment once an accepted offer/discount (e.g. a Tesla rebate)
   // is deducted from the gross down payment.
@@ -155,9 +175,29 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         leasing_excess_km_cost: numOrNull(excessKm),
         leasing_discount: numOrNull(discount),
       })
+
+      // Mandatory casco insurance, linked as a child engagement of the leasing.
+      if (addInsurance && !Number.isNaN(insurancePremiumValue) && insurancePremiumValue > 0) {
+        await api.createEngagement({
+          name: fr ? "Assurance véhicule (casco)" : "Vehicle insurance (casco)",
+          engagement_type: "insurance_car",
+          parent_engagement_id: eng.id,
+          creditor_id: insurerId || null,
+          payment_card_id: cardId || null,
+          billing_cycle: insuranceCycle,
+          cycle_interval: 1,
+          next_due_date: nextDue || null,
+          current_amount: insurancePremiumValue,
+          currency: "CHF",
+          payment_method: payMethod,
+          auto_pay: payMethod === "direct_debit" || payMethod === "standing_order",
+          status: "active",
+        })
+      }
+
       setCreatedId(eng.id)
       setCreatedName(eng.name)
-      setStep(3)
+      setStep(4)
       toast(fr ? "Leasing créé. Ajoutez maintenant vos documents." : "Leasing created. Now add your documents.", "success")
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
@@ -169,6 +209,7 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const stepTitle =
     step === 1 ? (fr ? "Le véhicule" : "The vehicle") :
     step === 2 ? (fr ? "Le contrat de leasing" : "The leasing contract") :
+    step === 3 ? (fr ? "Assurance casco (obligatoire)" : "Comprehensive insurance (mandatory)") :
                  (fr ? "Documents" : "Documents")
 
   const fieldCls = "w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -180,12 +221,12 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         <div className="flex items-start justify-between gap-4 border-b p-6">
           <div className="flex items-start gap-3">
             <div className="rounded-lg bg-primary/10 p-2 text-primary">
-              {step === 3 ? <FileText className="h-5 w-5" /> : <Car className="h-5 w-5" />}
+              {step === 4 ? <FileText className="h-5 w-5" /> : step === 3 ? <ShieldAlert className="h-5 w-5" /> : <Car className="h-5 w-5" />}
             </div>
             <div>
               <h2 className="text-lg font-semibold">{fr ? "Nouveau leasing" : "New leasing"}</h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {fr ? "Étape" : "Step"} {step}/3 — {stepTitle}
+                {fr ? "Étape" : "Step"} {step}/4 — {stepTitle}
               </p>
             </div>
           </div>
@@ -307,16 +348,66 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
             </div>
           )}
 
-          {step === 3 && createdId && (
+          {step === 3 && (
             <div className="space-y-4">
               <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   {fr
-                    ? "Rappel : l'assurance casco complète est obligatoire pendant toute la durée du leasing. Vous pourrez la créer comme « assurance véhicule » séparée."
-                    : "Reminder: full comprehensive insurance (casco) is mandatory for the whole leasing term. You can add it as a separate “vehicle insurance”."}
+                    ? "L'assurance casco complète est obligatoire pendant toute la durée du leasing. On la crée et on la lie au leasing."
+                    : "Full comprehensive insurance (casco) is mandatory for the whole leasing term. We create it and link it to the leasing."}
                 </span>
               </div>
+
+              <label className="flex items-center gap-3 rounded-lg border p-3 hover:bg-accent/40">
+                <input type="checkbox" checked={addInsurance} onChange={(e) => setAddInsurance(e.target.checked)} />
+                <span className="text-sm font-medium">
+                  {fr ? "Créer l'assurance casco liée à ce véhicule" : "Create the casco insurance linked to this vehicle"}
+                </span>
+              </label>
+
+              {addInsurance ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{fr ? "Prime (CHF)" : "Premium (CHF)"} *</label>
+                    <Input type="number" min="0" step="0.01" value={insurancePremium}
+                      onChange={(e) => setInsurancePremium(e.target.value)} placeholder="0.00" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">{fr ? "Périodicité" : "Frequency"}</label>
+                    <select className={fieldCls} value={insuranceCycle}
+                      onChange={(e) => setInsuranceCycle(e.target.value as api.EngagementBillingCycle)}>
+                      <option value="yearly">{fr ? "Annuel" : "Yearly"}</option>
+                      <option value="semiannual">{fr ? "Semestriel" : "Half-yearly"}</option>
+                      <option value="quarterly">{fr ? "Trimestriel" : "Quarterly"}</option>
+                      <option value="monthly">{fr ? "Mensuel" : "Monthly"}</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="text-sm font-medium">{fr ? "Assureur" : "Insurer"}</label>
+                    <InlineCreateSelect value={insurerId} onChange={setInsurerId} options={creditorList}
+                      onCreate={createInsurer}
+                      placeholder={fr ? "Nom de l'assureur" : "Insurer name"}
+                      createTitle={fr ? "Nouvel assureur" : "New insurer"} fr={fr} />
+                  </div>
+                  <p className="text-xs text-muted-foreground sm:col-span-2">
+                    {fr
+                      ? "L'assurance sera rattachée au leasing (sous-engagement) avec le même compte de paiement."
+                      : "The insurance will be linked to the leasing (sub-engagement) with the same payment account."}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {fr
+                    ? "Vous gérez déjà la casco ailleurs ? Décochez et continuez — pensez tout de même à la souscrire, elle est obligatoire."
+                    : "Already handling casco elsewhere? Leave it unchecked and continue — remember it's still mandatory."}
+                </p>
+              )}
+            </div>
+          )}
+
+          {step === 4 && createdId && (
+            <div className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 {fr
                   ? "Ajoutez le contrat de leasing et les éventuelles factures. Vous pourrez en ajouter d'autres plus tard depuis la fiche."
@@ -335,7 +426,12 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
               <ChevronLeft className="mr-1 h-4 w-4" />{fr ? "Retour" : "Back"}
             </Button>
           )}
-          {step === 3 && <span />}
+          {step === 3 && (
+            <Button variant="ghost" onClick={() => setStep(2)} disabled={saving}>
+              <ChevronLeft className="mr-1 h-4 w-4" />{fr ? "Retour" : "Back"}
+            </Button>
+          )}
+          {step === 4 && <span />}
 
           {step === 1 && (
             <Button onClick={() => setStep(2)} disabled={!step1Valid}>
@@ -343,11 +439,16 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
             </Button>
           )}
           {step === 2 && (
-            <Button onClick={createPosition} disabled={saving || !step2Valid}>
-              {fr ? "Créer" : "Create"}<ChevronRight className="ml-1 h-4 w-4" />
+            <Button onClick={() => setStep(3)} disabled={!step2Valid}>
+              {fr ? "Suivant" : "Next"}<ChevronRight className="ml-1 h-4 w-4" />
             </Button>
           )}
           {step === 3 && (
+            <Button onClick={createPosition} disabled={saving || !step3Valid}>
+              {fr ? "Créer" : "Create"}<ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          )}
+          {step === 4 && (
             <Button onClick={onClose}><Check className="mr-1 h-4 w-4" />{fr ? "Terminer" : "Finish"}</Button>
           )}
         </div>
