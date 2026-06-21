@@ -17,7 +17,7 @@ const ENG_SELECT_COLUMNS: &str =
      e.vehicle_make, e.vehicle_model, e.vehicle_plate, e.vehicle_vin, e.vehicle_first_registration,
      e.leasing_vehicle_price, e.leasing_duration_months, e.leasing_down_payment,
      e.leasing_residual_value, e.leasing_interest_rate_pct, e.leasing_annual_mileage_km,
-     e.leasing_excess_km_cost,
+     e.leasing_excess_km_cost, e.leasing_discount,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -63,11 +63,12 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         leasing_interest_rate_pct: row.get(32)?,
         leasing_annual_mileage_km: row.get(33)?,
         leasing_excess_km_cost: row.get(34)?,
-        created_at: row.get(35)?,
-        updated_at: row.get(36)?,
-        creditor_name: row.get(37)?,
-        card_name: row.get(38)?,
-        parent_name: row.get(39)?,
+        leasing_discount: row.get(35)?,
+        created_at: row.get(36)?,
+        updated_at: row.get(37)?,
+        creditor_name: row.get(38)?,
+        card_name: row.get(39)?,
+        parent_name: row.get(40)?,
     })
 }
 
@@ -352,9 +353,9 @@ pub fn create_engagement(
          vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
          leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
          leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
-         leasing_excess_km_cost)
+         leasing_excess_km_cost, leasing_discount)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)",
         rusqlite::params![
             id,
             engagement.name,
@@ -390,6 +391,7 @@ pub fn create_engagement(
             engagement.leasing_interest_rate_pct,
             engagement.leasing_annual_mileage_km,
             engagement.leasing_excess_km_cost,
+            engagement.leasing_discount,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -423,8 +425,9 @@ pub fn update_engagement(
          vehicle_first_registration = ?27, leasing_vehicle_price = ?28,
          leasing_duration_months = ?29, leasing_down_payment = ?30, leasing_residual_value = ?31,
          leasing_interest_rate_pct = ?32, leasing_annual_mileage_km = ?33, leasing_excess_km_cost = ?34,
+         leasing_discount = ?35,
          updated_at = datetime('now')
-         WHERE id = ?35",
+         WHERE id = ?36",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -460,6 +463,7 @@ pub fn update_engagement(
             engagement.leasing_interest_rate_pct,
             engagement.leasing_annual_mileage_km,
             engagement.leasing_excess_km_cost,
+            engagement.leasing_discount,
             engagement.id,
         ],
     )
@@ -998,10 +1002,10 @@ mod tests {
               vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
               leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
               leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
-              leasing_excess_km_cost)
+              leasing_excess_km_cost, leasing_discount)
              VALUES ('e1','Leasing Golf','leasing','monthly',1,'CHF',0,'active',
                      'VW','Golf','VD 123456','WVWZZZ','2024-02-01',
-                     35000.0, 48, 5000.0, 12000.0, 4.5, 15000, 0.25)",
+                     35000.0, 48, 5000.0, 12000.0, 4.5, 15000, 0.25, 2000.0)",
             [],
         ).unwrap();
 
@@ -1025,5 +1029,6 @@ mod tests {
         assert_eq!(eng.leasing_interest_rate_pct, Some(4.5));
         assert_eq!(eng.leasing_annual_mileage_km, Some(15000));
         assert_eq!(eng.leasing_excess_km_cost, Some(0.25));
+        assert_eq!(eng.leasing_discount, Some(2000.0));
     }
 }

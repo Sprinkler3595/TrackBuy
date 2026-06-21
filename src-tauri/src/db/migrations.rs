@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 20;
+pub const CURRENT_SCHEMA_VERSION: i64 = 21;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -90,6 +90,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 20 {
         migrate_v20(conn)?;
+    }
+    if current_version < 21 {
+        migrate_v21(conn)?;
     }
 
     Ok(())
@@ -1402,6 +1405,23 @@ fn migrate_v20(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (20);
         "
     ).map_err(|e| format!("Migration v20 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Commercial discount on a leasing (e.g. a manufacturer/dealer offer such as
+/// a Tesla promotion the customer accepted). Stored separately from the gross
+/// down payment so both the headline terms and the deal are kept: the net the
+/// customer actually pays up front is `leasing_down_payment - leasing_discount`.
+/// NULL for non-leasing engagements.
+fn migrate_v21(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN leasing_discount REAL;
+
+        INSERT INTO schema_version (version) VALUES (21);
+        "
+    ).map_err(|e| format!("Migration v21 failed: {}", e))?;
 
     Ok(())
 }

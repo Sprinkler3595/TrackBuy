@@ -390,6 +390,8 @@ pub struct Engagement {
     pub leasing_interest_rate_pct: Option<f64>,
     pub leasing_annual_mileage_km: Option<i32>,
     pub leasing_excess_km_cost: Option<f64>,
+    /// Commercial discount / accepted offer, deducted from the down payment.
+    pub leasing_discount: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -438,6 +440,7 @@ pub struct CreateEngagementRequest {
     pub leasing_interest_rate_pct: Option<f64>,
     pub leasing_annual_mileage_km: Option<i32>,
     pub leasing_excess_km_cost: Option<f64>,
+    pub leasing_discount: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

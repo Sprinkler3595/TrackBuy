@@ -103,6 +103,7 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const [duration, setDuration] = useState("48")
   const [vehiclePrice, setVehiclePrice] = useState("")
   const [downPayment, setDownPayment] = useState("")
+  const [discount, setDiscount] = useState("")
   const [residual, setResidual] = useState("")
   const [rate, setRate] = useState("")
   const [annualKm, setAnnualKm] = useState("")
@@ -112,6 +113,12 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const monthlyValue = parseFloat(monthly)
   const step1Valid = name.trim().length > 0
   const step2Valid = !Number.isNaN(monthlyValue) && monthlyValue > 0
+
+  // Net up-front payment once an accepted offer/discount (e.g. a Tesla rebate)
+  // is deducted from the gross down payment.
+  const dpNum = parseFloat(downPayment)
+  const discNum = parseFloat(discount)
+  const netDownPayment = !Number.isNaN(dpNum) && !Number.isNaN(discNum) ? dpNum - discNum : null
 
   async function createPosition() {
     setSaving(true)
@@ -146,6 +153,7 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         leasing_interest_rate_pct: numOrNull(rate),
         leasing_annual_mileage_km: intOrNull(annualKm),
         leasing_excess_km_cost: numOrNull(excessKm),
+        leasing_discount: numOrNull(discount),
       })
       setCreatedId(eng.id)
       setCreatedName(eng.name)
@@ -268,6 +276,17 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Acompte / 1er loyer (CHF)" : "Down payment (CHF)"}</label>
                 <Input type="number" min="0" step="0.01" value={downPayment} onChange={(e) => setDownPayment(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{fr ? "Remise / offre acceptée (CHF)" : "Discount / accepted offer (CHF)"}</label>
+                <Input type="number" min="0" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)}
+                  placeholder={fr ? "Ex : offre Tesla" : "e.g. Tesla offer"} />
+                {netDownPayment !== null && (
+                  <p className="text-xs text-muted-foreground">
+                    {fr ? "Acompte net : " : "Net down payment: "}
+                    <span className="font-medium">{netDownPayment.toLocaleString("fr-CH", { style: "currency", currency: "CHF" })}</span>
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Valeur résiduelle (CHF)" : "Residual value (CHF)"}</label>

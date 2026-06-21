@@ -591,6 +591,7 @@ export interface Engagement {
   leasing_interest_rate_pct: number | null
   leasing_annual_mileage_km: number | null
   leasing_excess_km_cost: number | null
+  leasing_discount: number | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -704,6 +705,7 @@ export const createEngagement = (engagement: {
   leasing_interest_rate_pct?: number | null
   leasing_annual_mileage_km?: number | null
   leasing_excess_km_cost?: number | null
+  leasing_discount?: number | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>
