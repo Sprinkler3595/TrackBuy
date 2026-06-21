@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -62,9 +62,11 @@ function getTypeLabel(slug: string): string {
 /// Display sections for the attachment list, in render order. Contracts and
 /// invoices get their own bucket; everything else falls into "other".
 const ATTACHMENT_GROUPS = [
-  { key: "contract", label: "Contrats" },
-  { key: "invoice", label: "Factures" },
-  { key: "other", label: "Autres documents" },
+  { key: "contract", label: "Contrats", addType: "contract" as string | null },
+  { key: "invoice", label: "Factures", addType: "invoice" as string | null },
+  // "other" covers many types (garantie, image, bon de commande…), so its
+  // add button opens the type picker instead of forcing a single type.
+  { key: "other", label: "Autres documents", addType: null },
 ] as const
 
 function groupOf(slug: string): "contract" | "invoice" | "other" {
@@ -201,6 +203,12 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
     if (!pending) return
     const paths = pending.paths
     setPending(null)
+    await uploadPaths(paths, typeSlug, shareWithOrder)
+  }
+
+  /// Encrypt + attach each picked file under `typeSlug`. Shared by the type
+  /// picker (drag/global add) and the per-section "Ajouter" buttons.
+  const uploadPaths = async (paths: string[], typeSlug: string, shareWithOrder: boolean) => {
     let hasImage = false
     const baseCtx: TemplateContext = {
       description: itemDescription,
@@ -238,6 +246,20 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
     }
     if (hasImage && !shareWithOrder && itemId) invalidateThumbnail(itemId)
     await load()
+  }
+
+  /// Pick files from disk and attach them straight under a forced type, with
+  /// no type prompt — used by the per-section "Ajouter" buttons.
+  const addWithType = async (typeSlug: string) => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog")
+      const selected = await open({ multiple: true, title: "Ajouter une pièce jointe" })
+      if (!selected) return
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter(Boolean) as string[]
+      if (paths.length > 0) await uploadPaths(paths, typeSlug, false)
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    }
   }
 
   const handleExport = async (att: api.Attachment) => {
@@ -380,27 +402,38 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
           onChange={(e) => handleFileSelect(e.target.files)}
         />
 
-        {/* Attachment list, grouped by document kind (contracts / invoices /
-            other) so e.g. a lease's contract and its bills stay separate. */}
-        {attachments.length > 0 && (
-          <div className="space-y-4">
-            {ATTACHMENT_GROUPS.map((group) => {
-              const items = attachments.filter((att) => groupOf(att.attachment_type) === group.key)
-              if (items.length === 0) return null
-              return (
-                <div key={group.key} className="space-y-2">
+        {/* Attachment list, split into always-visible sections (contracts /
+            invoices / other) so the lease contract and its bills are kept
+            apart and each can be filled independently. */}
+        <div className="space-y-4">
+          {ATTACHMENT_GROUPS.map((group) => {
+            const items = attachments.filter((att) => groupOf(att.attachment_type) === group.key)
+            return (
+              <div key={group.key} className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h4>
                     <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{items.length}</Badge>
                   </div>
-                  <div className="space-y-2">
-                    {items.map(renderRow)}
-                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => (group.addType ? addWithType(group.addType) : handlePickFile())}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Ajouter
+                  </Button>
                 </div>
-              )
-            })}
-          </div>
-        )}
+                {items.length > 0 ? (
+                  <div className="space-y-2">{items.map(renderRow)}</div>
+                ) : (
+                  <p className="px-1 text-xs italic text-muted-foreground">Aucun document</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
 
         <ConfirmDialog
           open={deleteTarget !== null}
