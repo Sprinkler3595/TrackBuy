@@ -51,6 +51,21 @@ const PAYMENT_METHODS: api.EngagementPaymentMethod[] = [
   "standing_order", "cash", "card_auto", "other",
 ]
 
+// Category-specific option sets (cf. migration v14).
+const SWISS_CANTONS = [
+  "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU", "NE",
+  "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS", "ZG", "ZH",
+]
+const LAMAL_MODELS: api.LamalModel[] = ["standard", "family_doctor", "hmo", "telmed"]
+const LAMAL_FRANCHISES = [300, 500, 1000, 1500, 2000, 2500]
+const MORTGAGE_KINDS: api.MortgageKind[] = ["fixed", "saron", "libor", "variable"]
+
+// Types whose contract has no lifecycle to cancel (taxes, fines, fees) — the
+// contract dates / notice-period fields are hidden for them.
+const NO_CONTRACT_TYPES: ReadonlySet<string> = new Set([
+  "tax_federal", "tax_cantonal", "tax_communal", "tax_other", "fine", "fee",
+])
+
 const today = () => new Date().toISOString().slice(0, 10)
 
 type FormState = {
@@ -73,6 +88,16 @@ type FormState = {
   status: api.EngagementStatus
   notes: string
   clauses_json: string | null
+  // Category-specific (only submitted for the matching engagement_type).
+  canton: string
+  lamal_model: api.LamalModel | ""
+  lamal_franchise_chf: string
+  lamal_franchise_reached_chf: string
+  lamal_accident_covered: boolean
+  mortgage_kind: api.MortgageKind | ""
+  mortgage_rate_pct: string
+  mortgage_renewal_date: string
+  mortgage_amortisation_chf: string
 }
 
 const emptyForm = (): FormState => ({
@@ -95,10 +120,19 @@ const emptyForm = (): FormState => ({
   status: "active",
   notes: "",
   clauses_json: null,
+  canton: "",
+  lamal_model: "",
+  lamal_franchise_chf: "",
+  lamal_franchise_reached_chf: "",
+  lamal_accident_covered: false,
+  mortgage_kind: "",
+  mortgage_rate_pct: "",
+  mortgage_renewal_date: "",
+  mortgage_amortisation_chf: "",
 })
 
 export function EngagementsPage() {
-  const { t } = useContext(I18nContext)
+  const { t, locale } = useContext(I18nContext)
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [creditors, setCreditors] = useState<api.Creditor[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
@@ -111,6 +145,26 @@ export function EngagementsPage() {
   const [search, setSearch] = useState("")
   const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
   const { toast } = useToast()
+
+  // Which category-specific blocks the current type unlocks. Drives both the
+  // conditional form fields and which values get persisted on submit.
+  const isHealthInsurance = form.engagement_type === "insurance_health"
+  const isMortgage = form.engagement_type === "mortgage"
+  const isTaxCategory = CATEGORY_GROUPS.taxes.includes(form.engagement_type)
+  const isNoContract = NO_CONTRACT_TYPES.has(form.engagement_type)
+  const numOrNull = (s: string): number | null => (s.trim() ? parseFloat(s) : null)
+
+  const lamalModelLabel = (m: api.LamalModel): string =>
+    m === "standard"      ? (locale === "fr" ? "Standard (libre choix)" : "Standard (free choice)") :
+    m === "family_doctor" ? (locale === "fr" ? "Médecin de famille" : "Family doctor") :
+    m === "hmo"           ? "HMO" :
+                            (locale === "fr" ? "Telmed (téléphone)" : "Telmed (phone)")
+
+  const mortgageKindLabel = (m: api.MortgageKind): string =>
+    m === "fixed" ? (locale === "fr" ? "Taux fixe" : "Fixed rate") :
+    m === "saron" ? "SARON" :
+    m === "libor" ? "LIBOR" :
+                    (locale === "fr" ? "Variable" : "Variable")
 
   const load = async () => {
     try {
@@ -159,6 +213,15 @@ export function EngagementsPage() {
       status: e.status,
       notes: e.notes || "",
       clauses_json: e.clauses_json,
+      canton: e.canton || "",
+      lamal_model: e.lamal_model || "",
+      lamal_franchise_chf: e.lamal_franchise_chf?.toString() || "",
+      lamal_franchise_reached_chf: e.lamal_franchise_reached_chf?.toString() || "",
+      lamal_accident_covered: e.lamal_accident_covered ?? false,
+      mortgage_kind: e.mortgage_kind || "",
+      mortgage_rate_pct: e.mortgage_rate_pct?.toString() || "",
+      mortgage_renewal_date: e.mortgage_renewal_date || "",
+      mortgage_amortisation_chf: e.mortgage_amortisation_chf?.toString() || "",
     })
     setEditing(e)
     setShowForm(true)
@@ -173,7 +236,21 @@ export function EngagementsPage() {
       return
     }
     const interval = Math.max(1, parseInt(form.cycle_interval) || 1)
-    const notice = form.notice_period_days ? parseInt(form.notice_period_days) : null
+    // Contract-less types (taxes/fines/fees) never carry a notice period.
+    const notice = (!isNoContract && form.notice_period_days) ? parseInt(form.notice_period_days) : null
+    // Category-specific fields are only persisted for the matching type; the
+    // rest are nulled so switching a type doesn't leave stale values behind.
+    const categoryFields = {
+      canton: isTaxCategory ? (form.canton || null) : null,
+      lamal_model: isHealthInsurance ? (form.lamal_model || null) : null,
+      lamal_franchise_chf: isHealthInsurance ? numOrNull(form.lamal_franchise_chf) : null,
+      lamal_franchise_reached_chf: isHealthInsurance ? numOrNull(form.lamal_franchise_reached_chf) : null,
+      lamal_accident_covered: isHealthInsurance ? form.lamal_accident_covered : null,
+      mortgage_kind: isMortgage ? (form.mortgage_kind || null) : null,
+      mortgage_rate_pct: isMortgage ? numOrNull(form.mortgage_rate_pct) : null,
+      mortgage_renewal_date: isMortgage ? (form.mortgage_renewal_date || null) : null,
+      mortgage_amortisation_chf: isMortgage ? numOrNull(form.mortgage_amortisation_chf) : null,
+    }
     try {
       if (editing) {
         await api.updateEngagement({
@@ -184,8 +261,8 @@ export function EngagementsPage() {
           creditor_id: form.creditor_id || null,
           payment_card_id: form.payment_card_id || null,
           contract_reference: form.contract_reference || null,
-          contract_start_date: form.contract_start_date || null,
-          contract_end_date: form.contract_end_date || null,
+          contract_start_date: isNoContract ? null : (form.contract_start_date || null),
+          contract_end_date: isNoContract ? null : (form.contract_end_date || null),
           notice_period_days: notice,
           billing_cycle: form.billing_cycle,
           cycle_interval: interval,
@@ -197,6 +274,7 @@ export function EngagementsPage() {
           status: form.status,
           notes: form.notes || null,
           clauses_json: form.clauses_json,
+          ...categoryFields,
         })
         toast(t("engagements.updated"), "success")
       } else {
@@ -207,8 +285,8 @@ export function EngagementsPage() {
           creditor_id: form.creditor_id || null,
           payment_card_id: form.payment_card_id || null,
           contract_reference: form.contract_reference || null,
-          contract_start_date: form.contract_start_date || null,
-          contract_end_date: form.contract_end_date || null,
+          contract_start_date: isNoContract ? null : (form.contract_start_date || null),
+          contract_end_date: isNoContract ? null : (form.contract_end_date || null),
           notice_period_days: notice,
           billing_cycle: form.billing_cycle,
           cycle_interval: interval,
@@ -220,6 +298,7 @@ export function EngagementsPage() {
           status: form.status,
           notes: form.notes || null,
           clauses_json: form.clauses_json,
+          ...categoryFields,
         })
         toast(t("engagements.created"), "success")
       }
@@ -491,18 +570,115 @@ export function EngagementsPage() {
                 </select>
               </div>
 
+              {(isTaxCategory || isHealthInsurance || isMortgage) && (
+                <div className="space-y-3 rounded-md border border-dashed border-input p-3 sm:col-span-2 lg:col-span-3">
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {locale === "fr" ? "Détails spécifiques à la catégorie" : "Category-specific details"}
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {isTaxCategory && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">Canton</label>
+                        <select
+                          className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                          value={form.canton}
+                          onChange={(e) => setForm({ ...form, canton: e.target.value })}
+                        >
+                          <option value="">—</option>
+                          {SWISS_CANTONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    )}
+
+                    {isHealthInsurance && (
+                      <>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Modèle LAMal" : "LAMal model"}</label>
+                          <select
+                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                            value={form.lamal_model}
+                            onChange={(e) => setForm({ ...form, lamal_model: e.target.value as api.LamalModel | "" })}
+                          >
+                            <option value="">—</option>
+                            {LAMAL_MODELS.map((m) => <option key={m} value={m}>{lamalModelLabel(m)}</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Franchise (CHF)" : "Deductible (CHF)"}</label>
+                          <select
+                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                            value={form.lamal_franchise_chf}
+                            onChange={(e) => setForm({ ...form, lamal_franchise_chf: e.target.value })}
+                          >
+                            <option value="">—</option>
+                            {LAMAL_FRANCHISES.map((f) => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Franchise atteinte (CHF)" : "Deductible reached (CHF)"}</label>
+                          <Input type="number" min="0" step="0.01" value={form.lamal_franchise_reached_chf}
+                            onChange={(e) => setForm({ ...form, lamal_franchise_reached_chf: e.target.value })} />
+                        </div>
+                        <div className="space-y-2 flex items-end">
+                          <label className="inline-flex items-center gap-2 text-sm font-medium">
+                            <input type="checkbox" checked={form.lamal_accident_covered}
+                              onChange={(e) => setForm({ ...form, lamal_accident_covered: e.target.checked })} />
+                            {locale === "fr" ? "Couverture accident incluse" : "Accident coverage included"}
+                          </label>
+                        </div>
+                      </>
+                    )}
+
+                    {isMortgage && (
+                      <>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Type d'hypothèque" : "Mortgage type"}</label>
+                          <select
+                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                            value={form.mortgage_kind}
+                            onChange={(e) => setForm({ ...form, mortgage_kind: e.target.value as api.MortgageKind | "" })}
+                          >
+                            <option value="">—</option>
+                            {MORTGAGE_KINDS.map((m) => <option key={m} value={m}>{mortgageKindLabel(m)}</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Taux (%)" : "Rate (%)"}</label>
+                          <Input type="number" min="0" step="0.001" value={form.mortgage_rate_pct}
+                            onChange={(e) => setForm({ ...form, mortgage_rate_pct: e.target.value })} />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Date de renouvellement" : "Renewal date"}</label>
+                          <Input type="date" value={form.mortgage_renewal_date}
+                            onChange={(e) => setForm({ ...form, mortgage_renewal_date: e.target.value })} />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">{locale === "fr" ? "Amortissement (CHF)" : "Amortisation (CHF)"}</label>
+                          <Input type="number" min="0" step="0.01" value={form.mortgage_amortisation_chf}
+                            onChange={(e) => setForm({ ...form, mortgage_amortisation_chf: e.target.value })} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.contractRef")}</label>
                 <Input value={form.contract_reference} onChange={(e) => setForm({ ...form, contract_reference: e.target.value })} />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t("engagements.contractStart")}</label>
-                <Input type="date" value={form.contract_start_date} onChange={(e) => setForm({ ...form, contract_start_date: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t("engagements.contractEnd")}</label>
-                <Input type="date" value={form.contract_end_date} onChange={(e) => setForm({ ...form, contract_end_date: e.target.value })} />
-              </div>
+              {!isNoContract && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t("engagements.contractStart")}</label>
+                  <Input type="date" value={form.contract_start_date} onChange={(e) => setForm({ ...form, contract_start_date: e.target.value })} />
+                </div>
+              )}
+              {!isNoContract && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t("engagements.contractEnd")}</label>
+                  <Input type="date" value={form.contract_end_date} onChange={(e) => setForm({ ...form, contract_end_date: e.target.value })} />
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.billingCycle")} *</label>
@@ -567,10 +743,12 @@ export function EngagementsPage() {
                   </option>)}
                 </select>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t("engagements.noticePeriod")}</label>
-                <Input type="number" min="0" value={form.notice_period_days} onChange={(e) => setForm({ ...form, notice_period_days: e.target.value })} />
-              </div>
+              {!isNoContract && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t("engagements.noticePeriod")}</label>
+                  <Input type="number" min="0" value={form.notice_period_days} onChange={(e) => setForm({ ...form, notice_period_days: e.target.value })} />
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.status")}</label>
