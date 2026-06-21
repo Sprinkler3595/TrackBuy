@@ -16,6 +16,7 @@ import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { ClausesEditor } from "@/components/features/clauses-editor"
 import { CancellationLetterModal } from "@/components/features/cancellation-letter"
 import { RentWizard } from "@/components/features/rent-wizard"
+import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { AlarmClock } from "lucide-react"
 import * as api from "@/lib/tauri"
 
@@ -131,6 +132,28 @@ export function EngagementsPage() {
 
   // Parking number/type only make sense for the "parking" type.
   const isParking = form.engagement_type === "parking"
+
+  // Inline creation of a creditor / payment account from the form's selects.
+  const createCreditorInline = async (name: string): Promise<api.Creditor | null> => {
+    try {
+      const c = await api.createCreditor({ name })
+      setCreditors((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+      return null
+    }
+  }
+  const createCardInline = async (name: string): Promise<api.PaymentCard | null> => {
+    try {
+      const c = await api.createCard({ name, is_credit_card: false })
+      setCards((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+      return null
+    }
+  }
 
   const load = async () => {
     try {
@@ -487,25 +510,27 @@ export function EngagementsPage() {
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.creditor")}</label>
-                <select
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                <InlineCreateSelect
                   value={form.creditor_id}
-                  onChange={(e) => setForm({ ...form, creditor_id: e.target.value })}
-                >
-                  <option value="">—</option>
-                  {creditors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  onChange={(id) => setForm({ ...form, creditor_id: id })}
+                  options={creditors}
+                  onCreate={createCreditorInline}
+                  placeholder={locale === "fr" ? "Nom du créancier" : "Creditor name"}
+                  createTitle={locale === "fr" ? "Nouveau créancier" : "New creditor"}
+                  fr={locale === "fr"}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.card")}</label>
-                <select
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                <InlineCreateSelect
                   value={form.payment_card_id}
-                  onChange={(e) => setForm({ ...form, payment_card_id: e.target.value })}
-                >
-                  <option value="">—</option>
-                  {cards.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  onChange={(id) => setForm({ ...form, payment_card_id: id })}
+                  options={cards}
+                  onCreate={createCardInline}
+                  placeholder={locale === "fr" ? "Nom du compte / carte" : "Account / card name"}
+                  createTitle={locale === "fr" ? "Nouveau compte / carte" : "New account / card"}
+                  fr={locale === "fr"}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.parent")}</label>

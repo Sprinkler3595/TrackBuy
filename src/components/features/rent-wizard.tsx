@@ -1,10 +1,11 @@
 import { useContext, useState } from "react"
-import { Home, Car, FileText, X, ChevronLeft, ChevronRight, Check, Plus } from "lucide-react"
+import { Home, Car, FileText, X, ChevronLeft, ChevronRight, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
+import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import * as api from "@/lib/tauri"
 
 /// Guided, step-by-step creation of a Swiss tenant's housing position.
@@ -61,26 +62,31 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
   const [createdRentId, setCreatedRentId] = useState<string | null>(null)
   const [createdRentName, setCreatedRentName] = useState("")
 
-  // Local copy so a landlord created inline shows up immediately in the select.
+  // Local copies so an entity created inline shows up immediately in its select.
   const [creditorList, setCreditorList] = useState<api.Creditor[]>(creditors)
-  const [creatingCreditor, setCreatingCreditor] = useState(false)
-  const [newCreditorName, setNewCreditorName] = useState("")
-  const [savingCreditor, setSavingCreditor] = useState(false)
+  const [cardList, setCardList] = useState<api.PaymentCard[]>(cards)
 
-  async function addCreditor() {
-    const nm = newCreditorName.trim()
-    if (!nm) return
-    setSavingCreditor(true)
+  // Inline-create a landlord (creditor) from just a name; surface errors here.
+  async function createLandlord(name: string): Promise<api.Creditor | null> {
     try {
-      const c = await api.createCreditor({ name: nm, creditor_type: "landlord" })
+      const c = await api.createCreditor({ name, creditor_type: "landlord" })
       setCreditorList((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
-      setCreditorId(c.id)
-      setCreatingCreditor(false)
-      setNewCreditorName("")
+      return c
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
-    } finally {
-      setSavingCreditor(false)
+      return null
+    }
+  }
+
+  // Inline-create a payment account/card from just a name.
+  async function createAccount(name: string): Promise<api.PaymentCard | null> {
+    try {
+      const c = await api.createCard({ name, is_credit_card: false })
+      setCardList((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+      return null
     }
   }
 
@@ -209,38 +215,27 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Bailleur / régie" : "Landlord / agency"}</label>
-                {creatingCreditor ? (
-                  <div className="flex gap-2">
-                    <Input autoFocus value={newCreditorName} onChange={(e) => setNewCreditorName(e.target.value)}
-                      placeholder={fr ? "Nom du bailleur" : "Landlord name"}
-                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCreditor() } }} />
-                    <Button type="button" size="sm" onClick={addCreditor} disabled={savingCreditor || !newCreditorName.trim()}>
-                      {fr ? "Ajouter" : "Add"}
-                    </Button>
-                    <Button type="button" size="sm" variant="ghost"
-                      onClick={() => { setCreatingCreditor(false); setNewCreditorName("") }}>
-                      {fr ? "Annuler" : "Cancel"}
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex gap-2">
-                    <select className={fieldCls} value={creditorId} onChange={(e) => setCreditorId(e.target.value)}>
-                      <option value="">—</option>
-                      {creditorList.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <Button type="button" variant="outline" size="icon"
-                      title={fr ? "Nouveau bailleur" : "New landlord"} onClick={() => setCreatingCreditor(true)}>
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                )}
+                <InlineCreateSelect
+                  value={creditorId}
+                  onChange={setCreditorId}
+                  options={creditorList}
+                  onCreate={createLandlord}
+                  placeholder={fr ? "Nom du bailleur" : "Landlord name"}
+                  createTitle={fr ? "Nouveau bailleur" : "New landlord"}
+                  fr={fr}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Compte / carte" : "Account / card"}</label>
-                <select className={fieldCls} value={cardId} onChange={(e) => setCardId(e.target.value)}>
-                  <option value="">—</option>
-                  {cards.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                <InlineCreateSelect
+                  value={cardId}
+                  onChange={setCardId}
+                  options={cardList}
+                  onCreate={createAccount}
+                  placeholder={fr ? "Nom du compte / carte" : "Account / card name"}
+                  createTitle={fr ? "Nouveau compte / carte" : "New account / card"}
+                  fr={fr}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Référence du bail" : "Lease reference"}</label>
