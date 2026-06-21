@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -87,6 +87,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 19 {
         migrate_v19(conn)?;
+    }
+    if current_version < 20 {
+        migrate_v20(conn)?;
     }
 
     Ok(())
@@ -1370,6 +1373,35 @@ fn migrate_v19(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (19);
         "
     ).map_err(|e| format!("Migration v19 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Vehicle leasing specifics for `engagement_type='leasing'`. Car leasing in
+/// Switzerland is driven by a handful of structured terms the assistant
+/// collects: the vehicle identity (make/model/plate/VIN/first registration)
+/// and the financial terms (vehicle price, duration, down payment, residual
+/// value, effective rate (TAEG), included annual mileage and the cost of each
+/// extra km). All NULL for non-leasing engagements.
+fn migrate_v20(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN vehicle_make TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_model TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_plate TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_vin TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_first_registration TEXT;
+        ALTER TABLE engagements ADD COLUMN leasing_vehicle_price REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_duration_months INTEGER;
+        ALTER TABLE engagements ADD COLUMN leasing_down_payment REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_residual_value REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_interest_rate_pct REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_annual_mileage_km INTEGER;
+        ALTER TABLE engagements ADD COLUMN leasing_excess_km_cost REAL;
+
+        INSERT INTO schema_version (version) VALUES (20);
+        "
+    ).map_err(|e| format!("Migration v20 failed: {}", e))?;
 
     Ok(())
 }

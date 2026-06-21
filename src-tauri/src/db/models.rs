@@ -377,6 +377,19 @@ pub struct Engagement {
     pub parking_spot_number: Option<String>,
     /// 'outdoor' | 'collective_garage' | 'box'.
     pub parking_kind: Option<String>,
+    // Vehicle leasing specifics (engagement_type='leasing'); NULL otherwise. v20.
+    pub vehicle_make: Option<String>,
+    pub vehicle_model: Option<String>,
+    pub vehicle_plate: Option<String>,
+    pub vehicle_vin: Option<String>,
+    pub vehicle_first_registration: Option<String>,
+    pub leasing_vehicle_price: Option<f64>,
+    pub leasing_duration_months: Option<i32>,
+    pub leasing_down_payment: Option<f64>,
+    pub leasing_residual_value: Option<f64>,
+    pub leasing_interest_rate_pct: Option<f64>,
+    pub leasing_annual_mileage_km: Option<i32>,
+    pub leasing_excess_km_cost: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -412,6 +425,19 @@ pub struct CreateEngagementRequest {
     // Parking specifics (see Engagement). Optional on create/update.
     pub parking_spot_number: Option<String>,
     pub parking_kind: Option<String>,
+    // Vehicle leasing specifics (see Engagement). Optional on create/update.
+    pub vehicle_make: Option<String>,
+    pub vehicle_model: Option<String>,
+    pub vehicle_plate: Option<String>,
+    pub vehicle_vin: Option<String>,
+    pub vehicle_first_registration: Option<String>,
+    pub leasing_vehicle_price: Option<f64>,
+    pub leasing_duration_months: Option<i32>,
+    pub leasing_down_payment: Option<f64>,
+    pub leasing_residual_value: Option<f64>,
+    pub leasing_interest_rate_pct: Option<f64>,
+    pub leasing_annual_mileage_km: Option<i32>,
+    pub leasing_excess_km_cost: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

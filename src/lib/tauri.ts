@@ -578,6 +578,19 @@ export interface Engagement {
   // Parking specifics (engagement_type 'parking'); null otherwise.
   parking_spot_number: string | null
   parking_kind: ParkingKind | null
+  // Vehicle leasing specifics (engagement_type 'leasing'); null otherwise.
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_plate: string | null
+  vehicle_vin: string | null
+  vehicle_first_registration: string | null
+  leasing_vehicle_price: number | null
+  leasing_duration_months: number | null
+  leasing_down_payment: number | null
+  leasing_residual_value: number | null
+  leasing_interest_rate_pct: number | null
+  leasing_annual_mileage_km: number | null
+  leasing_excess_km_cost: number | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -679,6 +692,18 @@ export const createEngagement = (engagement: {
   clauses_json?: string | null
   parking_spot_number?: string | null
   parking_kind?: ParkingKind | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vehicle_plate?: string | null
+  vehicle_vin?: string | null
+  vehicle_first_registration?: string | null
+  leasing_vehicle_price?: number | null
+  leasing_duration_months?: number | null
+  leasing_down_payment?: number | null
+  leasing_residual_value?: number | null
+  leasing_interest_rate_pct?: number | null
+  leasing_annual_mileage_km?: number | null
+  leasing_excess_km_cost?: number | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>

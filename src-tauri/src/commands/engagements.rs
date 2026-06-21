@@ -14,6 +14,10 @@ const ENG_SELECT_COLUMNS: &str =
      e.billing_cycle, e.cycle_interval, e.next_due_date, e.current_amount, e.currency,
      e.payment_method, e.auto_pay, e.status, e.ended_on, e.notes, e.clauses_json,
      e.parking_spot_number, e.parking_kind,
+     e.vehicle_make, e.vehicle_model, e.vehicle_plate, e.vehicle_vin, e.vehicle_first_registration,
+     e.leasing_vehicle_price, e.leasing_duration_months, e.leasing_down_payment,
+     e.leasing_residual_value, e.leasing_interest_rate_pct, e.leasing_annual_mileage_km,
+     e.leasing_excess_km_cost,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -47,11 +51,23 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         clauses_json: row.get(20)?,
         parking_spot_number: row.get(21)?,
         parking_kind: row.get(22)?,
-        created_at: row.get(23)?,
-        updated_at: row.get(24)?,
-        creditor_name: row.get(25)?,
-        card_name: row.get(26)?,
-        parent_name: row.get(27)?,
+        vehicle_make: row.get(23)?,
+        vehicle_model: row.get(24)?,
+        vehicle_plate: row.get(25)?,
+        vehicle_vin: row.get(26)?,
+        vehicle_first_registration: row.get(27)?,
+        leasing_vehicle_price: row.get(28)?,
+        leasing_duration_months: row.get(29)?,
+        leasing_down_payment: row.get(30)?,
+        leasing_residual_value: row.get(31)?,
+        leasing_interest_rate_pct: row.get(32)?,
+        leasing_annual_mileage_km: row.get(33)?,
+        leasing_excess_km_cost: row.get(34)?,
+        created_at: row.get(35)?,
+        updated_at: row.get(36)?,
+        creditor_name: row.get(37)?,
+        card_name: row.get(38)?,
+        parent_name: row.get(39)?,
     })
 }
 
@@ -332,9 +348,13 @@ pub fn create_engagement(
          payment_card_id, contract_reference, contract_start_date, contract_end_date,
          notice_period_days, billing_cycle, cycle_interval, next_due_date, current_amount,
          currency, payment_method, auto_pay, status, notes, clauses_json,
-         parking_spot_number, parking_kind)
+         parking_spot_number, parking_kind,
+         vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
+         leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
+         leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
+         leasing_excess_km_cost)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
         rusqlite::params![
             id,
             engagement.name,
@@ -358,6 +378,18 @@ pub fn create_engagement(
             engagement.clauses_json,
             engagement.parking_spot_number,
             engagement.parking_kind,
+            engagement.vehicle_make,
+            engagement.vehicle_model,
+            engagement.vehicle_plate,
+            engagement.vehicle_vin,
+            engagement.vehicle_first_registration,
+            engagement.leasing_vehicle_price,
+            engagement.leasing_duration_months,
+            engagement.leasing_down_payment,
+            engagement.leasing_residual_value,
+            engagement.leasing_interest_rate_pct,
+            engagement.leasing_annual_mileage_km,
+            engagement.leasing_excess_km_cost,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -387,8 +419,12 @@ pub fn update_engagement(
          current_amount = ?13, currency = ?14, payment_method = ?15, auto_pay = ?16,
          status = ?17, ended_on = ?18, notes = ?19, clauses_json = ?20,
          parking_spot_number = ?21, parking_kind = ?22,
+         vehicle_make = ?23, vehicle_model = ?24, vehicle_plate = ?25, vehicle_vin = ?26,
+         vehicle_first_registration = ?27, leasing_vehicle_price = ?28,
+         leasing_duration_months = ?29, leasing_down_payment = ?30, leasing_residual_value = ?31,
+         leasing_interest_rate_pct = ?32, leasing_annual_mileage_km = ?33, leasing_excess_km_cost = ?34,
          updated_at = datetime('now')
-         WHERE id = ?23",
+         WHERE id = ?35",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -412,6 +448,18 @@ pub fn update_engagement(
             engagement.clauses_json,
             engagement.parking_spot_number,
             engagement.parking_kind,
+            engagement.vehicle_make,
+            engagement.vehicle_model,
+            engagement.vehicle_plate,
+            engagement.vehicle_vin,
+            engagement.vehicle_first_registration,
+            engagement.leasing_vehicle_price,
+            engagement.leasing_duration_months,
+            engagement.leasing_down_payment,
+            engagement.leasing_residual_value,
+            engagement.leasing_interest_rate_pct,
+            engagement.leasing_annual_mileage_km,
+            engagement.leasing_excess_km_cost,
             engagement.id,
         ],
     )
@@ -937,5 +985,45 @@ mod tests {
         assert_eq!(eng.engagement_type, "parking");
         assert_eq!(eng.parking_spot_number.as_deref(), Some("42"));
         assert_eq!(eng.parking_kind.as_deref(), Some("collective_garage"));
+    }
+
+    /// Guards the column-index alignment for the v20 leasing fields.
+    #[test]
+    fn row_to_engagement_mappe_les_champs_de_leasing() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements
+             (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
+              vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
+              leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
+              leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
+              leasing_excess_km_cost)
+             VALUES ('e1','Leasing Golf','leasing','monthly',1,'CHF',0,'active',
+                     'VW','Golf','VD 123456','WVWZZZ','2024-02-01',
+                     35000.0, 48, 5000.0, 12000.0, 4.5, 15000, 0.25)",
+            [],
+        ).unwrap();
+
+        let sql = format!(
+            "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+            ENG_SELECT_COLUMNS, ENG_JOINS
+        );
+        let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
+
+        assert_eq!(eng.name, "Leasing Golf");
+        assert_eq!(eng.engagement_type, "leasing");
+        assert_eq!(eng.vehicle_make.as_deref(), Some("VW"));
+        assert_eq!(eng.vehicle_model.as_deref(), Some("Golf"));
+        assert_eq!(eng.vehicle_plate.as_deref(), Some("VD 123456"));
+        assert_eq!(eng.vehicle_vin.as_deref(), Some("WVWZZZ"));
+        assert_eq!(eng.vehicle_first_registration.as_deref(), Some("2024-02-01"));
+        assert_eq!(eng.leasing_vehicle_price, Some(35000.0));
+        assert_eq!(eng.leasing_duration_months, Some(48));
+        assert_eq!(eng.leasing_down_payment, Some(5000.0));
+        assert_eq!(eng.leasing_residual_value, Some(12000.0));
+        assert_eq!(eng.leasing_interest_rate_pct, Some(4.5));
+        assert_eq!(eng.leasing_annual_mileage_km, Some(15000));
+        assert_eq!(eng.leasing_excess_km_cost, Some(0.25));
     }
 }
