@@ -13,9 +13,7 @@ const ENG_SELECT_COLUMNS: &str =
      e.contract_reference, e.contract_start_date, e.contract_end_date, e.notice_period_days,
      e.billing_cycle, e.cycle_interval, e.next_due_date, e.current_amount, e.currency,
      e.payment_method, e.auto_pay, e.status, e.ended_on, e.notes, e.clauses_json,
-     e.canton, e.lamal_model, e.lamal_franchise_chf, e.lamal_franchise_reached_chf,
-     e.lamal_accident_covered, e.mortgage_kind, e.mortgage_rate_pct, e.mortgage_renewal_date,
-     e.mortgage_amortisation_chf,
+     e.parking_spot_number, e.parking_kind,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -47,20 +45,13 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         ended_on: row.get(18)?,
         notes: row.get(19)?,
         clauses_json: row.get(20)?,
-        canton: row.get(21)?,
-        lamal_model: row.get(22)?,
-        lamal_franchise_chf: row.get(23)?,
-        lamal_franchise_reached_chf: row.get(24)?,
-        lamal_accident_covered: row.get(25)?,
-        mortgage_kind: row.get(26)?,
-        mortgage_rate_pct: row.get(27)?,
-        mortgage_renewal_date: row.get(28)?,
-        mortgage_amortisation_chf: row.get(29)?,
-        created_at: row.get(30)?,
-        updated_at: row.get(31)?,
-        creditor_name: row.get(32)?,
-        card_name: row.get(33)?,
-        parent_name: row.get(34)?,
+        parking_spot_number: row.get(21)?,
+        parking_kind: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
+        creditor_name: row.get(25)?,
+        card_name: row.get(26)?,
+        parent_name: row.get(27)?,
     })
 }
 
@@ -341,11 +332,9 @@ pub fn create_engagement(
          payment_card_id, contract_reference, contract_start_date, contract_end_date,
          notice_period_days, billing_cycle, cycle_interval, next_due_date, current_amount,
          currency, payment_method, auto_pay, status, notes, clauses_json,
-         canton, lamal_model, lamal_franchise_chf, lamal_franchise_reached_chf,
-         lamal_accident_covered, mortgage_kind, mortgage_rate_pct, mortgage_renewal_date,
-         mortgage_amortisation_chf)
+         parking_spot_number, parking_kind)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                 ?18, ?19, ?20, ?21, ?22)",
         rusqlite::params![
             id,
             engagement.name,
@@ -367,15 +356,8 @@ pub fn create_engagement(
             status,
             engagement.notes,
             engagement.clauses_json,
-            engagement.canton,
-            engagement.lamal_model,
-            engagement.lamal_franchise_chf,
-            engagement.lamal_franchise_reached_chf,
-            engagement.lamal_accident_covered,
-            engagement.mortgage_kind,
-            engagement.mortgage_rate_pct,
-            engagement.mortgage_renewal_date,
-            engagement.mortgage_amortisation_chf,
+            engagement.parking_spot_number,
+            engagement.parking_kind,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -404,12 +386,9 @@ pub fn update_engagement(
          billing_cycle = ?10, cycle_interval = ?11, next_due_date = ?12,
          current_amount = ?13, currency = ?14, payment_method = ?15, auto_pay = ?16,
          status = ?17, ended_on = ?18, notes = ?19, clauses_json = ?20,
-         canton = ?21, lamal_model = ?22, lamal_franchise_chf = ?23,
-         lamal_franchise_reached_chf = ?24, lamal_accident_covered = ?25,
-         mortgage_kind = ?26, mortgage_rate_pct = ?27, mortgage_renewal_date = ?28,
-         mortgage_amortisation_chf = ?29,
+         parking_spot_number = ?21, parking_kind = ?22,
          updated_at = datetime('now')
-         WHERE id = ?30",
+         WHERE id = ?23",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -431,15 +410,8 @@ pub fn update_engagement(
             engagement.ended_on,
             engagement.notes,
             engagement.clauses_json,
-            engagement.canton,
-            engagement.lamal_model,
-            engagement.lamal_franchise_chf,
-            engagement.lamal_franchise_reached_chf,
-            engagement.lamal_accident_covered,
-            engagement.mortgage_kind,
-            engagement.mortgage_rate_pct,
-            engagement.mortgage_renewal_date,
-            engagement.mortgage_amortisation_chf,
+            engagement.parking_spot_number,
+            engagement.parking_kind,
             engagement.id,
         ],
     )
@@ -941,19 +913,17 @@ mod tests {
     }
 
     /// Guards the column-index alignment between ENG_SELECT_COLUMNS and
-    /// row_to_engagement for the v14 category-specific fields.
+    /// row_to_engagement for the v19 parking fields.
     #[test]
-    fn row_to_engagement_mappe_les_champs_de_categorie() {
+    fn row_to_engagement_mappe_les_champs_de_parking() {
         let (_tmp, db) = open_db();
         let conn = db.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO engagements
              (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
-              canton, lamal_model, lamal_franchise_chf, lamal_franchise_reached_chf,
-              lamal_accident_covered, mortgage_kind, mortgage_rate_pct, mortgage_renewal_date,
-              mortgage_amortisation_chf)
-             VALUES ('e1','Assura','insurance_health','monthly',1,'CHF',0,'active',
-                     'VD','hmo',300.0,120.5,1,'saron',1.25,'2027-03-31',5000.0)",
+              parking_spot_number, parking_kind)
+             VALUES ('e1','Place de parc','parking','monthly',1,'CHF',0,'active',
+                     '42','collective_garage')",
             [],
         ).unwrap();
 
@@ -963,16 +933,9 @@ mod tests {
         );
         let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
 
-        assert_eq!(eng.name, "Assura");
-        assert_eq!(eng.engagement_type, "insurance_health");
-        assert_eq!(eng.canton.as_deref(), Some("VD"));
-        assert_eq!(eng.lamal_model.as_deref(), Some("hmo"));
-        assert_eq!(eng.lamal_franchise_chf, Some(300.0));
-        assert_eq!(eng.lamal_franchise_reached_chf, Some(120.5));
-        assert_eq!(eng.lamal_accident_covered, Some(true));
-        assert_eq!(eng.mortgage_kind.as_deref(), Some("saron"));
-        assert_eq!(eng.mortgage_rate_pct, Some(1.25));
-        assert_eq!(eng.mortgage_renewal_date.as_deref(), Some("2027-03-31"));
-        assert_eq!(eng.mortgage_amortisation_chf, Some(5000.0));
+        assert_eq!(eng.name, "Place de parc");
+        assert_eq!(eng.engagement_type, "parking");
+        assert_eq!(eng.parking_spot_number.as_deref(), Some("42"));
+        assert_eq!(eng.parking_kind.as_deref(), Some("collective_garage"));
     }
 }

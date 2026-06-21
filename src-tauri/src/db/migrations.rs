@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -84,6 +84,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 18 {
         migrate_v18(conn)?;
+    }
+    if current_version < 19 {
+        migrate_v19(conn)?;
     }
 
     Ok(())
@@ -1348,6 +1351,25 @@ fn migrate_v18(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (18);
         "
     ).map_err(|e| format!("Migration v18 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Parking specifics for `engagement_type='parking'`. A parking spot is modelled
+/// as a child engagement of the apartment's rent; these two columns hold the
+/// structured details the rent assistant collects.
+///   - parking_spot_number : the spot label/number on the lease (e.g. "42").
+///   - parking_kind        : 'outdoor' | 'collective_garage' | 'box'.
+/// NULL for every non-parking engagement.
+fn migrate_v19(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN parking_spot_number TEXT;
+        ALTER TABLE engagements ADD COLUMN parking_kind TEXT;
+
+        INSERT INTO schema_version (version) VALUES (19);
+        "
+    ).map_err(|e| format!("Migration v19 failed: {}", e))?;
 
     Ok(())
 }

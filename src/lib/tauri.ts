@@ -575,16 +575,9 @@ export interface Engagement {
   ended_on: string | null
   notes: string | null
   clauses_json: string | null
-  // Category-specific fields (only meaningful for the matching type).
-  canton: string | null
-  lamal_model: LamalModel | null
-  lamal_franchise_chf: number | null
-  lamal_franchise_reached_chf: number | null
-  lamal_accident_covered: boolean | null
-  mortgage_kind: MortgageKind | null
-  mortgage_rate_pct: number | null
-  mortgage_renewal_date: string | null
-  mortgage_amortisation_chf: number | null
+  // Parking specifics (engagement_type 'parking'); null otherwise.
+  parking_spot_number: string | null
+  parking_kind: ParkingKind | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -592,10 +585,8 @@ export interface Engagement {
   parent_name?: string | null
 }
 
-// LAMal (compulsory Swiss health insurance) coverage model.
-export type LamalModel = "standard" | "family_doctor" | "hmo" | "telmed"
-// Mortgage interest-rate model.
-export type MortgageKind = "fixed" | "saron" | "libor" | "variable"
+// Parking spot location, for parking engagements (usually a child of a rent).
+export type ParkingKind = "outdoor" | "collective_garage" | "box"
 
 export interface EngagementCharge {
   id: string
@@ -686,15 +677,8 @@ export const createEngagement = (engagement: {
   status?: EngagementStatus
   notes?: string | null
   clauses_json?: string | null
-  canton?: string | null
-  lamal_model?: LamalModel | null
-  lamal_franchise_chf?: number | null
-  lamal_franchise_reached_chf?: number | null
-  lamal_accident_covered?: boolean | null
-  mortgage_kind?: MortgageKind | null
-  mortgage_rate_pct?: number | null
-  mortgage_renewal_date?: string | null
-  mortgage_amortisation_chf?: number | null
+  parking_spot_number?: string | null
+  parking_kind?: ParkingKind | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>

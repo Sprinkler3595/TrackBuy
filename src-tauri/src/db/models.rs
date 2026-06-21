@@ -372,21 +372,11 @@ pub struct Engagement {
     /// Free-form JSON for franchises, caps, options; not parsed by the
     /// backend.
     pub clauses_json: Option<String>,
-    // Category-specific fields (see migration v14). Only populated for the
-    // matching engagement_type; NULL otherwise.
-    /// Taxes (tax_*): ISO 3166-2:CH canton code (VD, GE, NE…).
-    pub canton: Option<String>,
-    /// Health insurance (insurance_health / LAMal): coverage model
-    /// 'standard' | 'family_doctor' | 'hmo' | 'telmed'.
-    pub lamal_model: Option<String>,
-    pub lamal_franchise_chf: Option<f64>,
-    pub lamal_franchise_reached_chf: Option<f64>,
-    pub lamal_accident_covered: Option<bool>,
-    /// Mortgage: 'fixed' | 'saron' | 'libor' | 'variable'.
-    pub mortgage_kind: Option<String>,
-    pub mortgage_rate_pct: Option<f64>,
-    pub mortgage_renewal_date: Option<String>,
-    pub mortgage_amortisation_chf: Option<f64>,
+    // Parking specifics (engagement_type='parking'); NULL otherwise. See v19.
+    /// Spot label/number on the lease.
+    pub parking_spot_number: Option<String>,
+    /// 'outdoor' | 'collective_garage' | 'box'.
+    pub parking_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -419,16 +409,9 @@ pub struct CreateEngagementRequest {
     pub status: Option<String>,
     pub notes: Option<String>,
     pub clauses_json: Option<String>,
-    // Category-specific (see Engagement). Optional on create/update.
-    pub canton: Option<String>,
-    pub lamal_model: Option<String>,
-    pub lamal_franchise_chf: Option<f64>,
-    pub lamal_franchise_reached_chf: Option<f64>,
-    pub lamal_accident_covered: Option<bool>,
-    pub mortgage_kind: Option<String>,
-    pub mortgage_rate_pct: Option<f64>,
-    pub mortgage_renewal_date: Option<String>,
-    pub mortgage_amortisation_chf: Option<f64>,
+    // Parking specifics (see Engagement). Optional on create/update.
+    pub parking_spot_number: Option<String>,
+    pub parking_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
