@@ -59,6 +59,20 @@ function getTypeLabel(slug: string): string {
   return ATTACHMENT_TYPES.find((t) => t.slug === slug)?.label ?? slug
 }
 
+/// Display sections for the attachment list, in render order. Contracts and
+/// invoices get their own bucket; everything else falls into "other".
+const ATTACHMENT_GROUPS = [
+  { key: "contract", label: "Contrats" },
+  { key: "invoice", label: "Factures" },
+  { key: "other", label: "Autres documents" },
+] as const
+
+function groupOf(slug: string): "contract" | "invoice" | "other" {
+  if (slug === "contract") return "contract"
+  if (slug === "invoice" || slug === "qrbill") return "invoice"
+  return "other"
+}
+
 interface PendingFiles {
   paths: string[]
 }
@@ -277,6 +291,54 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
     )
   }
 
+  const renderRow = (att: api.Attachment) => {
+    const Icon = getFileIcon(att.mime_type)
+    return (
+      <div
+        key={att.id}
+        className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors"
+      >
+        <button
+          type="button"
+          onClick={() => setViewTarget(att)}
+          className="flex flex-1 items-center gap-3 min-w-0 text-left"
+          title="Aperçu"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+            <Icon className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate hover:text-primary transition-colors">{att.display_name}</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+              <span>{formatFileSize(att.size_bytes)}</span>
+              <span>&middot;</span>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {getTypeLabel(att.attachment_type)}
+              </Badge>
+              {att.order_id && (
+                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
+                  <Layers className="h-2.5 w-2.5" />
+                  Partagée
+                </Badge>
+              )}
+            </div>
+          </div>
+        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button variant="ghost" size="icon" onClick={() => setViewTarget(att)} title="Aperçu">
+            <Eye className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => handleExport(att)} title="Exporter">
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(att.id)} title="Supprimer">
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -318,52 +380,21 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
           onChange={(e) => handleFileSelect(e.target.files)}
         />
 
-        {/* Attachment list */}
+        {/* Attachment list, grouped by document kind (contracts / invoices /
+            other) so e.g. a lease's contract and its bills stay separate. */}
         {attachments.length > 0 && (
-          <div className="space-y-2">
-            {attachments.map((att) => {
-              const Icon = getFileIcon(att.mime_type)
+          <div className="space-y-4">
+            {ATTACHMENT_GROUPS.map((group) => {
+              const items = attachments.filter((att) => groupOf(att.attachment_type) === group.key)
+              if (items.length === 0) return null
               return (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setViewTarget(att)}
-                    className="flex flex-1 items-center gap-3 min-w-0 text-left"
-                    title="Aperçu"
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      <Icon className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate hover:text-primary transition-colors">{att.display_name}</p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                        <span>{formatFileSize(att.size_bytes)}</span>
-                        <span>&middot;</span>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                          {getTypeLabel(att.attachment_type)}
-                        </Badge>
-                        {att.order_id && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
-                            <Layers className="h-2.5 w-2.5" />
-                            Partagée
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="ghost" size="icon" onClick={() => setViewTarget(att)} title="Aperçu">
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => handleExport(att)} title="Exporter">
-                      <Download className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(att.id)} title="Supprimer">
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                <div key={group.key} className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h4>
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{items.length}</Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {items.map(renderRow)}
                   </div>
                 </div>
               )
