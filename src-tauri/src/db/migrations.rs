@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 17;
+pub const CURRENT_SCHEMA_VERSION: i64 = 18;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -81,6 +81,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 17 {
         migrate_v17(conn)?;
+    }
+    if current_version < 18 {
+        migrate_v18(conn)?;
     }
 
     Ok(())
@@ -1252,4 +1255,214 @@ fn migrate_v17(conn: &Connection) -> Result<(), String> {
     ).map_err(|e| format!("Migration v17 failed: {}", e))?;
 
     Ok(())
+}
+
+/// Retire the deprecated `subscriptions` domain. Online subscriptions were
+/// superseded by `engagements` (richer real-world contract model) and users
+/// have migrated their data across, so the tables, their FTS mirror and the
+/// polymorphic `subscription_id` link on `attachments` are dropped for good.
+///
+/// `attachments` is rebuilt one last time (same `_new` swap pattern as
+/// v3/v5/v9/v10/v11) to remove the `subscription_id` column, its FK and its
+/// slot in the CHECK constraint. Any attachment that pointed ONLY at a
+/// subscription is left behind by the copy (it would otherwise violate the
+/// tightened CHECK); migration of subscriptions to engagements already
+/// re-pointed real invoices/contracts, so these are stale rows.
+///
+/// Child tables are dropped before their parent (`subscriptions`) so the
+/// implicit row-clearing DROP performs under `foreign_keys=ON` without
+/// tripping a constraint.
+fn migrate_v18(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Rebuild attachments without subscription_id.
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            income_id TEXT,
+            income_receipt_id TEXT,
+            reimbursement_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL
+                   OR income_id IS NOT NULL OR income_receipt_id IS NOT NULL
+                   OR reimbursement_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE,
+            FOREIGN KEY (reimbursement_id) REFERENCES pending_reimbursements(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             income_id, income_receipt_id, reimbursement_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, engagement_id,
+               engagement_charge_id, engagement_revision_id,
+               income_id, income_receipt_id, reimbursement_id,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments
+        WHERE subscription_id IS NULL;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+        CREATE INDEX idx_attachments_income ON attachments(income_id);
+        CREATE INDEX idx_attachments_income_receipt ON attachments(income_receipt_id);
+        CREATE INDEX idx_attachments_reimbursement ON attachments(reimbursement_id);
+
+        -- Drop the subscription FTS mirror and its sync triggers first so they
+        -- can't fire while the base tables are torn down.
+        DROP TRIGGER IF EXISTS subscriptions_ai;
+        DROP TRIGGER IF EXISTS subscriptions_au;
+        DROP TRIGGER IF EXISTS subscriptions_ad;
+        DROP TABLE IF EXISTS subscriptions_fts;
+
+        -- Children before parent (FK-safe under foreign_keys=ON).
+        DROP TABLE IF EXISTS subscription_members;
+        DROP TABLE IF EXISTS subscription_payments;
+        DROP TABLE IF EXISTS subscriptions;
+
+        INSERT INTO schema_version (version) VALUES (18);
+        "
+    ).map_err(|e| format!("Migration v18 failed: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Replays v1..=v17 on a fresh in-memory DB with foreign keys ON, leaving
+    /// the schema in the pre-v18 state (subscriptions still present).
+    fn conn_at_v17() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        migrate_v9(&conn).unwrap();
+        migrate_v10(&conn).unwrap();
+        migrate_v11(&conn).unwrap();
+        migrate_v12(&conn).unwrap();
+        migrate_v13(&conn).unwrap();
+        migrate_v14(&conn).unwrap();
+        migrate_v15(&conn).unwrap();
+        migrate_v16(&conn).unwrap();
+        migrate_v17(&conn).unwrap();
+        conn
+    }
+
+    /// v18 must drop the subscription tables/FTS and the `subscription_id`
+    /// column on `attachments`, discard attachments that pointed ONLY at a
+    /// subscription, and keep every other attachment intact — even with live
+    /// rows present and foreign keys enforced.
+    #[test]
+    fn v18_purges_subscriptions_but_keeps_other_attachments() {
+        let conn = conn_at_v17();
+
+        // An item with its own attachment (must survive).
+        conn.execute("INSERT INTO merchants (id, name) VALUES ('m1', 'M')", []).unwrap();
+        conn.execute("INSERT INTO locations (id, name) VALUES ('l1', 'L')", []).unwrap();
+        conn.execute(
+            "INSERT INTO items (id, description, purchase_date, purchase_price, merchant_id, location_id)
+             VALUES ('i1', 'x', '2024-01-01', 1.0, 'm1', 'l1')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, item_id, original_name, display_name, mime_type, file_path, size_bytes)
+             VALUES ('a_item', 'i1', 'n', 'n', 'x', 'p', 1)",
+            [],
+        ).unwrap();
+
+        // A subscription with payment + member + a subscription-only attachment
+        // (all must disappear).
+        conn.execute(
+            "INSERT INTO subscriptions (id, name, start_date, next_renewal_date, billing_cycle, price)
+             VALUES ('s1', 'Netflix', '2024-01-01', '2024-02-01', 'monthly', 12.0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency)
+             VALUES ('p1', 's1', '2024-01-01', 12.0, 'CHF')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO subscription_members (id, subscription_id, name) VALUES ('mem1', 's1', 'Alice')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes)
+             VALUES ('a_sub', 's1', 'n', 'n', 'x', 'p', 1)",
+            [],
+        ).unwrap();
+
+        migrate_v18(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('subscriptions','subscription_payments','subscription_members','subscriptions_fts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "subscription tables/FTS must be gone");
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='subscription_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 0, "attachments.subscription_id column must be gone");
+
+        let item_att: i64 = conn
+            .query_row("SELECT count(*) FROM attachments WHERE id='a_item'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(item_att, 1, "the item attachment must survive");
+
+        let sub_att: i64 = conn
+            .query_row("SELECT count(*) FROM attachments WHERE id='a_sub'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sub_att, 0, "the subscription-only attachment must be dropped");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 18);
+    }
 }

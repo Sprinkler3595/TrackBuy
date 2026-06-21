@@ -246,11 +246,10 @@ export function BankStatementReviewPage() {
     if (!id) return
     setLoadError(null)
     try {
-      const [s, txs, eng, subs, inc, items, reimb, mList, lList, cList, pInvoices] = await Promise.all([
+      const [s, txs, eng, inc, items, reimb, mList, lList, cList, pInvoices] = await Promise.all([
         api.getBankStatement(id),
         api.listStatementTransactions(id),
         api.getEngagements({ status: "active" }),
-        api.getSubscriptions({ status: "active" }),
         api.getIncomes({ status: "active" }),
         api.getItems(),
         api.listPendingReimbursements({ status: "claimed" }),
@@ -299,7 +298,6 @@ export function BankStatementReviewPage() {
 
       const pool: TargetCandidate[] = []
       for (const e of eng) pool.push({ kind: "engagement", id: e.id, label: e.name, hint: e.creditor_name ?? undefined })
-      for (const sub of subs) pool.push({ kind: "subscription", id: sub.id, label: sub.name, hint: sub.merchant_name ?? undefined })
       for (const i of inc) pool.push({ kind: "income", id: i.id, label: i.name, hint: i.source_name ?? undefined })
       for (const it of filteredItems.slice(0, 500)) pool.push({ kind: "item", id: it.id, label: it.description, hint: formatDate(it.purchase_date) })
       for (const r of reimb) pool.push({ kind: "reimbursement", id: r.id, label: r.label })
@@ -850,7 +848,7 @@ export function BankStatementReviewPage() {
                         {matchBadge(t)}
                         {/* Flag for "matched against an existing purchase" —
                             distinguishes item/item_group suggestions from the
-                            libellé-based engagement/subscription matches. */}
+                            libellé-based engagement matches. */}
                         {(t.match_target_kind === "item" || t.match_target_kind === "item_group") &&
                           (t.match_confidence ?? 0) >= 0.7 && (
                             <Badge variant="outline" className="text-[10px]">

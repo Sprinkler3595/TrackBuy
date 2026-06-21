@@ -906,25 +906,6 @@ pub fn get_stats(
         .collect()
     };
 
-    let monthly_subscriptions: Vec<serde_json::Value> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT strftime('%Y-%m', paid_on) as month, SUM(amount) as total
-                 FROM subscription_payments
-                 WHERE date(paid_on) >= date('now', ?1) AND currency = ?2
-                 GROUP BY month ORDER BY month",
-            )
-            .map_err(|e| e.to_string())?;
-        stmt.query_map(rusqlite::params![&cutoff, &currency], |row| {
-            let month: String = row.get(0)?;
-            let total: f64 = row.get(1)?;
-            Ok(serde_json::json!({"month": month, "total": total}))
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect()
-    };
-
     let monthly_incomes: Vec<serde_json::Value> = {
         let mut stmt = conn
             .prepare(
@@ -1074,7 +1055,6 @@ pub fn get_stats(
         // existing dashboard widget.
         "monthly_spending": monthly_items,
         "monthly_engagements": monthly_engagements,
-        "monthly_subscriptions": monthly_subscriptions,
         "monthly_incomes": monthly_incomes,
         "engagements_by_type": engagements_by_type,
         "incomes_by_type": incomes_by_type,

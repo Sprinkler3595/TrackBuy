@@ -6,7 +6,6 @@ use crate::db::models::Reminder;
 /// Upcoming reminders unified across entities:
 ///   - "event"      : ticket event dates (items.event_datetime)
 ///   - "expiration" : voucher / license / ticket expirations (items.expiration_date)
-///   - "renewal"    : subscription renewals (subscriptions.next_renewal_date)
 ///   - "due"        : engagements whose `next_due_date` is approaching and that
 ///                    won't auto-pay (so the user still has to act). Skipped if
 ///                    a `scheduled` charge already covers that date — the
@@ -20,13 +19,13 @@ use crate::db::models::Reminder;
 ///
 /// The dashboard and notification hooks share the same threshold pattern
 /// (7 days = urgent, 30 days = warning). Each row carries `entity_type`
-/// ("item" | "subscription" | "engagement" | "charge") so the front routes
+/// ("item" | "engagement" | "charge") so the front routes
 /// the click to the right detail page. For both 'engagement' and 'charge'
 /// rows, `item_id` carries the parent `engagements.id` so the dashboard
 /// can always link to `/engagements/:id`.
 ///
 /// Items that have already been used (`redeemed_at IS NOT NULL`) and
-/// subscriptions/engagements that are paused/cancelled/ended are excluded.
+/// engagements that are paused/cancelled/ended are excluded.
 #[tauri::command]
 pub fn get_upcoming_reminders(
     state: State<'_, AppState>,
@@ -64,20 +63,6 @@ pub fn get_upcoming_reminders(
           AND i.redeemed_at IS NULL
           AND date(i.expiration_date) >= date('now')
           AND date(i.expiration_date) <= date('now', '+' || ?1 || ' days')
-
-        UNION ALL
-
-        SELECT s.id, 'subscription' as entity_type, s.name as description,
-               s.billing_cycle as item_kind, 'renewal' as reminder_type,
-               s.next_renewal_date as target_date,
-               CAST(julianday(date(s.next_renewal_date)) - julianday(date('now')) AS INTEGER) as days_until,
-               m.name as merchant_name
-        FROM subscriptions s
-        LEFT JOIN merchants m ON s.merchant_id = m.id
-        WHERE s.status = 'active'
-          AND s.kind = 'online'
-          AND date(s.next_renewal_date) >= date('now')
-          AND date(s.next_renewal_date) <= date('now', '+' || ?1 || ' days')
 
         UNION ALL
 

@@ -16,10 +16,9 @@ import {
 import * as api from "@/lib/tauri"
 
 interface AttachmentsPanelProps {
-  /// Target entity. Exactly one of itemId / subscriptionId / engagementId /
+  /// Target entity. Exactly one of itemId / engagementId /
   /// engagementChargeId / incomeId / reimbursementId must be set.
   itemId?: string
-  subscriptionId?: string
   engagementId?: string
   engagementChargeId?: string
   incomeId?: string
@@ -127,7 +126,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -139,9 +138,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
 
   const load = async () => {
     try {
-      if (subscriptionId) {
-        setAttachments(await api.getSubscriptionAttachments(subscriptionId))
-      } else if (engagementId) {
+      if (engagementId) {
         setAttachments(await api.getEngagementAttachments(engagementId))
       } else if (engagementChargeId) {
         setAttachments(await api.getEngagementChargeAttachments(engagementChargeId))
@@ -159,7 +156,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
     }
   }
 
-  useEffect(() => { load() }, [itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId])
+  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, reimbursementId])
 
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -208,9 +205,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
       try {
         const type = (typeSlug as AttachmentTypeKey)
         const harmonized = await harmonize(type, name)
-        if (subscriptionId) {
-          await api.addSubscriptionAttachment(subscriptionId, filePath, harmonized, typeSlug)
-        } else if (engagementId) {
+        if (engagementId) {
           await api.addEngagementAttachment(engagementId, filePath, harmonized, typeSlug)
         } else if (engagementChargeId) {
           await api.addEngagementChargeAttachment(engagementChargeId, filePath, harmonized, typeSlug)
@@ -389,7 +384,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
         {pending && (
           <TypePicker
             count={pending.paths.length}
-            canShare={!!orderId && !subscriptionId && !engagementId && !engagementChargeId && !incomeId && !reimbursementId}
+            canShare={!!orderId && !engagementId && !engagementChargeId && !incomeId && !reimbursementId}
             onPick={handleConfirmType}
             onCancel={() => setPending(null)}
           />

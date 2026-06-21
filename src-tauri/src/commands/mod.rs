@@ -19,7 +19,6 @@ pub mod pending_invoices;
 pub mod pending_reimbursements;
 pub mod qrbill;
 pub mod reminders;
-pub mod subscriptions;
 pub mod swiss_seed;
 pub mod taxes;
 pub mod this_month;
