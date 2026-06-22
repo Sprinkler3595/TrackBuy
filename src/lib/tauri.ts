@@ -599,6 +599,9 @@ export interface Engagement {
   insurance_bonus_pct: number | null
   /// JSON array of extra-coverage slugs (see CAR_INSURANCE_OPTIONS).
   insurance_options_json: string | null
+  /// JSON object: per-coverage premium breakdown (rc, collision, partial,
+  /// extras, passengers, taxes).
+  insurance_premium_breakdown_json: string | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -721,6 +724,7 @@ export const createEngagement = (engagement: {
   insurance_franchise_partial?: number | null
   insurance_bonus_pct?: number | null
   insurance_options_json?: string | null
+  insurance_premium_breakdown_json?: string | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>

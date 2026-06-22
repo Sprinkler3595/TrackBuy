@@ -25,16 +25,33 @@ const coverageLabel = (c: Coverage, fr: boolean): string =>
   c === "partial_casco"? (fr ? "RC + casco partielle" : "Liability + partial casco") :
                          (fr ? "RC + casco complète" : "Liability + full casco")
 
+// Extra coverages, aligned with a real Swiss offer (TCS/Baloise) plus the
+// common à-la-carte options.
 const CAR_INSURANCE_OPTIONS = [
-  { slug: "parking_damage", fr: "Dommages de parking", en: "Parking damage" },
+  { slug: "parking_damage", fr: "Dommage de stationnement", en: "Parking damage" },
+  { slug: "assistance_systems", fr: "Feux & systèmes d'assistance", en: "Lights & assistance systems" },
+  { slug: "interior", fr: "Habitacle", en: "Interior" },
+  { slug: "replacement_vehicle", fr: "Véhicule de remplacement / location", en: "Replacement vehicle" },
+  { slug: "personal_effects", fr: "Effets personnels emportés", en: "Personal belongings" },
+  { slug: "ev_battery", fr: "Électrique (batterie / Electra)", en: "Electric (battery / Electra)" },
+  { slug: "security_module", fr: "Module de sécurité", en: "Security module" },
+  { slug: "passengers", fr: "Accident occupants", en: "Passenger accident cover" },
   { slug: "bonus_protection", fr: "Protection du bonus", en: "Bonus protection" },
+  { slug: "new_value", fr: "Valeur vénale majorée (casco neuf)", en: "Enhanced market value (new-value)" },
   { slug: "gross_negligence", fr: "Renonciation négligence grave", en: "Gross-negligence waiver" },
-  { slug: "passengers", fr: "Assurance occupants / accident", en: "Passenger / accident cover" },
-  { slug: "new_value", fr: "Casco neuf (valeur à neuf)", en: "New-value cover" },
-  { slug: "replacement_vehicle", fr: "Véhicule de remplacement", en: "Replacement vehicle" },
   { slug: "legal_protection", fr: "Protection juridique circulation", en: "Traffic legal protection" },
   { slug: "assistance", fr: "Dépannage / assistance", en: "Breakdown assistance" },
-  { slug: "personal_effects", fr: "Effets personnels", en: "Personal belongings" },
+] as const
+
+// Per-coverage premium lines mirroring the offer's "Détails sur les prestations
+// et primes". Each maps to a key in insurance_premium_breakdown_json.
+const PREMIUM_LINES = [
+  { key: "rc", fr: "RC", en: "Liability" },
+  { key: "collision", fr: "Casco collision", en: "Collision casco" },
+  { key: "partial", fr: "Casco partielle", en: "Partial casco" },
+  { key: "extras", fr: "Couvertures complémentaires", en: "Extra coverages" },
+  { key: "passengers", fr: "Accident occupants", en: "Passenger accident" },
+  { key: "taxes", fr: "Taxes (timbre, contributions)", en: "Taxes (stamp, contributions)" },
 ] as const
 
 const PAY_METHODS: api.EngagementPaymentMethod[] = ["qr_bill", "direct_debit", "standing_order"]
@@ -117,6 +134,15 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   const [noticeDays, setNoticeDays] = useState("90")
   const [nextDue, setNextDue] = useState(firstOfNextMonth())
 
+  // Optional per-coverage premium breakdown (mirrors the offer). Keyed by
+  // PREMIUM_LINES.key, values as raw strings.
+  const [showBreakdown, setShowBreakdown] = useState(false)
+  const [breakdown, setBreakdown] = useState<Record<string, string>>({})
+  const breakdownTotal = PREMIUM_LINES.reduce((sum, l) => {
+    const v = parseFloat(breakdown[l.key] ?? "")
+    return Number.isNaN(v) ? sum : sum + v
+  }, 0)
+
   // Step 3 — extra coverages.
   const [options, setOptions] = useState<Record<string, boolean>>({})
   const toggleOption = (slug: string) => setOptions((p) => ({ ...p, [slug]: !p[slug] }))
@@ -133,6 +159,12 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
     setSaving(true)
     try {
       const selected = CAR_INSURANCE_OPTIONS.filter((o) => options[o.slug]).map((o) => o.slug)
+      // Keep only the filled breakdown lines, as numbers.
+      const breakdownObj: Record<string, number> = {}
+      for (const l of PREMIUM_LINES) {
+        const v = parseFloat(breakdown[l.key] ?? "")
+        if (!Number.isNaN(v)) breakdownObj[l.key] = v
+      }
       const eng = await api.createEngagement({
         name: name.trim(),
         engagement_type: "insurance_car",
@@ -160,6 +192,7 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
         insurance_franchise_partial: hasPartial ? numOrNull(franchisePartial) : null,
         insurance_bonus_pct: numOrNull(bonus),
         insurance_options_json: selected.length > 0 ? JSON.stringify(selected) : null,
+        insurance_premium_breakdown_json: Object.keys(breakdownObj).length > 0 ? JSON.stringify(breakdownObj) : null,
       })
       setCreatedId(eng.id)
       setCreatedName(eng.name)
@@ -247,7 +280,7 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">{fr ? "Prime (CHF)" : "Premium (CHF)"} *</label>
+                <label className="text-sm font-medium">{fr ? "Prime (taxes incl.) (CHF)" : "Premium (incl. taxes) (CHF)"} *</label>
                 <Input type="number" min="0" step="0.01" value={premium} onChange={(e) => setPremium(e.target.value)} placeholder="0.00" />
               </div>
               <div className="space-y-2">
@@ -279,8 +312,8 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                 </div>
               )}
               <div className="space-y-2">
-                <label className="text-sm font-medium">{fr ? "Degré de bonus (%)" : "Bonus level (%)"}</label>
-                <Input type="number" min="0" step="1" value={bonus} onChange={(e) => setBonus(e.target.value)} placeholder="45" />
+                <label className="text-sm font-medium">{fr ? "Degré de prime / bonus (%)" : "Premium level / bonus (%)"}</label>
+                <Input type="number" min="0" step="1" value={bonus} onChange={(e) => setBonus(e.target.value)} placeholder="35" />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Compte / carte" : "Account / card"}</label>
@@ -310,6 +343,35 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Délai de résiliation (jours)" : "Notice period (days)"}</label>
                 <Input type="number" min="0" value={noticeDays} onChange={(e) => setNoticeDays(e.target.value)} placeholder="90" />
+              </div>
+
+              <div className="space-y-3 rounded-md border border-dashed border-input p-3 sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input type="checkbox" checked={showBreakdown} onChange={(e) => setShowBreakdown(e.target.checked)} />
+                  {fr ? "Détailler les primes par couverture (comme sur l'offre)" : "Break down premiums per coverage (as on the offer)"}
+                </label>
+                {showBreakdown && (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {PREMIUM_LINES.map((l) => (
+                        <div key={l.key} className="space-y-1">
+                          <label className="text-xs font-medium text-muted-foreground">{fr ? l.fr : l.en}</label>
+                          <Input type="number" min="0" step="0.01" value={breakdown[l.key] ?? ""}
+                            onChange={(e) => setBreakdown((p) => ({ ...p, [l.key]: e.target.value }))} placeholder="0.00" />
+                        </div>
+                      ))}
+                    </div>
+                    {breakdownTotal > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">{fr ? "Total détaillé" : "Detailed total"} : <span className="font-medium text-foreground">{breakdownTotal.toLocaleString("fr-CH", { style: "currency", currency: "CHF" })}</span></span>
+                        <Button type="button" variant="ghost" size="sm" className="h-7 text-xs"
+                          onClick={() => setPremium(breakdownTotal.toFixed(2))}>
+                          {fr ? "Utiliser comme prime" : "Use as premium"}
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           )}

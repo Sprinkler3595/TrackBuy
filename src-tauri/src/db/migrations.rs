@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 22;
+pub const CURRENT_SCHEMA_VERSION: i64 = 23;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -96,6 +96,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 22 {
         migrate_v22(conn)?;
+    }
+    if current_version < 23 {
+        migrate_v23(conn)?;
     }
 
     Ok(())
@@ -1452,6 +1455,23 @@ fn migrate_v22(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (22);
         "
     ).map_err(|e| format!("Migration v22 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Per-coverage premium breakdown for a car insurance, mirroring a real Swiss
+/// offer (RC / casco collision / casco partielle / extra coverages / passenger
+/// accident, plus taxes). Stored as an opaque JSON object so the headline
+/// `current_amount` stays the budget figure (total incl. taxes) while the
+/// detail is kept for reference. NULL when not provided.
+fn migrate_v23(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN insurance_premium_breakdown_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (23);
+        "
+    ).map_err(|e| format!("Migration v23 failed: {}", e))?;
 
     Ok(())
 }

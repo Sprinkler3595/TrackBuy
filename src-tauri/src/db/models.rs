@@ -400,6 +400,8 @@ pub struct Engagement {
     pub insurance_bonus_pct: Option<f64>,
     /// JSON array of extra-coverage slugs; stored opaque.
     pub insurance_options_json: Option<String>,
+    /// JSON object with the per-coverage premium breakdown; stored opaque.
+    pub insurance_premium_breakdown_json: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -455,6 +457,7 @@ pub struct CreateEngagementRequest {
     pub insurance_franchise_partial: Option<f64>,
     pub insurance_bonus_pct: Option<f64>,
     pub insurance_options_json: Option<String>,
+    pub insurance_premium_breakdown_json: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

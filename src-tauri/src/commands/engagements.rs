@@ -19,7 +19,7 @@ const ENG_SELECT_COLUMNS: &str =
      e.leasing_residual_value, e.leasing_interest_rate_pct, e.leasing_annual_mileage_km,
      e.leasing_excess_km_cost, e.leasing_discount,
      e.insurance_coverage, e.insurance_franchise_casco, e.insurance_franchise_partial,
-     e.insurance_bonus_pct, e.insurance_options_json,
+     e.insurance_bonus_pct, e.insurance_options_json, e.insurance_premium_breakdown_json,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -71,11 +71,12 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         insurance_franchise_partial: row.get(38)?,
         insurance_bonus_pct: row.get(39)?,
         insurance_options_json: row.get(40)?,
-        created_at: row.get(41)?,
-        updated_at: row.get(42)?,
-        creditor_name: row.get(43)?,
-        card_name: row.get(44)?,
-        parent_name: row.get(45)?,
+        insurance_premium_breakdown_json: row.get(41)?,
+        created_at: row.get(42)?,
+        updated_at: row.get(43)?,
+        creditor_name: row.get(44)?,
+        card_name: row.get(45)?,
+        parent_name: row.get(46)?,
     })
 }
 
@@ -362,10 +363,10 @@ pub fn create_engagement(
          leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
          leasing_excess_km_cost, leasing_discount,
          insurance_coverage, insurance_franchise_casco, insurance_franchise_partial,
-         insurance_bonus_pct, insurance_options_json)
+         insurance_bonus_pct, insurance_options_json, insurance_premium_breakdown_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
                  ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-                 ?36, ?37, ?38, ?39, ?40)",
+                 ?36, ?37, ?38, ?39, ?40, ?41)",
         rusqlite::params![
             id,
             engagement.name,
@@ -407,6 +408,7 @@ pub fn create_engagement(
             engagement.insurance_franchise_partial,
             engagement.insurance_bonus_pct,
             engagement.insurance_options_json,
+            engagement.insurance_premium_breakdown_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -443,8 +445,9 @@ pub fn update_engagement(
          leasing_discount = ?35,
          insurance_coverage = ?36, insurance_franchise_casco = ?37,
          insurance_franchise_partial = ?38, insurance_bonus_pct = ?39, insurance_options_json = ?40,
+         insurance_premium_breakdown_json = ?41,
          updated_at = datetime('now')
-         WHERE id = ?41",
+         WHERE id = ?42",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -486,6 +489,7 @@ pub fn update_engagement(
             engagement.insurance_franchise_partial,
             engagement.insurance_bonus_pct,
             engagement.insurance_options_json,
+            engagement.insurance_premium_breakdown_json,
             engagement.id,
         ],
     )
@@ -1063,10 +1067,12 @@ mod tests {
             "INSERT INTO engagements
              (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
               vehicle_plate, insurance_coverage, insurance_franchise_casco,
-              insurance_franchise_partial, insurance_bonus_pct, insurance_options_json)
+              insurance_franchise_partial, insurance_bonus_pct, insurance_options_json,
+              insurance_premium_breakdown_json)
              VALUES ('e1','Assurance auto','insurance_car','yearly',1,'CHF',0,'active',
                      'VD 123456','full_casco', 1000.0, 200.0, 45.0,
-                     '[\"parking_damage\",\"bonus_protection\"]')",
+                     '[\"parking_damage\",\"bonus_protection\"]',
+                     '{\"rc\":433.5,\"collision\":467.9}')",
             [],
         ).unwrap();
 
@@ -1083,5 +1089,6 @@ mod tests {
         assert_eq!(eng.insurance_franchise_partial, Some(200.0));
         assert_eq!(eng.insurance_bonus_pct, Some(45.0));
         assert_eq!(eng.insurance_options_json.as_deref(), Some("[\"parking_damage\",\"bonus_protection\"]"));
+        assert_eq!(eng.insurance_premium_breakdown_json.as_deref(), Some("{\"rc\":433.5,\"collision\":467.9}"));
     }
 }
