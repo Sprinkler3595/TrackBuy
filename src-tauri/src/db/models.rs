@@ -402,6 +402,15 @@ pub struct Engagement {
     pub insurance_options_json: Option<String>,
     /// JSON object with the per-coverage premium breakdown; stored opaque.
     pub insurance_premium_breakdown_json: Option<String>,
+    // More vehicle/insurance details (v24).
+    /// 'passenger_car' | 'motorcycle' | 'light_commercial' | 'motorhome' | 'other'.
+    pub vehicle_category: Option<String>,
+    /// Swiss registration number (n° de matricule / Stammnummer).
+    pub vehicle_registration_number: Option<String>,
+    /// The vehicle is leased (offer's "Leasing: Oui").
+    pub vehicle_is_leasing: Option<bool>,
+    /// Extra casco deductible applied to young drivers (CHF).
+    pub insurance_young_driver_franchise: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -458,6 +467,10 @@ pub struct CreateEngagementRequest {
     pub insurance_bonus_pct: Option<f64>,
     pub insurance_options_json: Option<String>,
     pub insurance_premium_breakdown_json: Option<String>,
+    pub vehicle_category: Option<String>,
+    pub vehicle_registration_number: Option<String>,
+    pub vehicle_is_leasing: Option<bool>,
+    pub insurance_young_driver_franchise: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -602,6 +602,10 @@ export interface Engagement {
   /// JSON object: per-coverage premium breakdown (rc, collision, partial,
   /// extras, passengers, taxes).
   insurance_premium_breakdown_json: string | null
+  vehicle_category: VehicleCategory | null
+  vehicle_registration_number: string | null
+  vehicle_is_leasing: boolean | null
+  insurance_young_driver_franchise: number | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
@@ -614,6 +618,10 @@ export type ParkingKind = "outdoor" | "collective_garage" | "box"
 
 // Car insurance coverage level: RC only, RC + partial casco, RC + full casco.
 export type CarInsuranceCoverage = "rc" | "partial_casco" | "full_casco"
+
+// Vehicle category (Swiss vehicle types).
+export type VehicleCategory =
+  | "passenger_car" | "motorcycle" | "light_commercial" | "motorhome" | "other"
 
 export interface EngagementCharge {
   id: string
@@ -725,6 +733,10 @@ export const createEngagement = (engagement: {
   insurance_bonus_pct?: number | null
   insurance_options_json?: string | null
   insurance_premium_breakdown_json?: string | null
+  vehicle_category?: VehicleCategory | null
+  vehicle_registration_number?: string | null
+  vehicle_is_leasing?: boolean | null
+  insurance_young_driver_franchise?: number | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>

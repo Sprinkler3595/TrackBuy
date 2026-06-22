@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_SCHEMA_VERSION: i64 = 24;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -99,6 +99,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 23 {
         migrate_v23(conn)?;
+    }
+    if current_version < 24 {
+        migrate_v24(conn)?;
     }
 
     Ok(())
@@ -1472,6 +1475,27 @@ fn migrate_v23(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (23);
         "
     ).map_err(|e| format!("Migration v23 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// More vehicle/insurance details taken from a real Swiss offer:
+///   - vehicle_category             : 'passenger_car' | 'motorcycle' | … .
+///   - vehicle_registration_number  : Swiss registration no. (n° de matricule).
+///   - vehicle_is_leasing           : the vehicle is leased (offer "Leasing: Oui").
+///   - insurance_young_driver_franchise: extra deductible for young drivers (CHF).
+/// All NULL when not applicable.
+fn migrate_v24(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN vehicle_category TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_registration_number TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_is_leasing INTEGER;
+        ALTER TABLE engagements ADD COLUMN insurance_young_driver_franchise REAL;
+
+        INSERT INTO schema_version (version) VALUES (24);
+        "
+    ).map_err(|e| format!("Migration v24 failed: {}", e))?;
 
     Ok(())
 }

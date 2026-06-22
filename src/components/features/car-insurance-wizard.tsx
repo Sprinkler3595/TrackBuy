@@ -25,6 +25,14 @@ const coverageLabel = (c: Coverage, fr: boolean): string =>
   c === "partial_casco"? (fr ? "RC + casco partielle" : "Liability + partial casco") :
                          (fr ? "RC + casco complète" : "Liability + full casco")
 
+const VEHICLE_CATEGORIES: { slug: api.VehicleCategory; fr: string; en: string }[] = [
+  { slug: "passenger_car", fr: "Voiture de tourisme", en: "Passenger car" },
+  { slug: "motorcycle", fr: "Motocycle", en: "Motorcycle" },
+  { slug: "light_commercial", fr: "Véhicule utilitaire léger", en: "Light commercial vehicle" },
+  { slug: "motorhome", fr: "Camping-car", en: "Motorhome" },
+  { slug: "other", fr: "Autre", en: "Other" },
+]
+
 // Extra coverages, aligned with a real Swiss offer (TCS/Baloise) plus the
 // common à-la-carte options.
 const CAR_INSURANCE_OPTIONS = [
@@ -118,6 +126,9 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   const [vin, setVin] = useState("")
   const [policyNo, setPolicyNo] = useState("")
   const [parentId, setParentId] = useState("")
+  const [vehicleCategory, setVehicleCategory] = useState<api.VehicleCategory>("passenger_car")
+  const [regNumber, setRegNumber] = useState("")
+  const [isLeasing, setIsLeasing] = useState(false)
 
   // Step 2 — coverage + financials.
   const [insurerId, setInsurerId] = useState("")
@@ -127,6 +138,7 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   const [cycle, setCycle] = useState<api.EngagementBillingCycle>("yearly")
   const [franchiseCasco, setFranchiseCasco] = useState("")
   const [franchisePartial, setFranchisePartial] = useState("")
+  const [youngDriverFranchise, setYoungDriverFranchise] = useState("")
   const [bonus, setBonus] = useState("")
   const [payMethod, setPayMethod] = useState<api.EngagementPaymentMethod>("qr_bill")
   const [startDate, setStartDate] = useState("")
@@ -148,6 +160,14 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   const toggleOption = (slug: string) => setOptions((p) => ({ ...p, [slug]: !p[slug] }))
 
   const leasings = engagements.filter((e) => e.engagement_type === "leasing")
+
+  // "Véhicule en leasing": pre-select the (only/most recent) leasing to link to.
+  function toggleLeasing(checked: boolean) {
+    setIsLeasing(checked)
+    if (checked && !parentId && leasings.length > 0) setParentId(leasings[0].id)
+    if (!checked) setParentId("")
+  }
+
   const premiumValue = parseFloat(premium)
   const step1Valid = name.trim().length > 0
   const step2Valid = !Number.isNaN(premiumValue) && premiumValue > 0
@@ -187,9 +207,13 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
         vehicle_model: model.trim() || null,
         vehicle_plate: plate.trim() || null,
         vehicle_vin: vin.trim() || null,
+        vehicle_category: vehicleCategory,
+        vehicle_registration_number: regNumber.trim() || null,
+        vehicle_is_leasing: isLeasing,
         insurance_coverage: coverage,
         insurance_franchise_casco: hasFull ? numOrNull(franchiseCasco) : null,
         insurance_franchise_partial: hasPartial ? numOrNull(franchisePartial) : null,
+        insurance_young_driver_franchise: numOrNull(youngDriverFranchise),
         insurance_bonus_pct: numOrNull(bonus),
         insurance_options_json: selected.length > 0 ? JSON.stringify(selected) : null,
         insurance_premium_breakdown_json: Object.keys(breakdownObj).length > 0 ? JSON.stringify(breakdownObj) : null,
@@ -248,8 +272,19 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                 <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={fr ? "Ex : Golf" : "e.g. Golf"} />
               </div>
               <div className="space-y-2">
+                <label className="text-sm font-medium">{fr ? "Genre de véhicule" : "Vehicle category"}</label>
+                <select className={fieldCls} value={vehicleCategory}
+                  onChange={(e) => setVehicleCategory(e.target.value as api.VehicleCategory)}>
+                  {VEHICLE_CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{fr ? c.fr : c.en}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Plaque d'immatriculation" : "License plate"}</label>
                 <Input value={plate} onChange={(e) => setPlate(e.target.value)} placeholder={fr ? "Ex : VD 123456" : "e.g. VD 123456"} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{fr ? "N° de matricule" : "Registration no."}</label>
+                <Input value={regNumber} onChange={(e) => setRegNumber(e.target.value)} />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "N° de châssis (VIN)" : "Chassis no. (VIN)"}</label>
@@ -259,15 +294,25 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                 <label className="text-sm font-medium">{fr ? "N° de police" : "Policy number"}</label>
                 <Input value={policyNo} onChange={(e) => setPolicyNo(e.target.value)} />
               </div>
-              {leasings.length > 0 && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">{fr ? "Rattacher au leasing (optionnel)" : "Link to leasing (optional)"}</label>
-                  <select className={fieldCls} value={parentId} onChange={(e) => setParentId(e.target.value)}>
-                    <option value="">—</option>
-                    {leasings.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-                  </select>
-                </div>
-              )}
+
+              <div className="space-y-2 sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input type="checkbox" checked={isLeasing} onChange={(e) => toggleLeasing(e.target.checked)} />
+                  {fr ? "Véhicule en leasing" : "Vehicle is leased"}
+                </label>
+                {isLeasing && (
+                  leasings.length > 0 ? (
+                    <select className={fieldCls} value={parentId} onChange={(e) => setParentId(e.target.value)}>
+                      <option value="">{fr ? "— Ne pas rattacher —" : "— Don't link —"}</option>
+                      {leasings.map((l) => <option key={l.id} value={l.id}>{fr ? "Rattacher à : " : "Link to: "}{l.name}</option>)}
+                    </select>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {fr ? "Aucun leasing enregistré à rattacher." : "No leasing on record to link to."}
+                    </p>
+                  )
+                )}
+              </div>
             </div>
           )}
 
@@ -311,6 +356,10 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                   <Input type="number" min="0" step="0.01" value={franchisePartial} onChange={(e) => setFranchisePartial(e.target.value)} placeholder="200" />
                 </div>
               )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{fr ? "Franchise jeunes conducteurs (CHF)" : "Young-driver deductible (CHF)"}</label>
+                <Input type="number" min="0" step="0.01" value={youngDriverFranchise} onChange={(e) => setYoungDriverFranchise(e.target.value)} placeholder="1000" />
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{fr ? "Degré de prime / bonus (%)" : "Premium level / bonus (%)"}</label>
                 <Input type="number" min="0" step="1" value={bonus} onChange={(e) => setBonus(e.target.value)} placeholder="35" />
