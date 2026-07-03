@@ -74,7 +74,7 @@ export function QrBillReview() {
   // Payment due date: derived from the QR-bill's Swico billing info when
   // present, otherwise the user sets it (defaults to today).
   const [dueDate, setDueDate] = useState("")
-  const [dueDerived, setDueDerived] = useState(false)
+  const [dueSource, setDueSource] = useState<"swico" | "pdf" | "manual">("manual")
 
   // "Create a new engagement" inline form.
   const [showCreate, setShowCreate] = useState(false)
@@ -95,9 +95,11 @@ export function QrBillReview() {
         setShowCreate(false)
         setNewName(d.creditor.name || "")
         setNewCreditorId(d.suggested_creditor_id ?? "")
-        const { dueDate: derived } = parseSwicoDueDate(d.bill_information)
-        setDueDate(derived ?? new Date().toISOString().slice(0, 10))
-        setDueDerived(derived != null)
+        const { dueDate: swico } = parseSwicoDueDate(d.bill_information)
+        const pdfHint = sessionStorage.getItem("qrbill-due-hint")
+        sessionStorage.removeItem("qrbill-due-hint")
+        setDueDate(swico ?? pdfHint ?? new Date().toISOString().slice(0, 10))
+        setDueSource(swico ? "swico" : pdfHint ? "pdf" : "manual")
         Promise.all([api.getCreditors(), api.getEngagements({ status: "active" })])
           .then(([c, e]) => {
             setCreditors(c)
@@ -119,6 +121,10 @@ export function QrBillReview() {
   const matchedCreditor = creditors.find((c) => c.id === decoded.suggested_creditor_id)
   const typeKey = (typ: api.EngagementType): keyof TranslationKeys =>
     `engagements.type.${typ}` as keyof TranslationKeys
+  const dueNote =
+    dueSource === "swico" ? "Déduite de la QR-facture (date de facture + délai)." :
+    dueSource === "pdf"   ? "Lue sur le PDF de la facture — à vérifier." :
+                            "Non indiquée sur la QR-facture — à saisir."
 
   async function linkToEngagement() {
     if (!decoded || !selectedEngagement) return
@@ -297,9 +303,7 @@ export function QrBillReview() {
                   <label className="mt-3 block text-xs font-medium">Échéance de paiement</label>
                   <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="mt-1" />
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {dueDerived
-                      ? "Déduite de la QR-facture (date de facture + délai)."
-                      : "La QR-facture n'indique pas d'échéance — vérifiez cette date."}
+                    {dueNote}
                   </p>
                 </div>
 
@@ -381,9 +385,7 @@ export function QrBillReview() {
                       <label className="block text-xs font-medium">Échéance de paiement</label>
                       <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
                       <p className="text-xs text-muted-foreground">
-                        {dueDerived
-                          ? "Déduite de la QR-facture (date de facture + délai)."
-                          : "Non indiquée sur la QR-facture — à vérifier."}
+                        {dueNote}
                       </p>
                     </div>
 

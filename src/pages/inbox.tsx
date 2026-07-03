@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
-import { scanQrFromBytes, scanQrFromFile } from "@/lib/qr-scan"
+import { scanQrFromBytes, scanQrFromFile, extractDueDateFromBytes, extractDueDateFromFile } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
 
@@ -43,10 +43,12 @@ export function InboxPage() {
   // A scanner returns the "SPC…" payload (or null). Decode it and hand off to
   // the review modal exactly like the manual-paste path; on no-match, fall
   // back to that paste modal rather than leaving the user stuck.
-  async function runScan(scan: () => Promise<string | null>) {
+  async function runScan(source: { bytes: Uint8Array; isPdf: boolean } | { file: File }) {
     setScanning(true)
     try {
-      const payload = await scan()
+      const payload = "file" in source
+        ? await scanQrFromFile(source.file)
+        : await scanQrFromBytes(source.bytes, source.isPdf)
       if (!payload) {
         toast(
           "Aucune QR-facture suisse détectée sur ce document. Vous pouvez coller le texte manuellement.",
@@ -56,7 +58,19 @@ export function InboxPage() {
         return
       }
       const decoded = await api.decodeQrbill(payload)
+      // Best-effort: pull the payment due date from the PDF's text layer (the
+      // QR payload itself has none). Silently ignored for images/scans.
+      let dueHint: string | null = null
+      try {
+        dueHint = "file" in source
+          ? await extractDueDateFromFile(source.file)
+          : await extractDueDateFromBytes(source.bytes, source.isPdf)
+      } catch {
+        // best effort
+      }
       sessionStorage.setItem("qrbill-pending", JSON.stringify(decoded))
+      if (dueHint) sessionStorage.setItem("qrbill-due-hint", dueHint)
+      else sessionStorage.removeItem("qrbill-due-hint")
       window.dispatchEvent(new Event("qrbill-decoded"))
     } catch (e) {
       toast(String(e), "error")
@@ -80,7 +94,7 @@ export function InboxPage() {
       if (!selected) return
       const path = selected as string
       const b64 = await api.readBinaryFileBase64(path)
-      void runScan(() => scanQrFromBytes(base64ToBytes(b64), path.toLowerCase().endsWith(".pdf")))
+      void runScan({ bytes: base64ToBytes(b64), isPdf: path.toLowerCase().endsWith(".pdf") })
     } catch {
       // Not running under Tauri (or dialog unavailable) → use the file input.
       fileInputRef.current?.click()
@@ -90,13 +104,13 @@ export function InboxPage() {
   function onFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = "" // allow re-picking the same file
-    if (file) void runScan(() => scanQrFromFile(file))
+    if (file) void runScan({ file })
   }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     const file = e.dataTransfer.files?.[0]
-    if (file) void runScan(() => scanQrFromFile(file))
+    if (file) void runScan({ file })
   }
 
   return (
