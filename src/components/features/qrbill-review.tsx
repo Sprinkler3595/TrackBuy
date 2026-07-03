@@ -22,6 +22,44 @@ const TYPE_GROUPS: { label: string; types: api.EngagementType[] }[] = [
   { label: "Autre", types: ["membership", "other"] },
 ]
 
+/// The Swiss QR-bill carries no due date. When the biller filled the Swico S1
+/// "billing information" field, we can derive it: `/11/` is the invoice date
+/// (YYMMDD) and `/40/` the payment terms (e.g. "0:30" = net 30 days, or
+/// "2:10;0:30" = 2% within 10 days, net within 30). Due = invoice date + net
+/// days (the 0%-discount term, else the longest). Returns ISO dates or null.
+/// (Escaped slashes in values aren't handled — rare in practice.)
+function parseSwicoDueDate(billInfo: string): { invoiceDate: string | null; dueDate: string | null } {
+  if (!billInfo || !billInfo.startsWith("//S1/")) return { invoiceDate: null, dueDate: null }
+  const parts = billInfo.slice(5).split("/")
+  const map: Record<string, string> = {}
+  for (let i = 0; i + 1 < parts.length; i += 2) map[parts[i]] = parts[i + 1]
+
+  let invoiceDate: string | null = null
+  const yymmdd = map["11"]
+  if (yymmdd && /^\d{6}$/.test(yymmdd)) {
+    invoiceDate = `20${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`
+  }
+
+  let dueDate: string | null = null
+  const terms = map["40"]
+  if (invoiceDate && terms) {
+    let netDays: number | null = null
+    for (const term of terms.split(";")) {
+      const [disc, days] = term.split(":")
+      const d = parseInt(days, 10)
+      if (Number.isNaN(d)) continue
+      if (parseFloat(disc) === 0) { netDays = d; break }
+      netDays = Math.max(netDays ?? 0, d)
+    }
+    if (netDays != null) {
+      const dt = new Date(`${invoiceDate}T00:00:00`)
+      dt.setDate(dt.getDate() + netDays)
+      dueDate = dt.toISOString().slice(0, 10)
+    }
+  }
+  return { invoiceDate, dueDate }
+}
+
 /// Modal that opens after the user has decoded a QR-bill payload elsewhere.
 /// Picks up the decoded payload from sessionStorage (set by the inbox), so
 /// it can be re-used from any page without prop-drilling.
@@ -33,6 +71,10 @@ export function QrBillReview() {
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [selectedEngagement, setSelectedEngagement] = useState<string>("")
   const [creating, setCreating] = useState(false)
+  // Payment due date: derived from the QR-bill's Swico billing info when
+  // present, otherwise the user sets it (defaults to today).
+  const [dueDate, setDueDate] = useState("")
+  const [dueDerived, setDueDerived] = useState(false)
 
   // "Create a new engagement" inline form.
   const [showCreate, setShowCreate] = useState(false)
@@ -53,6 +95,9 @@ export function QrBillReview() {
         setShowCreate(false)
         setNewName(d.creditor.name || "")
         setNewCreditorId(d.suggested_creditor_id ?? "")
+        const { dueDate: derived } = parseSwicoDueDate(d.bill_information)
+        setDueDate(derived ?? new Date().toISOString().slice(0, 10))
+        setDueDerived(derived != null)
         Promise.all([api.getCreditors(), api.getEngagements({ status: "active" })])
           .then(([c, e]) => {
             setCreditors(c)
@@ -79,10 +124,9 @@ export function QrBillReview() {
     if (!decoded || !selectedEngagement) return
     setCreating(true)
     try {
-      const today = new Date().toISOString().slice(0, 10)
       await api.addEngagementCharge({
         engagement_id: selectedEngagement,
-        due_date: today,
+        due_date: dueDate || new Date().toISOString().slice(0, 10),
         amount: decoded.amount ?? 0,
         currency: decoded.currency,
         status: "scheduled",
@@ -118,14 +162,14 @@ export function QrBillReview() {
     if (!decoded || !newName.trim()) return
     setCreating(true)
     try {
-      const today = new Date().toISOString().slice(0, 10)
+      const due = dueDate || new Date().toISOString().slice(0, 10)
       const eng = await api.createEngagement({
         name: newName.trim(),
         engagement_type: newType,
         creditor_id: newCreditorId || null,
         billing_cycle: newCycle,
         cycle_interval: 1,
-        next_due_date: today,
+        next_due_date: due,
         current_amount: decoded.amount ?? null,
         currency: decoded.currency,
         payment_method: "qr_bill",
@@ -136,7 +180,7 @@ export function QrBillReview() {
       // (engagement, due_date), so it won't be duplicated later.
       await api.addEngagementCharge({
         engagement_id: eng.id,
-        due_date: today,
+        due_date: due,
         amount: decoded.amount ?? 0,
         currency: decoded.currency,
         status: "scheduled",
@@ -249,6 +293,14 @@ export function QrBillReview() {
                       <strong>{matchedEngagement.name}</strong>.
                     </p>
                   )}
+
+                  <label className="mt-3 block text-xs font-medium">Échéance de paiement</label>
+                  <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="mt-1" />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {dueDerived
+                      ? "Déduite de la QR-facture (date de facture + délai)."
+                      : "La QR-facture n'indique pas d'échéance — vérifiez cette date."}
+                  </p>
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -323,6 +375,16 @@ export function QrBillReview() {
                         <option value="one_shot">Ponctuel (une fois)</option>
                         <option value="custom">Personnalisé</option>
                       </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Échéance de paiement</label>
+                      <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+                      <p className="text-xs text-muted-foreground">
+                        {dueDerived
+                          ? "Déduite de la QR-facture (date de facture + délai)."
+                          : "Non indiquée sur la QR-facture — à vérifier."}
+                      </p>
                     </div>
 
                     <p className="text-xs text-muted-foreground">
