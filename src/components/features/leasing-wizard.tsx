@@ -145,6 +145,18 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
     try {
       const dur = intOrNull(duration)
       const endDate = startDate && dur ? addMonths(startDate, dur) : null
+
+      // Down payment net of any accepted discount.
+      const grossDown = numOrNull(downPayment)
+      const netAcompte = grossDown != null ? Math.max(0, grossDown - (numOrNull(discount) ?? 0)) : 0
+      // First payment date (acompte + 1st instalment fall due here).
+      const firstDue = nextDue || startDate || new Date().toISOString().slice(0, 10)
+      // When there's a down payment, we materialise the first period ourselves
+      // (acompte + 1st instalment on `firstDue`) and start the automatic
+      // roll-forward at the SECOND period, so nothing collides or is skipped.
+      const hasAcompte = netAcompte > 0
+      const engNextDue = hasAcompte ? addMonths(firstDue, 1) : (nextDue || null)
+
       const eng = await api.createEngagement({
         name: name.trim(),
         engagement_type: "leasing",
@@ -155,7 +167,7 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         contract_end_date: endDate,
         billing_cycle: "monthly",
         cycle_interval: 1,
-        next_due_date: nextDue || null,
+        next_due_date: engNextDue,
         current_amount: monthlyValue,
         currency: "CHF",
         payment_method: payMethod,
@@ -175,6 +187,21 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         leasing_excess_km_cost: numOrNull(excessKm),
         leasing_discount: numOrNull(discount),
       })
+
+      // Materialise the first period as to-pay charges so the acompte shows up
+      // in the month's expenses alongside the first instalment.
+      if (hasAcompte) {
+        await api.addEngagementCharge({
+          engagement_id: eng.id, due_date: firstDue, amount: netAcompte,
+          currency: "CHF", payment_card_id: cardId || null, status: "scheduled",
+          notes: fr ? "Acompte / 1er versement du leasing" : "Leasing down payment / initial",
+        })
+        await api.addEngagementCharge({
+          engagement_id: eng.id, due_date: firstDue, amount: monthlyValue,
+          currency: "CHF", payment_card_id: cardId || null, status: "scheduled",
+          notes: fr ? "1re mensualité" : "First instalment",
+        })
+      }
 
       // Mandatory casco insurance, linked as a child engagement of the leasing.
       if (addInsurance && !Number.isNaN(insurancePremiumValue) && insurancePremiumValue > 0) {
