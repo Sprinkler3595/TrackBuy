@@ -88,7 +88,6 @@ export function FinancesPage() {
   const [stats, setStats] = useState<api.Stats | null>(null)
   const [incomes, setIncomes] = useState<api.Income[]>([])
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
-  const [subs, setSubs] = useState<api.Subscription[]>([])
   const [upcomingCharges, setUpcomingCharges] = useState<api.EngagementCharge[]>([])
   const [selectedEngagementId, setSelectedEngagementId] = useState<string>("")
   const [engagementCharges, setEngagementCharges] = useState<api.EngagementCharge[]>([])
@@ -100,17 +99,15 @@ export function FinancesPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const [statsData, incData, engData, subsData, chargesData] = await Promise.all([
+      const [statsData, incData, engData, chargesData] = await Promise.all([
         api.getStats(windowMonths, DEFAULT_CURRENCY),
         api.getIncomes({ status: "active" }),
         api.getEngagements({ status: "active" }),
-        api.getSubscriptions({ status: "active" }),
         api.getUpcomingEngagementCharges(30),
       ])
       setStats(statsData)
       setIncomes(incData)
       setEngagements(engData)
-      setSubs(subsData)
       setUpcomingCharges(chargesData)
       if (!selectedEngagementId && engData.length > 0) {
         setSelectedEngagementId(engData[0].id)
@@ -148,30 +145,16 @@ export function FinancesPage() {
     [engagements],
   )
 
-  const monthlySubs = useMemo(() => subs
-    .filter((s) => s.currency === DEFAULT_CURRENCY)
-    .reduce((acc, s) => {
-      const n = Math.max(1, s.cycle_interval)
-      switch (s.billing_cycle) {
-        case "monthly":   return acc + s.price / n
-        case "quarterly": return acc + s.price / (3 * n)
-        case "yearly":    return acc + s.price / (12 * n)
-        case "custom":    return acc + (s.price / n) * 30.44
-      }
-      return acc
-    }, 0), [subs])
-
   // Devises étrangères présentes mais NON incluses dans les KPI ci-dessus.
   const foreignCurrencies = useMemo(() => {
     const set = new Set<string>()
     incomes.forEach((i) => { if (i.current_amount != null && i.billing_cycle !== "one_shot" && i.currency !== DEFAULT_CURRENCY) set.add(i.currency) })
     engagements.forEach((e) => { if (e.current_amount != null && e.billing_cycle !== "one_shot" && e.currency !== DEFAULT_CURRENCY) set.add(e.currency) })
-    subs.forEach((s) => { if (s.currency !== DEFAULT_CURRENCY) set.add(s.currency) })
     upcomingCharges.forEach((c) => { if (c.currency !== DEFAULT_CURRENCY) set.add(c.currency) })
     return Array.from(set).sort()
-  }, [incomes, engagements, subs, upcomingCharges])
+  }, [incomes, engagements, upcomingCharges])
 
-  const totalMonthlyExpense = monthlyEngagement + monthlySubs
+  const totalMonthlyExpense = monthlyEngagement
   const ratio = monthlyIncome > 0 ? (totalMonthlyExpense / monthlyIncome) * 100 : 0
   const remaining = monthlyIncome - totalMonthlyExpense
   const dueIn30 = upcomingCharges
@@ -186,7 +169,6 @@ export function FinancesPage() {
       Revenus: stats.monthly_incomes,
       Dépenses: [
         ...stats.monthly_engagements,
-        ...stats.monthly_subscriptions,
         ...stats.monthly_spending,
       ].reduce<Array<{ month: string; total: number }>>((acc, row) => {
         const existing = acc.find((r) => r.month === row.month)
@@ -201,7 +183,6 @@ export function FinancesPage() {
     if (!stats) return []
     return mergeMonthlySeries({
       Engagements: stats.monthly_engagements,
-      Abonnements: stats.monthly_subscriptions,
       Achats: stats.monthly_spending,
     })
   }, [stats])
@@ -225,11 +206,9 @@ export function FinancesPage() {
       const bucket = Object.entries(CATEGORY_GROUPS).find(([, types]) => types.includes(row.type))?.[0] ?? "Autres"
       buckets[bucket] = (buckets[bucket] ?? 0) + row.total
     }
-    // Append online subscriptions and one-off items as their own slices so
-    // the donut covers 100% of the monetary base, not just engagements.
-    const subsTotal = stats.monthly_subscriptions.reduce((a, r) => a + r.total, 0)
+    // Append one-off items as their own slice so the donut covers 100% of the
+    // monetary base, not just engagements.
     const itemsTotal = stats.monthly_spending.reduce((a, r) => a + r.total, 0)
-    if (subsTotal > 0) buckets["Abos en ligne"] = subsTotal
     if (itemsTotal > 0) buckets["Achats"] = itemsTotal
     return Object.entries(buckets)
       .map(([name, value]) => ({ name, value }))

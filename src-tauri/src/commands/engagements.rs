@@ -13,6 +13,15 @@ const ENG_SELECT_COLUMNS: &str =
      e.contract_reference, e.contract_start_date, e.contract_end_date, e.notice_period_days,
      e.billing_cycle, e.cycle_interval, e.next_due_date, e.current_amount, e.currency,
      e.payment_method, e.auto_pay, e.status, e.ended_on, e.notes, e.clauses_json,
+     e.parking_spot_number, e.parking_kind,
+     e.vehicle_make, e.vehicle_model, e.vehicle_plate, e.vehicle_vin, e.vehicle_first_registration,
+     e.leasing_vehicle_price, e.leasing_duration_months, e.leasing_down_payment,
+     e.leasing_residual_value, e.leasing_interest_rate_pct, e.leasing_annual_mileage_km,
+     e.leasing_excess_km_cost, e.leasing_discount,
+     e.insurance_coverage, e.insurance_franchise_casco, e.insurance_franchise_partial,
+     e.insurance_bonus_pct, e.insurance_options_json, e.insurance_premium_breakdown_json,
+     e.vehicle_category, e.vehicle_registration_number, e.vehicle_is_leasing,
+     e.insurance_young_driver_franchise,
      e.created_at, e.updated_at,
      cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
 
@@ -44,11 +53,36 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         ended_on: row.get(18)?,
         notes: row.get(19)?,
         clauses_json: row.get(20)?,
-        created_at: row.get(21)?,
-        updated_at: row.get(22)?,
-        creditor_name: row.get(23)?,
-        card_name: row.get(24)?,
-        parent_name: row.get(25)?,
+        parking_spot_number: row.get(21)?,
+        parking_kind: row.get(22)?,
+        vehicle_make: row.get(23)?,
+        vehicle_model: row.get(24)?,
+        vehicle_plate: row.get(25)?,
+        vehicle_vin: row.get(26)?,
+        vehicle_first_registration: row.get(27)?,
+        leasing_vehicle_price: row.get(28)?,
+        leasing_duration_months: row.get(29)?,
+        leasing_down_payment: row.get(30)?,
+        leasing_residual_value: row.get(31)?,
+        leasing_interest_rate_pct: row.get(32)?,
+        leasing_annual_mileage_km: row.get(33)?,
+        leasing_excess_km_cost: row.get(34)?,
+        leasing_discount: row.get(35)?,
+        insurance_coverage: row.get(36)?,
+        insurance_franchise_casco: row.get(37)?,
+        insurance_franchise_partial: row.get(38)?,
+        insurance_bonus_pct: row.get(39)?,
+        insurance_options_json: row.get(40)?,
+        insurance_premium_breakdown_json: row.get(41)?,
+        vehicle_category: row.get(42)?,
+        vehicle_registration_number: row.get(43)?,
+        vehicle_is_leasing: row.get(44)?,
+        insurance_young_driver_franchise: row.get(45)?,
+        created_at: row.get(46)?,
+        updated_at: row.get(47)?,
+        creditor_name: row.get(48)?,
+        card_name: row.get(49)?,
+        parent_name: row.get(50)?,
     })
 }
 
@@ -96,10 +130,9 @@ fn row_to_revision(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRevisi
     })
 }
 
-/// SQLite `date()` modifier for one engagement billing cycle. Mirrors
-/// `subscriptions::cycle_modifier` but adds `semiannual` and `one_shot`:
-/// `one_shot` never rolls forward (returns an empty modifier so callers know
-/// to skip).
+/// SQLite `date()` modifier for one engagement billing cycle. Supports
+/// `semiannual` and `one_shot`: `one_shot` never rolls forward (returns an
+/// empty modifier so callers know to skip).
 fn cycle_modifier(billing_cycle: &str, interval: i32) -> Option<String> {
     let n = interval.max(1);
     match billing_cycle {
@@ -126,7 +159,7 @@ fn advance_date(conn: &Connection, date: &str, modifier: &str) -> Result<String,
 /// `next_due_date` has passed. Charges with `auto_pay = 1` are inserted with
 /// `status = 'paid'` (LSV/SEPA settles automatically); otherwise they start
 /// as `'scheduled'` so the user can confirm payment later. Hard-capped at
-/// 1000 iterations per engagement, like `subscriptions::roll_forward_inner`.
+/// 1000 iterations per engagement.
 fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
     let due: Vec<(String, String, String, i32, f64, String, Option<String>, bool)> = {
         let mut stmt = conn
@@ -329,9 +362,19 @@ pub fn create_engagement(
         "INSERT INTO engagements (id, name, engagement_type, parent_engagement_id, creditor_id,
          payment_card_id, contract_reference, contract_start_date, contract_end_date,
          notice_period_days, billing_cycle, cycle_interval, next_due_date, current_amount,
-         currency, payment_method, auto_pay, status, notes, clauses_json)
+         currency, payment_method, auto_pay, status, notes, clauses_json,
+         parking_spot_number, parking_kind,
+         vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
+         leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
+         leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
+         leasing_excess_km_cost, leasing_discount,
+         insurance_coverage, insurance_franchise_casco, insurance_franchise_partial,
+         insurance_bonus_pct, insurance_options_json, insurance_premium_breakdown_json,
+         vehicle_category, vehicle_registration_number, vehicle_is_leasing,
+         insurance_young_driver_franchise)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20)",
+                 ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                 ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45)",
         rusqlite::params![
             id,
             engagement.name,
@@ -353,6 +396,31 @@ pub fn create_engagement(
             status,
             engagement.notes,
             engagement.clauses_json,
+            engagement.parking_spot_number,
+            engagement.parking_kind,
+            engagement.vehicle_make,
+            engagement.vehicle_model,
+            engagement.vehicle_plate,
+            engagement.vehicle_vin,
+            engagement.vehicle_first_registration,
+            engagement.leasing_vehicle_price,
+            engagement.leasing_duration_months,
+            engagement.leasing_down_payment,
+            engagement.leasing_residual_value,
+            engagement.leasing_interest_rate_pct,
+            engagement.leasing_annual_mileage_km,
+            engagement.leasing_excess_km_cost,
+            engagement.leasing_discount,
+            engagement.insurance_coverage,
+            engagement.insurance_franchise_casco,
+            engagement.insurance_franchise_partial,
+            engagement.insurance_bonus_pct,
+            engagement.insurance_options_json,
+            engagement.insurance_premium_breakdown_json,
+            engagement.vehicle_category,
+            engagement.vehicle_registration_number,
+            engagement.vehicle_is_leasing,
+            engagement.insurance_young_driver_franchise,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -381,8 +449,19 @@ pub fn update_engagement(
          billing_cycle = ?10, cycle_interval = ?11, next_due_date = ?12,
          current_amount = ?13, currency = ?14, payment_method = ?15, auto_pay = ?16,
          status = ?17, ended_on = ?18, notes = ?19, clauses_json = ?20,
+         parking_spot_number = ?21, parking_kind = ?22,
+         vehicle_make = ?23, vehicle_model = ?24, vehicle_plate = ?25, vehicle_vin = ?26,
+         vehicle_first_registration = ?27, leasing_vehicle_price = ?28,
+         leasing_duration_months = ?29, leasing_down_payment = ?30, leasing_residual_value = ?31,
+         leasing_interest_rate_pct = ?32, leasing_annual_mileage_km = ?33, leasing_excess_km_cost = ?34,
+         leasing_discount = ?35,
+         insurance_coverage = ?36, insurance_franchise_casco = ?37,
+         insurance_franchise_partial = ?38, insurance_bonus_pct = ?39, insurance_options_json = ?40,
+         insurance_premium_breakdown_json = ?41,
+         vehicle_category = ?42, vehicle_registration_number = ?43, vehicle_is_leasing = ?44,
+         insurance_young_driver_franchise = ?45,
          updated_at = datetime('now')
-         WHERE id = ?21",
+         WHERE id = ?46",
         rusqlite::params![
             engagement.name,
             engagement.engagement_type,
@@ -404,6 +483,31 @@ pub fn update_engagement(
             engagement.ended_on,
             engagement.notes,
             engagement.clauses_json,
+            engagement.parking_spot_number,
+            engagement.parking_kind,
+            engagement.vehicle_make,
+            engagement.vehicle_model,
+            engagement.vehicle_plate,
+            engagement.vehicle_vin,
+            engagement.vehicle_first_registration,
+            engagement.leasing_vehicle_price,
+            engagement.leasing_duration_months,
+            engagement.leasing_down_payment,
+            engagement.leasing_residual_value,
+            engagement.leasing_interest_rate_pct,
+            engagement.leasing_annual_mileage_km,
+            engagement.leasing_excess_km_cost,
+            engagement.leasing_discount,
+            engagement.insurance_coverage,
+            engagement.insurance_franchise_casco,
+            engagement.insurance_franchise_partial,
+            engagement.insurance_bonus_pct,
+            engagement.insurance_options_json,
+            engagement.insurance_premium_breakdown_json,
+            engagement.vehicle_category,
+            engagement.vehicle_registration_number,
+            engagement.vehicle_is_leasing,
+            engagement.insurance_young_driver_franchise,
             engagement.id,
         ],
     )
@@ -734,163 +838,6 @@ pub fn delete_engagement_revision(state: State<'_, AppState>, id: String) -> Res
     Ok(())
 }
 
-/// One-shot migration: turns an existing `subscriptions` row into an
-/// `engagements` row of the chosen type, transfers any attachments, and
-/// deletes the source subscription. Wrapped in a SQLite transaction so an
-/// error mid-flight rolls everything back — the user never sees half-
-/// migrated state.
-///
-/// Field mapping:
-///   subscriptions.name           → engagements.name
-///   subscriptions.merchant       → (the front separately resolves a creditor)
-///   subscriptions.payment_card   → engagements.payment_card_id
-///   subscriptions.start_date     → engagements.contract_start_date
-///   subscriptions.next_renewal   → engagements.next_due_date
-///   subscriptions.billing_cycle  → engagements.billing_cycle (same values)
-///   subscriptions.cycle_interval → engagements.cycle_interval
-///   subscriptions.price          → engagements.current_amount
-///   subscriptions.currency       → engagements.currency
-///   subscriptions.notes          → engagements.notes (+ trace line)
-///   subscription_payments        → engagement_charges (status='paid' since
-///                                  every payment row represents a settled
-///                                  charge in the old model)
-#[tauri::command]
-pub fn migrate_subscription_to_engagement(
-    state: State<'_, AppState>,
-    subscription_id: String,
-    engagement_type: String,
-    creditor_id: Option<String>,
-) -> Result<Engagement, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let new_id = migrate_one_subscription(
-        &tx,
-        &subscription_id,
-        &engagement_type,
-        creditor_id.as_deref(),
-    )?;
-    tx.commit().map_err(|e| e.to_string())?;
-
-    let sql = format!(
-        "SELECT {} FROM engagements e {} WHERE e.id = ?1",
-        ENG_SELECT_COLUMNS, ENG_JOINS
-    );
-    conn.query_row(&sql, [&new_id], row_to_engagement)
-        .map_err(|e| e.to_string())
-}
-
-/// Migre TOUS les abonnements restants vers des engagements, en un seul lot
-/// transactionnel (tout ou rien). Le type d'engagement par défaut est `other`
-/// (l'utilisateur peut le préciser ensuite) et aucun créancier n'est lié. Le
-/// module Abonnements étant déprécié au profit des Engagements, cette commande
-/// alimente la bannière de migration. Retourne le nombre d'abonnements migrés.
-#[tauri::command]
-pub fn migrate_all_subscriptions_to_engagements(
-    state: State<'_, AppState>,
-) -> Result<i64, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
-    let ids: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT id FROM subscriptions")
-            .map_err(|e| e.to_string())?;
-        stmt.query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
-    };
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut migrated = 0i64;
-    for id in &ids {
-        migrate_one_subscription(&tx, id, "other", None)?;
-        migrated += 1;
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(migrated)
-}
-
-/// Cœur de migration d'UN abonnement, exécuté dans une transaction fournie par
-/// l'appelant (réutilisé en unitaire et en lot). Crée l'engagement, recopie les
-/// paiements en charges payées, re-route les pièces jointes, supprime la source.
-/// Retourne l'id du nouvel engagement.
-fn migrate_one_subscription(
-    tx: &rusqlite::Transaction<'_>,
-    subscription_id: &str,
-    engagement_type: &str,
-    creditor_id: Option<&str>,
-) -> Result<String, String> {
-    // 1. Read the source subscription.
-    let (name, payment_card_id, start_date, next_renewal_date, billing_cycle,
-         cycle_interval, price, currency, notes): (
-        String, Option<String>, String, String, String, i32, f64, String, Option<String>
-    ) = tx
-        .query_row(
-            "SELECT name, payment_card_id, start_date, next_renewal_date, billing_cycle,
-                    cycle_interval, price, currency, notes
-             FROM subscriptions WHERE id = ?1",
-            [&subscription_id],
-            |row| {
-                Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
-                ))
-            },
-        )
-        .map_err(|e| format!("Abonnement introuvable: {}", e))?;
-
-    let new_id = Uuid::new_v4().to_string();
-    let merged_notes = match notes {
-        Some(n) if !n.is_empty() => format!("{}\n— Migré depuis l'abonnement « {} »", n, name),
-        _ => format!("Migré depuis l'abonnement « {} »", name),
-    };
-
-    // 2. Create the engagement.
-    tx.execute(
-        "INSERT INTO engagements (id, name, engagement_type, payment_card_id, creditor_id,
-         contract_start_date, billing_cycle, cycle_interval, next_due_date,
-         current_amount, currency, status, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12)",
-        rusqlite::params![
-            new_id, name, engagement_type, payment_card_id, creditor_id,
-            start_date, billing_cycle, cycle_interval, next_renewal_date,
-            price, currency, merged_notes,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 3. Copy each historical subscription_payment into engagement_charges
-    //    with status='paid'. The original price snapshot is preserved.
-    tx.execute(
-        "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
-         payment_card_id, paid_on, status)
-         SELECT lower(hex(randomblob(16))), ?1, paid_on, amount, currency,
-                payment_card_id, paid_on, 'paid'
-         FROM subscription_payments WHERE subscription_id = ?2",
-        rusqlite::params![new_id, subscription_id],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 4. Re-point any existing attachments from subscription_id → engagement_id.
-    tx.execute(
-        "UPDATE attachments SET subscription_id = NULL, engagement_id = ?1
-         WHERE subscription_id = ?2",
-        rusqlite::params![new_id, subscription_id],
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 5. Drop the source subscription (CASCADE wipes payments + members).
-    tx.execute("DELETE FROM subscriptions WHERE id = ?1", [subscription_id])
-        .map_err(|e| e.to_string())?;
-
-    Ok(new_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,61 +993,6 @@ mod tests {
     }
 
     #[test]
-    fn migration_en_lot_convertit_tous_les_abonnements() {
-        let (_tmp, db) = open_db();
-        {
-            let conn = db.conn.lock().unwrap();
-            // Deux abonnements + un paiement sur le premier.
-            for (id, name) in [("s1", "Netflix"), ("s2", "Spotify")] {
-                conn.execute(
-                    "INSERT INTO subscriptions
-                     (id, name, start_date, next_renewal_date, billing_cycle, cycle_interval, price, currency)
-                     VALUES (?1, ?2, date('now','-1 years'), date('now','+10 days'), 'monthly', 1, 12.0, 'CHF')",
-                    rusqlite::params![id, name],
-                )
-                .unwrap();
-            }
-            conn.execute(
-                "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency, is_presumed)
-                 VALUES ('p1','s1', date('now','-1 months'), 12.0, 'CHF', 0)",
-                [],
-            )
-            .unwrap();
-        }
-
-        let migrated = {
-            // migrate_all_* prend State ; on appelle le cœur via une transaction
-            // directe pour le test unitaire.
-            let mut conn = db.conn.lock().unwrap();
-            let ids: Vec<String> = {
-                let mut stmt = conn.prepare("SELECT id FROM subscriptions").unwrap();
-                stmt.query_map([], |r| r.get::<_, String>(0))
-                    .unwrap()
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap()
-            };
-            let tx = conn.transaction().unwrap();
-            for id in &ids {
-                migrate_one_subscription(&tx, id, "other", None).unwrap();
-            }
-            tx.commit().unwrap();
-            ids.len()
-        };
-        assert_eq!(migrated, 2);
-
-        let conn = db.conn.lock().unwrap();
-        // Plus aucun abonnement, deux engagements créés, le paiement devenu charge payée.
-        let subs: i64 = conn.query_row("SELECT COUNT(*) FROM subscriptions", [], |r| r.get(0)).unwrap();
-        assert_eq!(subs, 0);
-        let engs: i64 = conn.query_row("SELECT COUNT(*) FROM engagements", [], |r| r.get(0)).unwrap();
-        assert_eq!(engs, 2);
-        let paid: i64 = conn
-            .query_row("SELECT COUNT(*) FROM engagement_charges WHERE status='paid'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(paid, 1);
-    }
-
-    #[test]
     fn confirmer_une_charge_leve_la_presomption() {
         let (_tmp, db) = open_db();
         let conn = db.conn.lock().unwrap();
@@ -1114,5 +1006,113 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM engagement_charges WHERE engagement_id='e1' AND is_presumed=1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(still_presumed, 0);
+    }
+
+    /// Guards the column-index alignment between ENG_SELECT_COLUMNS and
+    /// row_to_engagement for the v19 parking fields.
+    #[test]
+    fn row_to_engagement_mappe_les_champs_de_parking() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements
+             (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
+              parking_spot_number, parking_kind)
+             VALUES ('e1','Place de parc','parking','monthly',1,'CHF',0,'active',
+                     '42','collective_garage')",
+            [],
+        ).unwrap();
+
+        let sql = format!(
+            "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+            ENG_SELECT_COLUMNS, ENG_JOINS
+        );
+        let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
+
+        assert_eq!(eng.name, "Place de parc");
+        assert_eq!(eng.engagement_type, "parking");
+        assert_eq!(eng.parking_spot_number.as_deref(), Some("42"));
+        assert_eq!(eng.parking_kind.as_deref(), Some("collective_garage"));
+    }
+
+    /// Guards the column-index alignment for the v20 leasing fields.
+    #[test]
+    fn row_to_engagement_mappe_les_champs_de_leasing() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements
+             (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
+              vehicle_make, vehicle_model, vehicle_plate, vehicle_vin, vehicle_first_registration,
+              leasing_vehicle_price, leasing_duration_months, leasing_down_payment,
+              leasing_residual_value, leasing_interest_rate_pct, leasing_annual_mileage_km,
+              leasing_excess_km_cost, leasing_discount)
+             VALUES ('e1','Leasing Golf','leasing','monthly',1,'CHF',0,'active',
+                     'VW','Golf','VD 123456','WVWZZZ','2024-02-01',
+                     35000.0, 48, 5000.0, 12000.0, 4.5, 15000, 0.25, 2000.0)",
+            [],
+        ).unwrap();
+
+        let sql = format!(
+            "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+            ENG_SELECT_COLUMNS, ENG_JOINS
+        );
+        let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
+
+        assert_eq!(eng.name, "Leasing Golf");
+        assert_eq!(eng.engagement_type, "leasing");
+        assert_eq!(eng.vehicle_make.as_deref(), Some("VW"));
+        assert_eq!(eng.vehicle_model.as_deref(), Some("Golf"));
+        assert_eq!(eng.vehicle_plate.as_deref(), Some("VD 123456"));
+        assert_eq!(eng.vehicle_vin.as_deref(), Some("WVWZZZ"));
+        assert_eq!(eng.vehicle_first_registration.as_deref(), Some("2024-02-01"));
+        assert_eq!(eng.leasing_vehicle_price, Some(35000.0));
+        assert_eq!(eng.leasing_duration_months, Some(48));
+        assert_eq!(eng.leasing_down_payment, Some(5000.0));
+        assert_eq!(eng.leasing_residual_value, Some(12000.0));
+        assert_eq!(eng.leasing_interest_rate_pct, Some(4.5));
+        assert_eq!(eng.leasing_annual_mileage_km, Some(15000));
+        assert_eq!(eng.leasing_excess_km_cost, Some(0.25));
+        assert_eq!(eng.leasing_discount, Some(2000.0));
+    }
+
+    /// Guards the column-index alignment for the v22 car-insurance fields.
+    #[test]
+    fn row_to_engagement_mappe_les_champs_dassurance() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements
+             (id, name, engagement_type, billing_cycle, cycle_interval, currency, auto_pay, status,
+              vehicle_plate, insurance_coverage, insurance_franchise_casco,
+              insurance_franchise_partial, insurance_bonus_pct, insurance_options_json,
+              insurance_premium_breakdown_json, vehicle_category, vehicle_registration_number,
+              vehicle_is_leasing, insurance_young_driver_franchise)
+             VALUES ('e1','Assurance auto','insurance_car','yearly',1,'CHF',0,'active',
+                     'VD 123456','full_casco', 1000.0, 200.0, 45.0,
+                     '[\"parking_damage\",\"bonus_protection\"]',
+                     '{\"rc\":433.5,\"collision\":467.9}',
+                     'passenger_car', 'VD-12345', 1, 1000.0)",
+            [],
+        ).unwrap();
+
+        let sql = format!(
+            "SELECT {} FROM engagements e {} WHERE e.id = ?1",
+            ENG_SELECT_COLUMNS, ENG_JOINS
+        );
+        let eng = conn.query_row(&sql, ["e1"], row_to_engagement).unwrap();
+
+        assert_eq!(eng.engagement_type, "insurance_car");
+        assert_eq!(eng.vehicle_plate.as_deref(), Some("VD 123456"));
+        assert_eq!(eng.insurance_coverage.as_deref(), Some("full_casco"));
+        assert_eq!(eng.insurance_franchise_casco, Some(1000.0));
+        assert_eq!(eng.insurance_franchise_partial, Some(200.0));
+        assert_eq!(eng.insurance_bonus_pct, Some(45.0));
+        assert_eq!(eng.insurance_options_json.as_deref(), Some("[\"parking_damage\",\"bonus_protection\"]"));
+        assert_eq!(eng.insurance_premium_breakdown_json.as_deref(), Some("{\"rc\":433.5,\"collision\":467.9}"));
+        assert_eq!(eng.vehicle_category.as_deref(), Some("passenger_car"));
+        assert_eq!(eng.vehicle_registration_number.as_deref(), Some("VD-12345"));
+        assert_eq!(eng.vehicle_is_leasing, Some(true));
+        assert_eq!(eng.insurance_young_driver_franchise, Some(1000.0));
     }
 }

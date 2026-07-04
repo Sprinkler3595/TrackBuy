@@ -1,21 +1,93 @@
-import { useEffect, useState } from "react"
-import { Link2, Plus } from "lucide-react"
+import { useEffect, useState, useContext } from "react"
+import { Link2, Plus, Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { formatPrice } from "@/lib/utils"
 import { useToast } from "@/components/ui/toast"
+import { I18nContext, type TranslationKeys } from "@/lib/i18n"
+import { InlineCreateSelect } from "@/components/ui/inline-create-select"
+import { getAiSettings } from "@/lib/ai-settings"
 import * as api from "@/lib/tauri"
+
+/// Engagement types grouped by category, so creating a new engagement from a
+/// QR-bill lets the user say what it actually is. Mirrors the grouping on the
+/// Engagements page.
+const TYPE_GROUPS: { label: string; types: api.EngagementType[] }[] = [
+  { label: "Assurances", types: ["insurance_health", "insurance_household", "insurance_car", "insurance_life", "insurance_legal", "insurance_other"] },
+  { label: "Logement", types: ["rent", "parking", "mortgage"] },
+  { label: "Véhicule", types: ["leasing", "fuel"] },
+  { label: "Fluides", types: ["electricity", "gas", "water", "heating"] },
+  { label: "Télécom", types: ["phone", "internet", "tv_radio"] },
+  { label: "Impôts & taxes", types: ["tax_federal", "tax_cantonal", "tax_communal", "tax_other", "fine", "fee"] },
+  { label: "Autre", types: ["membership", "other"] },
+]
+
+/// The Swiss QR-bill carries no due date. When the biller filled the Swico S1
+/// "billing information" field, we can derive it: `/11/` is the invoice date
+/// (YYMMDD) and `/40/` the payment terms (e.g. "0:30" = net 30 days, or
+/// "2:10;0:30" = 2% within 10 days, net within 30). Due = invoice date + net
+/// days (the 0%-discount term, else the longest). Returns ISO dates or null.
+/// (Escaped slashes in values aren't handled — rare in practice.)
+function parseSwicoDueDate(billInfo: string): { invoiceDate: string | null; dueDate: string | null } {
+  if (!billInfo || !billInfo.startsWith("//S1/")) return { invoiceDate: null, dueDate: null }
+  const parts = billInfo.slice(5).split("/")
+  const map: Record<string, string> = {}
+  for (let i = 0; i + 1 < parts.length; i += 2) map[parts[i]] = parts[i + 1]
+
+  let invoiceDate: string | null = null
+  const yymmdd = map["11"]
+  if (yymmdd && /^\d{6}$/.test(yymmdd)) {
+    invoiceDate = `20${yymmdd.slice(0, 2)}-${yymmdd.slice(2, 4)}-${yymmdd.slice(4, 6)}`
+  }
+
+  let dueDate: string | null = null
+  const terms = map["40"]
+  if (invoiceDate && terms) {
+    let netDays: number | null = null
+    for (const term of terms.split(";")) {
+      const [disc, days] = term.split(":")
+      const d = parseInt(days, 10)
+      if (Number.isNaN(d)) continue
+      if (parseFloat(disc) === 0) { netDays = d; break }
+      netDays = Math.max(netDays ?? 0, d)
+    }
+    if (netDays != null) {
+      const dt = new Date(`${invoiceDate}T00:00:00`)
+      dt.setDate(dt.getDate() + netDays)
+      dueDate = dt.toISOString().slice(0, 10)
+    }
+  }
+  return { invoiceDate, dueDate }
+}
 
 /// Modal that opens after the user has decoded a QR-bill payload elsewhere.
 /// Picks up the decoded payload from sessionStorage (set by the inbox), so
 /// it can be re-used from any page without prop-drilling.
 export function QrBillReview() {
+  const { t } = useContext(I18nContext)
   const { toast } = useToast()
   const [decoded, setDecoded] = useState<api.QrBillDecoded | null>(null)
   const [creditors, setCreditors] = useState<api.Creditor[]>([])
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [selectedEngagement, setSelectedEngagement] = useState<string>("")
   const [creating, setCreating] = useState(false)
+  // Payment due date: derived from the QR-bill's Swico billing info when
+  // present, otherwise the user sets it (defaults to today).
+  const [dueDate, setDueDate] = useState("")
+  const [dueSource, setDueSource] = useState<"swico" | "pdf" | "ia" | "manual">("manual")
+  // Invoice text layer + a rendered page image (kept from the scan) so the AI
+  // can find the due date — from text, or visually when there's no text.
+  const [pdfText, setPdfText] = useState("")
+  const [pageImage, setPageImage] = useState("")
+  const [aiBusy, setAiBusy] = useState(false)
+
+  // "Create a new engagement" inline form.
+  const [showCreate, setShowCreate] = useState(false)
+  const [newType, setNewType] = useState<api.EngagementType>("other")
+  const [newName, setNewName] = useState("")
+  const [newCreditorId, setNewCreditorId] = useState("")
+  const [newCycle, setNewCycle] = useState<api.EngagementBillingCycle>("monthly")
 
   useEffect(() => {
     function pick() {
@@ -26,6 +98,18 @@ export function QrBillReview() {
         const d = JSON.parse(raw) as api.QrBillDecoded
         setDecoded(d)
         setSelectedEngagement(d.suggested_engagement_id ?? "")
+        setShowCreate(false)
+        setNewName(d.creditor.name || "")
+        setNewCreditorId(d.suggested_creditor_id ?? "")
+        const { dueDate: swico } = parseSwicoDueDate(d.bill_information)
+        const pdfHint = sessionStorage.getItem("qrbill-due-hint")
+        sessionStorage.removeItem("qrbill-due-hint")
+        setDueDate(swico ?? pdfHint ?? new Date().toISOString().slice(0, 10))
+        setDueSource(swico ? "swico" : pdfHint ? "pdf" : "manual")
+        setPdfText(sessionStorage.getItem("qrbill-text") ?? "")
+        sessionStorage.removeItem("qrbill-text")
+        setPageImage(sessionStorage.getItem("qrbill-image") ?? "")
+        sessionStorage.removeItem("qrbill-image")
         Promise.all([api.getCreditors(), api.getEngagements({ status: "active" })])
           .then(([c, e]) => {
             setCreditors(c)
@@ -41,19 +125,83 @@ export function QrBillReview() {
     return () => window.removeEventListener("qrbill-decoded", pick)
   }, [])
 
+  // AI-first: as soon as we have a document (text layer or rendered image) and
+  // no authoritative date from the QR-bill itself (Swico), ask the AI — it
+  // understands varied wordings the regex can't. The regex guess (dueSource
+  // "pdf") is only a fallback shown until the AI answers, and the AI overrides
+  // it if it finds something. Runs silently (no error toast) since the field
+  // stays usable either way.
+  useEffect(() => {
+    if (!decoded || dueSource === "swico") return
+    if (!pdfText.trim() && !pageImage) return
+    if (!getAiSettings().enabled) return
+    void detectDueDateWithAi({ silent: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decoded, pdfText, pageImage])
+
   if (!decoded) return null
 
   const matchedEngagement = engagements.find((e) => e.id === selectedEngagement)
   const matchedCreditor = creditors.find((c) => c.id === decoded.suggested_creditor_id)
+  const typeKey = (typ: api.EngagementType): keyof TranslationKeys =>
+    `engagements.type.${typ}` as keyof TranslationKeys
+  const dueNote =
+    aiBusy                ? "Recherche de l'échéance par l'IA…" :
+    dueSource === "swico" ? "Déduite de la QR-facture (date de facture + délai)." :
+    dueSource === "pdf"   ? "Lue sur le PDF de la facture — à vérifier." :
+    dueSource === "ia"    ? "Trouvée par l'IA sur la facture — à vérifier." :
+                            "Non indiquée sur la QR-facture — à saisir."
+
+  /// Ask the configured AI to read the payment due date off the invoice. Tries
+  /// the text layer first (cheaper), then — if the text yields nothing — the
+  /// rendered page image via the vision model (scanned/photo/tabular invoices
+  /// where the date sits in a layout the text/regex can't follow). The error
+  /// message names the path used and the amount of text seen, so a failure is
+  /// diagnosable at a glance. `silent` skips the toasts for the automatic run.
+  async function detectDueDateWithAi(opts?: { silent?: boolean }) {
+    const ai = getAiSettings()
+    if (!ai.enabled) {
+      if (!opts?.silent) toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
+      return
+    }
+    const hasText = pdfText.trim().length > 0
+    if (!hasText && !pageImage) {
+      if (!opts?.silent) toast("Aucun document à analyser.", "error")
+      return
+    }
+    setAiBusy(true)
+    try {
+      let found: string | null = null
+      const tried: string[] = []
+      if (hasText) {
+        tried.push(`texte ${pdfText.length} car.`)
+        found = await api.aiExtractDueDate(pdfText, ai)
+      }
+      if (!found && pageImage) {
+        tried.push("image")
+        found = await api.aiExtractDueDateFromImage(pageImage, ai)
+      }
+      if (found) {
+        setDueDate(found)
+        setDueSource("ia")
+        if (!opts?.silent) toast("Échéance détectée par l'IA.", "success")
+      } else if (!opts?.silent) {
+        toast(`L'IA n'a pas trouvé d'échéance (essayé : ${tried.join(", ")}).`, "error")
+      }
+    } catch (e) {
+      if (!opts?.silent) toast(String(e), "error")
+    } finally {
+      setAiBusy(false)
+    }
+  }
 
   async function linkToEngagement() {
     if (!decoded || !selectedEngagement) return
     setCreating(true)
     try {
-      const today = new Date().toISOString().slice(0, 10)
       await api.addEngagementCharge({
         engagement_id: selectedEngagement,
-        due_date: today,
+        due_date: dueDate || new Date().toISOString().slice(0, 10),
         amount: decoded.amount ?? 0,
         currency: decoded.currency,
         status: "scheduled",
@@ -61,6 +209,60 @@ export function QrBillReview() {
         notes: decoded.unstructured_message || null,
       })
       toast("Facture ajoutée à l'engagement", "success")
+      setDecoded(null)
+    } catch (e) {
+      toast(String(e), "error")
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  /// Create a creditor from the QR-bill payload (carries the IBAN so future
+  /// bills from the same beneficiary match automatically).
+  async function createCreditorFromQr(name: string): Promise<api.Creditor | null> {
+    if (!decoded) return null
+    try {
+      const c = await api.createCreditor({ name, iban: decoded.iban })
+      setCreditors((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(String(e), "error")
+      return null
+    }
+  }
+
+  /// Create a new engagement of the chosen category, then record this QR-bill
+  /// as its first scheduled charge.
+  async function createNewEngagement() {
+    if (!decoded || !newName.trim()) return
+    setCreating(true)
+    try {
+      const due = dueDate || new Date().toISOString().slice(0, 10)
+      const eng = await api.createEngagement({
+        name: newName.trim(),
+        engagement_type: newType,
+        creditor_id: newCreditorId || null,
+        billing_cycle: newCycle,
+        cycle_interval: 1,
+        next_due_date: due,
+        current_amount: decoded.amount ?? null,
+        currency: decoded.currency,
+        payment_method: "qr_bill",
+        contract_reference: decoded.reference || null,
+        status: "active",
+      })
+      // Record the scanned bill as the first charge. Roll-forward de-dups on
+      // (engagement, due_date), so it won't be duplicated later.
+      await api.addEngagementCharge({
+        engagement_id: eng.id,
+        due_date: due,
+        amount: decoded.amount ?? 0,
+        currency: decoded.currency,
+        status: "scheduled",
+        reference_number: decoded.reference,
+        notes: decoded.unstructured_message || null,
+      })
+      toast(`Engagement « ${eng.name} » créé et facture ajoutée`, "success")
       setDecoded(null)
     } catch (e) {
       toast(String(e), "error")
@@ -120,70 +322,177 @@ export function QrBillReview() {
           </Card>
 
           <div className="space-y-3">
-            <div className="rounded-lg border p-3 text-sm">
-              <div className="mb-2 flex items-center gap-2">
-                <Link2 className="h-4 w-4" />
-                <span className="font-medium">Rapprochement</span>
+            {!showCreate ? (
+              <>
+                <div className="rounded-lg border p-3 text-sm">
+                  <div className="mb-2 flex items-center gap-2">
+                    <Link2 className="h-4 w-4" />
+                    <span className="font-medium">Rapprochement</span>
+                  </div>
+                  {matchedCreditor ? (
+                    <p className="text-xs text-muted-foreground">
+                      Créancier reconnu : <strong>{matchedCreditor.name}</strong>
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Aucun créancier connu pour cet IBAN.
+                    </p>
+                  )}
+
+                  <label className="mt-3 block text-xs font-medium">Engagement</label>
+                  <select
+                    className="mt-1 w-full rounded-md border bg-background p-2 text-sm"
+                    value={selectedEngagement}
+                    onChange={(e) => setSelectedEngagement(e.target.value)}
+                  >
+                    <option value="">— Sélectionner un engagement —</option>
+                    {engagements
+                      .filter((e) => !matchedCreditor || e.creditor_id === matchedCreditor.id)
+                      .map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                        </option>
+                      ))}
+                    <option disabled>──────────</option>
+                    {engagements
+                      .filter((e) => matchedCreditor && e.creditor_id !== matchedCreditor.id)
+                      .map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                        </option>
+                      ))}
+                  </select>
+                  {matchedEngagement && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Sera ajoutée comme charge programmée à{" "}
+                      <strong>{matchedEngagement.name}</strong>.
+                    </p>
+                  )}
+
+                  <label className="mt-3 block text-xs font-medium">Échéance de paiement</label>
+                  <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="mt-1" />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {dueNote}
+                  </p>
+                  {(pdfText || pageImage) && (
+                    <Button type="button" variant="outline" size="sm" className="mt-2 h-7 text-xs"
+                      onClick={() => detectDueDateWithAi()} disabled={aiBusy}>
+                      {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+                      Détecter l'échéance avec l'IA
+                    </Button>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <Button
+                    onClick={linkToEngagement}
+                    disabled={!selectedEngagement || creating}
+                    className="w-full"
+                  >
+                    <Link2 className="mr-2 h-4 w-4" />
+                    Lier à l'engagement
+                  </Button>
+                  <Button variant="outline" className="w-full" onClick={() => setShowCreate(true)}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    Créer un nouvel engagement
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded-lg border p-3">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                    <Plus className="h-4 w-4" />
+                    Nouvel engagement
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Catégorie / type</label>
+                      <select
+                        className="w-full rounded-md border bg-background p-2 text-sm"
+                        value={newType}
+                        onChange={(e) => setNewType(e.target.value as api.EngagementType)}
+                      >
+                        {TYPE_GROUPS.map((g) => (
+                          <optgroup key={g.label} label={g.label}>
+                            {g.types.map((typ) => (
+                              <option key={typ} value={typ}>{t(typeKey(typ))}</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Nom</label>
+                      <Input value={newName} onChange={(e) => setNewName(e.target.value)} />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Créancier</label>
+                      <InlineCreateSelect
+                        value={newCreditorId}
+                        onChange={setNewCreditorId}
+                        options={creditors}
+                        onCreate={createCreditorFromQr}
+                        placeholder={decoded.creditor.name || "Nom du créancier"}
+                        createTitle="Créer depuis la QR-facture (avec IBAN)"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Périodicité</label>
+                      <select
+                        className="w-full rounded-md border bg-background p-2 text-sm"
+                        value={newCycle}
+                        onChange={(e) => setNewCycle(e.target.value as api.EngagementBillingCycle)}
+                      >
+                        <option value="monthly">Mensuel</option>
+                        <option value="quarterly">Trimestriel</option>
+                        <option value="semiannual">Semestriel</option>
+                        <option value="yearly">Annuel</option>
+                        <option value="one_shot">Ponctuel (une fois)</option>
+                        <option value="custom">Personnalisé</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium">Échéance de paiement</label>
+                      <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+                      <p className="text-xs text-muted-foreground">
+                        {dueNote}
+                      </p>
+                      {(pdfText || pageImage) && (
+                        <Button type="button" variant="outline" size="sm" className="mt-1 h-7 text-xs"
+                          onClick={() => detectDueDateWithAi()} disabled={aiBusy}>
+                          {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+                          Détecter l'échéance avec l'IA
+                        </Button>
+                      )}
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      Montant{" "}
+                      <strong>
+                        {decoded.amount != null ? formatPrice(decoded.amount, decoded.currency) : "—"}
+                      </strong>{" "}
+                      repris de la QR-facture et ajouté comme 1re charge.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <Button onClick={createNewEngagement} disabled={!newName.trim() || creating} className="w-full">
+                    <Plus className="mr-2 h-4 w-4" />
+                    Créer et ajouter la facture
+                  </Button>
+                  <Button variant="ghost" className="w-full" onClick={() => setShowCreate(false)}>
+                    Retour
+                  </Button>
+                </div>
               </div>
-              {matchedCreditor ? (
-                <p className="text-xs text-muted-foreground">
-                  Créancier reconnu : <strong>{matchedCreditor.name}</strong>
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Aucun créancier connu pour cet IBAN. Vous pouvez le créer depuis
-                  Réglages → Créanciers.
-                </p>
-              )}
-
-              <label className="mt-3 block text-xs font-medium">Engagement</label>
-              <select
-                className="mt-1 w-full rounded-md border bg-background p-2 text-sm"
-                value={selectedEngagement}
-                onChange={(e) => setSelectedEngagement(e.target.value)}
-              >
-                <option value="">— Sélectionner un engagement —</option>
-                {engagements
-                  .filter((e) => !matchedCreditor || e.creditor_id === matchedCreditor.id)
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                    </option>
-                  ))}
-                <option disabled>──────────</option>
-                {engagements
-                  .filter((e) => matchedCreditor && e.creditor_id !== matchedCreditor.id)
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                    </option>
-                  ))}
-              </select>
-              {matchedEngagement && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Sera ajoutée comme charge programmée à{" "}
-                  <strong>{matchedEngagement.name}</strong>.
-                </p>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Button
-                onClick={linkToEngagement}
-                disabled={!selectedEngagement || creating}
-                className="w-full"
-              >
-                <Link2 className="mr-2 h-4 w-4" />
-                Lier à l'engagement
-              </Button>
-              <a
-                href="/engagements"
-                className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
-              >
-                <Plus className="h-4 w-4" />
-                Créer un nouvel engagement
-              </a>
-            </div>
+            )}
           </div>
         </div>
       </div>

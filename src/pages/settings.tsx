@@ -11,7 +11,6 @@ import {
   ShoppingBag,
   Ticket,
   Shield,
-  Repeat,
   HandCoins,
   Undo2,
   Tag,
@@ -40,7 +39,6 @@ export function SettingsPage() {
     { to: "/items", end: false, icon: ShoppingBag, label: locale === "fr" ? "Achats" : "Items" },
     { to: "/tickets", end: false, icon: Ticket, label: locale === "fr" ? "Billets & Codes" : "Tickets & Codes" },
     { to: "/warranties", end: false, icon: Shield, label: locale === "fr" ? "Garanties" : "Warranties" },
-    { to: "/subscriptions", end: false, icon: Repeat, label: locale === "fr" ? "Abonnements" : "Subscriptions" },
     { to: "/incomes", end: false, icon: HandCoins, label: locale === "fr" ? "Revenus" : "Incomes" },
     { to: "/reimbursements", end: false, icon: Undo2, label: locale === "fr" ? "Remboursements" : "Reimbursements" },
   ]

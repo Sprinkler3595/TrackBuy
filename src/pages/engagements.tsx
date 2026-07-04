@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, FileText, Search, Download } from "lucide-react"
+import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, Layers, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,6 +15,10 @@ import { upcomingCancellations } from "@/lib/cancellation"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { ClausesEditor } from "@/components/features/clauses-editor"
 import { CancellationLetterModal } from "@/components/features/cancellation-letter"
+import { RentWizard } from "@/components/features/rent-wizard"
+import { LeasingWizard } from "@/components/features/leasing-wizard"
+import { CarInsuranceWizard } from "@/components/features/car-insurance-wizard"
+import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { AlarmClock } from "lucide-react"
 import * as api from "@/lib/tauri"
 
@@ -51,6 +55,13 @@ const PAYMENT_METHODS: api.EngagementPaymentMethod[] = [
   "standing_order", "cash", "card_auto", "other",
 ]
 
+const PARKING_KINDS: api.ParkingKind[] = ["outdoor", "collective_garage", "box"]
+
+const parkingKindLabel = (k: api.ParkingKind, locale: string): string =>
+  k === "outdoor"           ? (locale === "fr" ? "Extérieure" : "Outdoor") :
+  k === "collective_garage" ? (locale === "fr" ? "Garage collectif" : "Collective garage") :
+                              (locale === "fr" ? "Box / garage individuel" : "Box / individual garage")
+
 const today = () => new Date().toISOString().slice(0, 10)
 
 type FormState = {
@@ -73,6 +84,9 @@ type FormState = {
   status: api.EngagementStatus
   notes: string
   clauses_json: string | null
+  // Parking specifics (only submitted when engagement_type === "parking").
+  parking_spot_number: string
+  parking_kind: api.ParkingKind | ""
 }
 
 const emptyForm = (): FormState => ({
@@ -95,10 +109,12 @@ const emptyForm = (): FormState => ({
   status: "active",
   notes: "",
   clauses_json: null,
+  parking_spot_number: "",
+  parking_kind: "",
 })
 
 export function EngagementsPage() {
-  const { t } = useContext(I18nContext)
+  const { t, locale } = useContext(I18nContext)
   const [engagements, setEngagements] = useState<api.Engagement[]>([])
   const [creditors, setCreditors] = useState<api.Creditor[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
@@ -110,23 +126,49 @@ export function EngagementsPage() {
   const [category, setCategory] = useState<CategoryGroup>("all")
   const [search, setSearch] = useState("")
   const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
-  // Abonnements legacy restant à migrer (module déprécié).
-  const [legacySubCount, setLegacySubCount] = useState(0)
-  const [migrating, setMigrating] = useState(false)
+  // Creation entry point: a chooser routes to a guided assistant (housing for
+  // now) or falls back to the generic form for the other types.
+  const [showChooser, setShowChooser] = useState(false)
+  const [showRentWizard, setShowRentWizard] = useState(false)
+  const [showLeasingWizard, setShowLeasingWizard] = useState(false)
+  const [showCarInsuranceWizard, setShowCarInsuranceWizard] = useState(false)
   const { toast } = useToast()
+
+  // Parking number/type only make sense for the "parking" type.
+  const isParking = form.engagement_type === "parking"
+
+  // Inline creation of a creditor / payment account from the form's selects.
+  const createCreditorInline = async (name: string): Promise<api.Creditor | null> => {
+    try {
+      const c = await api.createCreditor({ name })
+      setCreditors((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+      return null
+    }
+  }
+  const createCardInline = async (name: string): Promise<api.PaymentCard | null> => {
+    try {
+      const c = await api.createCard({ name, is_credit_card: false })
+      setCards((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+      return null
+    }
+  }
 
   const load = async () => {
     try {
-      const [engData, credData, cardData, subsData] = await Promise.all([
+      const [engData, credData, cardData] = await Promise.all([
         api.getEngagements(),
         api.getCreditors(),
         api.getCards(),
-        api.getSubscriptions({ status: "all" }),
       ])
       setEngagements(engData)
       setCreditors(credData)
       setCards(cardData)
-      setLegacySubCount(subsData.length)
     } catch (e) {
       console.error(e)
       toast(`Erreur: ${e}`, "error")
@@ -141,19 +183,6 @@ export function EngagementsPage() {
     setForm(emptyForm())
     setEditing(null)
     setShowForm(false)
-  }
-
-  const handleMigrateAll = async () => {
-    setMigrating(true)
-    try {
-      const n = await api.migrateAllSubscriptionsToEngagements()
-      toast(`${n} abonnement(s) migré(s) vers les engagements (type « autre », à préciser).`, "success")
-      await load()
-    } catch (e) {
-      toast(`Erreur: ${e}`, "error")
-    } finally {
-      setMigrating(false)
-    }
   }
 
   const handleEdit = (e: api.Engagement) => {
@@ -177,6 +206,8 @@ export function EngagementsPage() {
       status: e.status,
       notes: e.notes || "",
       clauses_json: e.clauses_json,
+      parking_spot_number: e.parking_spot_number || "",
+      parking_kind: e.parking_kind || "",
     })
     setEditing(e)
     setShowForm(true)
@@ -192,6 +223,12 @@ export function EngagementsPage() {
     }
     const interval = Math.max(1, parseInt(form.cycle_interval) || 1)
     const notice = form.notice_period_days ? parseInt(form.notice_period_days) : null
+    // Parking specifics are only persisted for the parking type; nulled
+    // otherwise so switching type doesn't leave stale values behind.
+    const parkingFields = {
+      parking_spot_number: isParking ? (form.parking_spot_number.trim() || null) : null,
+      parking_kind: isParking ? (form.parking_kind || null) : null,
+    }
     try {
       if (editing) {
         await api.updateEngagement({
@@ -215,6 +252,7 @@ export function EngagementsPage() {
           status: form.status,
           notes: form.notes || null,
           clauses_json: form.clauses_json,
+          ...parkingFields,
         })
         toast(t("engagements.updated"), "success")
       } else {
@@ -238,6 +276,7 @@ export function EngagementsPage() {
           status: form.status,
           notes: form.notes || null,
           clauses_json: form.clauses_json,
+          ...parkingFields,
         })
         toast(t("engagements.created"), "success")
       }
@@ -338,19 +377,6 @@ export function EngagementsPage() {
 
   return (
     <div className="space-y-6">
-      {legacySubCount > 0 && (
-        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400 sm:flex-row sm:items-center sm:justify-between">
-          <span className="flex items-center gap-2">
-            <AlarmClock className="h-4 w-4 shrink-0" />
-            Le module « Abonnements » est déprécié au profit des Engagements.
-            Tu as {legacySubCount} abonnement(s) à migrer (paiements conservés ;
-            type « autre » à préciser ensuite).
-          </span>
-          <Button size="sm" onClick={handleMigrateAll} disabled={migrating}>
-            {migrating ? "Migration…" : "Tout migrer vers Engagements"}
-          </Button>
-        </div>
-      )}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold tracking-tight">{t("engagements.title")}</h2>
@@ -380,7 +406,7 @@ export function EngagementsPage() {
             <Download className="h-4 w-4" />
             Exporter CSV
           </Button>
-          <Button onClick={() => { resetForm(); setShowForm(true) }}>
+          <Button onClick={() => setShowChooser(true)}>
             <Plus className="h-4 w-4" />{t("engagements.new")}
           </Button>
         </div>
@@ -488,25 +514,27 @@ export function EngagementsPage() {
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.creditor")}</label>
-                <select
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                <InlineCreateSelect
                   value={form.creditor_id}
-                  onChange={(e) => setForm({ ...form, creditor_id: e.target.value })}
-                >
-                  <option value="">—</option>
-                  {creditors.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  onChange={(id) => setForm({ ...form, creditor_id: id })}
+                  options={creditors}
+                  onCreate={createCreditorInline}
+                  placeholder={locale === "fr" ? "Nom du créancier" : "Creditor name"}
+                  createTitle={locale === "fr" ? "Nouveau créancier" : "New creditor"}
+                  fr={locale === "fr"}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.card")}</label>
-                <select
-                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                <InlineCreateSelect
                   value={form.payment_card_id}
-                  onChange={(e) => setForm({ ...form, payment_card_id: e.target.value })}
-                >
-                  <option value="">—</option>
-                  {cards.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                  onChange={(id) => setForm({ ...form, payment_card_id: id })}
+                  options={cards}
+                  onCreate={createCardInline}
+                  placeholder={locale === "fr" ? "Nom du compte / carte" : "Account / card name"}
+                  createTitle={locale === "fr" ? "Nouveau compte / carte" : "New account / card"}
+                  fr={locale === "fr"}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.parent")}</label>
@@ -521,6 +549,32 @@ export function EngagementsPage() {
                     .map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                 </select>
               </div>
+
+              {isParking && (
+                <div className="space-y-3 rounded-md border border-dashed border-input p-3 sm:col-span-2 lg:col-span-3">
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {locale === "fr" ? "Place de parc" : "Parking spot"}
+                  </p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">{locale === "fr" ? "Type de place" : "Spot type"}</label>
+                      <select
+                        className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                        value={form.parking_kind}
+                        onChange={(e) => setForm({ ...form, parking_kind: e.target.value as api.ParkingKind | "" })}
+                      >
+                        <option value="">—</option>
+                        {PARKING_KINDS.map((k) => <option key={k} value={k}>{parkingKindLabel(k, locale)}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">{locale === "fr" ? "Numéro de place" : "Spot number"}</label>
+                      <Input value={form.parking_spot_number}
+                        onChange={(e) => setForm({ ...form, parking_spot_number: e.target.value })} />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("engagements.contractRef")}</label>
@@ -710,6 +764,96 @@ export function EngagementsPage() {
           engagement={letterTarget}
           creditor={creditors.find((c) => c.id === letterTarget.creditor_id) ?? null}
           onClose={() => setLetterTarget(null)}
+        />
+      )}
+
+      {showChooser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-card shadow-lg">
+            <div className="flex items-center justify-between gap-4 border-b p-5">
+              <h2 className="text-lg font-semibold">
+                {locale === "fr" ? "Que voulez-vous ajouter ?" : "What do you want to add?"}
+              </h2>
+              <Button variant="ghost" size="sm" onClick={() => setShowChooser(false)} aria-label={t("common.cancel")}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-2 p-5">
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); setShowRentWizard(true) }}
+              >
+                <span className="rounded-lg bg-primary/10 p-2 text-primary"><Home className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Logement (loyer)" : "Housing (rent)"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Assistant guidé : appartement, place de parc, documents" : "Guided assistant: apartment, parking, documents"}
+                  </span>
+                </span>
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); setShowLeasingWizard(true) }}
+              >
+                <span className="rounded-lg bg-primary/10 p-2 text-primary"><Car className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Véhicule (leasing)" : "Vehicle (leasing)"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Assistant guidé : véhicule, contrat, documents" : "Guided assistant: vehicle, contract, documents"}
+                  </span>
+                </span>
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); setShowCarInsuranceWizard(true) }}
+              >
+                <span className="rounded-lg bg-primary/10 p-2 text-primary"><ShieldCheck className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Assurance véhicule" : "Vehicle insurance"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Assistant guidé : RC/casco, franchises, options" : "Guided assistant: liability/casco, deductibles, options"}
+                  </span>
+                </span>
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); resetForm(); setShowForm(true) }}
+              >
+                <span className="rounded-lg bg-muted p-2 text-muted-foreground"><Layers className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Autre engagement" : "Other engagement"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Formulaire complet (assurance, télécom, impôts…)" : "Full form (insurance, telecom, taxes…)"}
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRentWizard && (
+        <RentWizard
+          creditors={creditors}
+          cards={cards}
+          onClose={() => { setShowRentWizard(false); load() }}
+        />
+      )}
+
+      {showLeasingWizard && (
+        <LeasingWizard
+          creditors={creditors}
+          cards={cards}
+          onClose={() => { setShowLeasingWizard(false); load() }}
+        />
+      )}
+
+      {showCarInsuranceWizard && (
+        <CarInsuranceWizard
+          creditors={creditors}
+          cards={cards}
+          engagements={engagements}
+          onClose={() => { setShowCarInsuranceWizard(false); load() }}
         />
       )}
     </div>

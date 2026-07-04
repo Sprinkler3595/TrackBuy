@@ -9,11 +9,11 @@ use crate::util::path::{validate_read_source, validate_write_target};
 
 /// SELECT clause shared by every attachment fetch — keeps column order aligned
 /// with `row_to_attachment` so adding new polymorphic targets only touches one
-/// place. Current targets: item / order / subscription / engagement /
+/// place. Current targets: item / order / engagement /
 /// engagement_charge / engagement_revision / income / income_receipt /
 /// pending_reimbursement.
 const ATTACHMENT_SELECT_COLUMNS: &str =
-    "id, item_id, order_id, subscription_id, engagement_id, engagement_charge_id, engagement_revision_id,
+    "id, item_id, order_id, engagement_id, engagement_charge_id, engagement_revision_id,
      income_id, income_receipt_id, reimbursement_id,
      original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at";
 
@@ -24,7 +24,6 @@ const ATTACHMENT_SELECT_COLUMNS: &str =
 enum AttachmentTarget<'a> {
     Item(&'a str),
     Order(&'a str),
-    Subscription(&'a str),
     Engagement(&'a str),
     EngagementCharge(&'a str),
     EngagementRevision(&'a str),
@@ -59,49 +58,24 @@ pub fn get_attachments(state: State<'_, AppState>, item_id: String) -> Result<Ve
     Ok(attachments)
 }
 
-#[tauri::command]
-pub fn get_subscription_attachments(
-    state: State<'_, AppState>,
-    subscription_id: String,
-) -> Result<Vec<Attachment>, String> {
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
-    let sql = format!(
-        "SELECT {} FROM attachments WHERE subscription_id = ?1 ORDER BY created_at",
-        ATTACHMENT_SELECT_COLUMNS
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-
-    let attachments = stmt
-        .query_map([&subscription_id], row_to_attachment)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-
-    Ok(attachments)
-}
-
 fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Attachment> {
     Ok(Attachment {
         id: row.get(0)?,
         item_id: row.get(1)?,
         order_id: row.get(2)?,
-        subscription_id: row.get(3)?,
-        engagement_id: row.get(4)?,
-        engagement_charge_id: row.get(5)?,
-        engagement_revision_id: row.get(6)?,
-        income_id: row.get(7)?,
-        income_receipt_id: row.get(8)?,
-        reimbursement_id: row.get(9)?,
-        original_name: row.get(10)?,
-        display_name: row.get(11)?,
-        mime_type: row.get(12)?,
-        file_path: row.get(13)?,
-        size_bytes: row.get(14)?,
-        attachment_type: row.get(15)?,
-        created_at: row.get(16)?,
+        engagement_id: row.get(3)?,
+        engagement_charge_id: row.get(4)?,
+        engagement_revision_id: row.get(5)?,
+        income_id: row.get(6)?,
+        income_receipt_id: row.get(7)?,
+        reimbursement_id: row.get(8)?,
+        original_name: row.get(9)?,
+        display_name: row.get(10)?,
+        mime_type: row.get(11)?,
+        file_path: row.get(12)?,
+        size_bytes: row.get(13)?,
+        attachment_type: row.get(14)?,
+        created_at: row.get(15)?,
     })
 }
 
@@ -150,28 +124,27 @@ fn insert_polymorphic_attachment(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    let (item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id): (
-        Option<&str>, Option<&str>, Option<&str>, Option<&str>,
+    let (item_id, order_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id): (
+        Option<&str>, Option<&str>, Option<&str>,
         Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&str>,
     ) = match target {
-        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None, None),
-        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None, None),
-        AttachmentTarget::Subscription(id) => (None, None, Some(id), None, None, None, None, None, None),
-        AttachmentTarget::Engagement(id) => (None, None, None, Some(id), None, None, None, None, None),
-        AttachmentTarget::EngagementCharge(id) => (None, None, None, None, Some(id), None, None, None, None),
-        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, None, Some(id), None, None, None),
-        AttachmentTarget::Income(id) => (None, None, None, None, None, None, Some(id), None, None),
-        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, None, Some(id), None),
-        AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, None, Some(id)),
+        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None),
+        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None),
+        AttachmentTarget::Engagement(id) => (None, None, Some(id), None, None, None, None, None),
+        AttachmentTarget::EngagementCharge(id) => (None, None, None, Some(id), None, None, None, None),
+        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, Some(id), None, None, None),
+        AttachmentTarget::Income(id) => (None, None, None, None, None, Some(id), None, None),
+        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, Some(id), None),
+        AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, Some(id)),
     };
 
     if let Err(e) = conn.execute(
-        "INSERT INTO attachments (id, item_id, order_id, subscription_id, engagement_id,
+        "INSERT INTO attachments (id, item_id, order_id, engagement_id,
          engagement_charge_id, engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
          original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
-            id, item_id, order_id, sub_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id,
+            id, item_id, order_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id,
             original_name, display, mime_type, file_path, size_bytes, att_type
         ],
     ) {
@@ -463,66 +436,9 @@ pub fn add_attachment(
     };
 
     conn.execute(
-        "INSERT INTO attachments (id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO attachments (id, item_id, order_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![id, db_item_id, db_order_id, original_name, display, mime_type, file_path, size_bytes, att_type],
-    ).map_err(|e| e.to_string())?;
-
-    let select_sql = format!(
-        "SELECT {} FROM attachments WHERE id = ?1",
-        ATTACHMENT_SELECT_COLUMNS
-    );
-    conn.query_row(&select_sql, [&id], row_to_attachment)
-        .map_err(|e| e.to_string())
-}
-
-/// Attach a file to a subscription (invoice, contract, plan terms…). Same
-/// encryption pipeline as the item version, just polymorphic on
-/// `subscription_id`.
-#[tauri::command]
-pub fn add_subscription_attachment(
-    state: State<'_, AppState>,
-    subscription_id: String,
-    source_path: String,
-    display_name: Option<String>,
-    attachment_type: Option<String>,
-) -> Result<Attachment, String> {
-    let safe_source = validate_read_source(&source_path)?;
-    let data = std::fs::read(&safe_source)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
-
-    let size_bytes = data.len() as i64;
-    if size_bytes > 100 * 1024 * 1024 {
-        return Err("File too large (max 100 MB)".to_string());
-    }
-
-    let original_name = safe_source
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    let mime_type = storage::detect_mime_type(&original_name);
-    let display = display_name.unwrap_or_else(|| original_name.clone());
-    let att_type = attachment_type.unwrap_or_else(|| "other".to_string());
-    let id = Uuid::new_v4().to_string();
-
-    let vault_dir = state.vault_dir.lock().map_err(|_| "lock poisoned".to_string())?;
-    let vault_dir = vault_dir.as_ref().ok_or("No active vault")?;
-    let key_guard = state.encryption_key.lock().map_err(|_| "lock poisoned".to_string())?;
-    let key = key_guard.as_ref().ok_or("No encryption key")?;
-    let key_bytes: &[u8; 32] = key;
-
-    let file_path = storage::save_attachment(vault_dir, &id, &data, key_bytes)?;
-
-    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
-    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
-    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
-    conn.execute(
-        "INSERT INTO attachments (id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![id, subscription_id, original_name, display, mime_type, file_path, size_bytes, att_type],
     ).map_err(|e| e.to_string())?;
 
     let select_sql = format!(
@@ -582,8 +498,8 @@ pub fn add_text_attachment(
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
     conn.execute(
-        "INSERT INTO attachments (id, item_id, order_id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO attachments (id, item_id, order_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![id, item_id, original_name, display, mime_type, file_path, size_bytes, att_type],
     ).map_err(|e| e.to_string())?;
 

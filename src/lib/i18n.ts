@@ -233,57 +233,6 @@ export type TranslationKeys = {
   "reminders.expiration": string
   "reminders.renewal": string
 
-  // Subscriptions
-  "nav.subscriptions": string
-  "subscriptions.title": string
-  "subscriptions.subtitle": string
-  "subscriptions.new": string
-  "subscriptions.edit": string
-  "subscriptions.name": string
-  "subscriptions.category": string
-  "subscriptions.merchant": string
-  "subscriptions.card": string
-  "subscriptions.startDate": string
-  "subscriptions.nextRenewal": string
-  "subscriptions.billingCycle": string
-  "subscriptions.cycleInterval": string
-  "subscriptions.price": string
-  "subscriptions.currency": string
-  "subscriptions.autoRenewal": string
-  "subscriptions.trialEnd": string
-  "subscriptions.cancelBy": string
-  "subscriptions.cancellationUrl": string
-  "subscriptions.status": string
-  "subscriptions.notes": string
-  "subscriptions.statusActive": string
-  "subscriptions.statusPaused": string
-  "subscriptions.statusCancelled": string
-  "subscriptions.cycleMonthly": string
-  "subscriptions.cycleQuarterly": string
-  "subscriptions.cycleYearly": string
-  "subscriptions.cycleCustom": string
-  "subscriptions.upcomingRenewals": string
-  "subscriptions.monthlyCost": string
-  "subscriptions.markRenewed": string
-  "subscriptions.markedRenewed": string
-  "subscriptions.noSubs": string
-  "subscriptions.members": string
-  "subscriptions.addMember": string
-  "subscriptions.memberName": string
-  "subscriptions.memberShareAmount": string
-  "subscriptions.memberSharePercent": string
-  "subscriptions.payments": string
-  "subscriptions.logPayment": string
-  "subscriptions.paidOn": string
-  "subscriptions.amount": string
-  "subscriptions.invoices": string
-  "subscriptions.deleteConfirm": string
-  "subscriptions.created": string
-  "subscriptions.updated": string
-  "subscriptions.deleted": string
-  "subscriptions.inTrial": string
-  "subscriptions.renewsIn": string
-
   // Engagements (recurring real-world charges)
   "nav.engagements": string
   "nav.creditors": string
@@ -754,56 +703,6 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.expiration": "Expiration",
     "reminders.renewal": "Renouvellement",
 
-    "nav.subscriptions": "Abonnements en ligne",
-    "subscriptions.title": "Abonnements en ligne",
-    "subscriptions.subtitle": "Streaming, SaaS, cloud, hébergement, gaming",
-    "subscriptions.new": "Nouvel abonnement",
-    "subscriptions.edit": "Modifier l'abonnement",
-    "subscriptions.name": "Nom",
-    "subscriptions.category": "Catégorie",
-    "subscriptions.merchant": "Fournisseur",
-    "subscriptions.card": "Carte de paiement",
-    "subscriptions.startDate": "Date de début",
-    "subscriptions.nextRenewal": "Prochain renouvellement",
-    "subscriptions.billingCycle": "Cycle de facturation",
-    "subscriptions.cycleInterval": "Intervalle",
-    "subscriptions.price": "Prix",
-    "subscriptions.currency": "Devise",
-    "subscriptions.autoRenewal": "Renouvellement automatique",
-    "subscriptions.trialEnd": "Fin de l'essai gratuit",
-    "subscriptions.cancelBy": "Annuler avant le",
-    "subscriptions.cancellationUrl": "URL d'annulation",
-    "subscriptions.status": "Statut",
-    "subscriptions.notes": "Notes",
-    "subscriptions.statusActive": "Actif",
-    "subscriptions.statusPaused": "En pause",
-    "subscriptions.statusCancelled": "Annulé",
-    "subscriptions.cycleMonthly": "Mensuel",
-    "subscriptions.cycleQuarterly": "Trimestriel",
-    "subscriptions.cycleYearly": "Annuel",
-    "subscriptions.cycleCustom": "Personnalisé (jours)",
-    "subscriptions.upcomingRenewals": "Renouvellements à venir",
-    "subscriptions.monthlyCost": "Coût mensuel total",
-    "subscriptions.markRenewed": "Marquer renouvelé",
-    "subscriptions.markedRenewed": "Renouvellement enregistré",
-    "subscriptions.noSubs": "Aucun abonnement",
-    "subscriptions.members": "Membres",
-    "subscriptions.addMember": "Ajouter un membre",
-    "subscriptions.memberName": "Nom",
-    "subscriptions.memberShareAmount": "Part (montant)",
-    "subscriptions.memberSharePercent": "Part (%)",
-    "subscriptions.payments": "Historique des paiements",
-    "subscriptions.logPayment": "Logger un paiement",
-    "subscriptions.paidOn": "Date du paiement",
-    "subscriptions.amount": "Montant",
-    "subscriptions.invoices": "Factures",
-    "subscriptions.deleteConfirm": "Cet abonnement, son historique de paiements, ses membres et ses pièces jointes seront supprimés définitivement.",
-    "subscriptions.created": "Abonnement créé",
-    "subscriptions.updated": "Abonnement modifié",
-    "subscriptions.deleted": "Abonnement supprimé",
-    "subscriptions.inTrial": "Période d'essai",
-    "subscriptions.renewsIn": "Renouvelle dans",
-
     "nav.engagements": "Engagements",
     "nav.creditors": "Créanciers",
     "engagements.title": "Engagements",
@@ -1264,56 +1163,6 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.event": "Event",
     "reminders.expiration": "Expiration",
     "reminders.renewal": "Renewal",
-
-    "nav.subscriptions": "Online subscriptions",
-    "subscriptions.title": "Online subscriptions",
-    "subscriptions.subtitle": "Streaming, SaaS, cloud, hosting, gaming",
-    "subscriptions.new": "New subscription",
-    "subscriptions.edit": "Edit subscription",
-    "subscriptions.name": "Name",
-    "subscriptions.category": "Category",
-    "subscriptions.merchant": "Provider",
-    "subscriptions.card": "Payment card",
-    "subscriptions.startDate": "Start date",
-    "subscriptions.nextRenewal": "Next renewal",
-    "subscriptions.billingCycle": "Billing cycle",
-    "subscriptions.cycleInterval": "Interval",
-    "subscriptions.price": "Price",
-    "subscriptions.currency": "Currency",
-    "subscriptions.autoRenewal": "Auto-renewal",
-    "subscriptions.trialEnd": "Free trial ends",
-    "subscriptions.cancelBy": "Cancel by",
-    "subscriptions.cancellationUrl": "Cancellation URL",
-    "subscriptions.status": "Status",
-    "subscriptions.notes": "Notes",
-    "subscriptions.statusActive": "Active",
-    "subscriptions.statusPaused": "Paused",
-    "subscriptions.statusCancelled": "Cancelled",
-    "subscriptions.cycleMonthly": "Monthly",
-    "subscriptions.cycleQuarterly": "Quarterly",
-    "subscriptions.cycleYearly": "Yearly",
-    "subscriptions.cycleCustom": "Custom (days)",
-    "subscriptions.upcomingRenewals": "Upcoming renewals",
-    "subscriptions.monthlyCost": "Total monthly cost",
-    "subscriptions.markRenewed": "Mark renewed",
-    "subscriptions.markedRenewed": "Renewal logged",
-    "subscriptions.noSubs": "No subscriptions yet",
-    "subscriptions.members": "Members",
-    "subscriptions.addMember": "Add member",
-    "subscriptions.memberName": "Name",
-    "subscriptions.memberShareAmount": "Share (amount)",
-    "subscriptions.memberSharePercent": "Share (%)",
-    "subscriptions.payments": "Payment history",
-    "subscriptions.logPayment": "Log a payment",
-    "subscriptions.paidOn": "Paid on",
-    "subscriptions.amount": "Amount",
-    "subscriptions.invoices": "Invoices",
-    "subscriptions.deleteConfirm": "This subscription, its payment history, members and attachments will be permanently deleted.",
-    "subscriptions.created": "Subscription created",
-    "subscriptions.updated": "Subscription updated",
-    "subscriptions.deleted": "Subscription deleted",
-    "subscriptions.inTrial": "Trial period",
-    "subscriptions.renewsIn": "Renews in",
 
     "nav.engagements": "Engagements",
     "nav.creditors": "Creditors",

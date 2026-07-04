@@ -12,8 +12,6 @@ import { MerchantsPage } from "@/pages/merchants"
 import { LocationsPage } from "@/pages/locations"
 import { CardsPage } from "@/pages/cards"
 import { VaultsPage } from "@/pages/vaults"
-import { SubscriptionsPage } from "@/pages/subscriptions"
-import { SubscriptionDetailPage } from "@/pages/subscription-detail"
 import { EngagementsPage } from "@/pages/engagements"
 import { EngagementDetailPage } from "@/pages/engagement-detail"
 import { CreditorsPage } from "@/pages/creditors"
@@ -35,7 +33,6 @@ import { InboxPage } from "@/pages/inbox"
 import { TaxesPage } from "@/pages/taxes"
 import { BanquePage } from "@/pages/banque"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
-import { useSubscriptionNotifications } from "@/hooks/use-subscription-notifications"
 import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
 import { useCancellationNotifications } from "@/hooks/use-cancellation-notifications"
 import { useIdleLock, useIdleLockMinutes } from "@/hooks/use-idle-lock"
@@ -52,12 +49,11 @@ function AppContent() {
   const [error, setError] = useState<string | null>(null)
   const [checking, setChecking] = useState(true)
 
-  // Activate warranty + subscription + engagement notifications when unlocked.
+  // Activate warranty + engagement notifications when unlocked.
   // Gating on `unlocked` avoids firing IPC against a closed vault and
   // schedules the first check immediately after unlock instead of up to 6h
   // later.
   useWarrantyNotifications(unlocked)
-  useSubscriptionNotifications(unlocked)
   useEngagementNotifications(unlocked)
   useCancellationNotifications(unlocked)
 
@@ -94,9 +90,6 @@ function AppContent() {
       // Catch up any missed renewal cycles before the dashboard renders, so
       // the user sees a current view from the first paint. Log failures so
       // a silent skip doesn't quietly make "Ce mois" show zero charges due.
-      try { await api.rollForwardDueSubscriptions() } catch (e) {
-        console.error("rollForwardDueSubscriptions failed", e)
-      }
       try { await api.rollForwardDueEngagements() } catch (e) {
         console.error("rollForwardDueEngagements failed", e)
       }
@@ -207,8 +200,6 @@ function AppContent() {
           <Route path="/items" element={<ErrorBoundary><ItemsPage /></ErrorBoundary>} />
           <Route path="/items/:id" element={<ErrorBoundary><ItemDetailPage /></ErrorBoundary>} />
           <Route path="/tickets" element={<ErrorBoundary><TicketsPage /></ErrorBoundary>} />
-          <Route path="/subscriptions" element={<ErrorBoundary><SubscriptionsPage /></ErrorBoundary>} />
-          <Route path="/subscriptions/:id" element={<ErrorBoundary><SubscriptionDetailPage /></ErrorBoundary>} />
           <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
           <Route path="/engagements/:id" element={<ErrorBoundary><EngagementDetailPage /></ErrorBoundary>} />
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />

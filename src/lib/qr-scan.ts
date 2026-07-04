@@ -110,3 +110,145 @@ export async function scanQrFromFile(file: File): Promise<string | null> {
   const bytes = new Uint8Array(await file.arrayBuffer())
   return scanQrFromBytes(bytes, isPdf)
 }
+
+// ---------------------------------------------------------------------------
+// Due-date extraction
+//
+// The Swiss QR-bill payload carries no due date. For digital PDF invoices
+// (the common case — a bill received by e-mail) the date is in the document's
+// text layer next to a "payable until / échéance / zahlbar bis" label. We read
+// that text with pdf.js (no OCR needed) and pull the date out. Photos / scanned
+// image-only PDFs have no text layer, so this returns null and the user sets
+// the date manually.
+// ---------------------------------------------------------------------------
+
+// Labels that introduce a payment due date, across the four Swiss languages
+// (+ English). Kept permissive; the date search is anchored right after a hit.
+const DUE_LABELS =
+  /((?:payer|payable)(?:\s+(?:la\s+première\s+fois|une\s+fois))?\s+jusqu[’'`]?\s*au|[ée]ch[ée]ance|[àa]\s+payer\s+(?:avant|jusqu[’'`]?\s*au)|(?:payer|payable)\s+avant(?:\s+le)?|zahlbar\s+bis(?:\s+am)?|f[äa]llig(?:keitsdatum|keit|\s+am)?|scadenza|pagabile\s+(?:entro|fino\s+al)|payable\s+until|due\s+date|pay(?:able)?\s+by)/i
+
+/// Turn the first date found in `s` into an ISO `YYYY-MM-DD`, or null.
+/// Accepts DD.MM.YYYY / DD.MM.YY / DD/MM/YYYY / DD-MM-YYYY and ISO.
+function firstDateToIso(s: string): string | null {
+  const iso = /(\d{4})-(\d{2})-(\d{2})/.exec(s)
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`
+  const m = /(\d{1,2})[.\s/-](\d{1,2})[.\s/-](\d{2,4})/.exec(s)
+  if (m) {
+    const day = m[1].padStart(2, "0")
+    const month = m[2].padStart(2, "0")
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3]
+    if (+month >= 1 && +month <= 12 && +day >= 1 && +day <= 31) {
+      return `${year}-${month}-${day}`
+    }
+  }
+  return null
+}
+
+/// Find a payment due date in free text: locate a due-date label, then read the
+/// first date within the following ~40 characters.
+export function findDueDateInText(text: string): string | null {
+  const flat = text.replace(/\s+/g, " ")
+  const label = DUE_LABELS.exec(flat)
+  if (!label) return null
+  const start = label.index + label[0].length
+  return firstDateToIso(flat.slice(start, start + 40))
+}
+
+/// Read a digital PDF's text layer (best-effort). Returns "" for image-only
+/// PDFs (no text layer) or on failure. The text feeds both the quick regex
+/// due-date guess and the optional AI extraction.
+async function pdfText(buf: ArrayBuffer, maxPages = 3): Promise<string> {
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise
+    const pages = Math.min(pdf.numPages, maxPages)
+    let text = ""
+    for (let i = 1; i <= pages; i++) {
+      const page = await pdf.getPage(i)
+      const content = await page.getTextContent()
+      text += " " + content.items.map((it) => ("str" in it ? it.str : "")).join(" ")
+    }
+    return text
+  } catch {
+    return ""
+  }
+}
+
+/// Extract the invoice text from the same source used for QR scanning. Only
+/// digital PDFs are supported; images return "".
+export async function extractTextFromBytes(bytes: Uint8Array, isPdf: boolean): Promise<string> {
+  if (!isPdf) return ""
+  return pdfText(bytes.slice().buffer)
+}
+
+export async function extractTextFromFile(file: File): Promise<string> {
+  const isPdf =
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+  if (!isPdf) return ""
+  return pdfText(await file.arrayBuffer())
+}
+
+/// Render the first page (PDF) or the image itself to a compact JPEG data URL,
+/// downscaled to ~1280px wide. Used to send the invoice to a vision model when
+/// there's no usable text. Kept deliberately light — a due date is perfectly
+/// legible at this size, and a smaller payload avoids Infomaniak's gateway
+/// choking (502) on multi-megabyte requests. Returns null on failure.
+const VISION_MAX_WIDTH = 1280
+const VISION_JPEG_QUALITY = 0.6
+
+export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Promise<string | null> {
+  try {
+    const canvas = document.createElement("canvas")
+    if (isPdf) {
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice().buffer }).promise
+      const page = await pdf.getPage(1)
+      const base = page.getViewport({ scale: 1 })
+      const scale = Math.min(2, VISION_MAX_WIDTH / base.width)
+      const viewport = page.getViewport({ scale })
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return null
+      await page.render({ canvasContext: ctx, canvas, viewport }).promise
+    } else {
+      const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
+      try {
+        const img = new Image()
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve()
+          img.onerror = () => reject(new Error("image"))
+          img.src = url
+        })
+        const scale = Math.min(1, VISION_MAX_WIDTH / (img.naturalWidth || VISION_MAX_WIDTH))
+        canvas.width = Math.round(img.naturalWidth * scale)
+        canvas.height = Math.round(img.naturalHeight * scale)
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return null
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    }
+    return canvas.toDataURL("image/jpeg", VISION_JPEG_QUALITY)
+  } catch {
+    return null
+  }
+}
+
+/// OCR fallback: for a photo or an image-only PDF (no text layer), render the
+/// source to images and run Tesseract over them. Returns "" if OCR isn't
+/// available. Heavier than the text layer, so callers use it only when the
+/// text layer came back empty.
+export async function ocrSourceToText(bytes: Uint8Array, isPdf: boolean): Promise<string> {
+  const { ocrImagesToText } = await import("@/lib/ocr")
+  if (isPdf) {
+    const images = await pdfDataToImageDatas(bytes.slice().buffer, 2)
+    return ocrImagesToText(images)
+  }
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
+  try {
+    const image = await imageSrcToImageData(url)
+    return ocrImagesToText([image])
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}

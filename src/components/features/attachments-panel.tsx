@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -16,10 +16,9 @@ import {
 import * as api from "@/lib/tauri"
 
 interface AttachmentsPanelProps {
-  /// Target entity. Exactly one of itemId / subscriptionId / engagementId /
+  /// Target entity. Exactly one of itemId / engagementId /
   /// engagementChargeId / incomeId / reimbursementId must be set.
   itemId?: string
-  subscriptionId?: string
   engagementId?: string
   engagementChargeId?: string
   incomeId?: string
@@ -58,6 +57,22 @@ function getFileIcon(mimeType: string) {
 
 function getTypeLabel(slug: string): string {
   return ATTACHMENT_TYPES.find((t) => t.slug === slug)?.label ?? slug
+}
+
+/// Display sections for the attachment list, in render order. Contracts and
+/// invoices get their own bucket; everything else falls into "other".
+const ATTACHMENT_GROUPS = [
+  { key: "contract", label: "Contrats", addType: "contract" as string | null },
+  { key: "invoice", label: "Factures", addType: "invoice" as string | null },
+  // "other" covers many types (garantie, image, bon de commande…), so its
+  // add button opens the type picker instead of forcing a single type.
+  { key: "other", label: "Autres documents", addType: null },
+] as const
+
+function groupOf(slug: string): "contract" | "invoice" | "other" {
+  if (slug === "contract") return "contract"
+  if (slug === "invoice" || slug === "qrbill") return "invoice"
+  return "other"
 }
 
 interface PendingFiles {
@@ -127,7 +142,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -139,9 +154,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
 
   const load = async () => {
     try {
-      if (subscriptionId) {
-        setAttachments(await api.getSubscriptionAttachments(subscriptionId))
-      } else if (engagementId) {
+      if (engagementId) {
         setAttachments(await api.getEngagementAttachments(engagementId))
       } else if (engagementChargeId) {
         setAttachments(await api.getEngagementChargeAttachments(engagementChargeId))
@@ -159,7 +172,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
     }
   }
 
-  useEffect(() => { load() }, [itemId, subscriptionId, engagementId, engagementChargeId, incomeId, reimbursementId])
+  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, reimbursementId])
 
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -190,6 +203,12 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
     if (!pending) return
     const paths = pending.paths
     setPending(null)
+    await uploadPaths(paths, typeSlug, shareWithOrder)
+  }
+
+  /// Encrypt + attach each picked file under `typeSlug`. Shared by the type
+  /// picker (drag/global add) and the per-section "Ajouter" buttons.
+  const uploadPaths = async (paths: string[], typeSlug: string, shareWithOrder: boolean) => {
     let hasImage = false
     const baseCtx: TemplateContext = {
       description: itemDescription,
@@ -208,9 +227,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
       try {
         const type = (typeSlug as AttachmentTypeKey)
         const harmonized = await harmonize(type, name)
-        if (subscriptionId) {
-          await api.addSubscriptionAttachment(subscriptionId, filePath, harmonized, typeSlug)
-        } else if (engagementId) {
+        if (engagementId) {
           await api.addEngagementAttachment(engagementId, filePath, harmonized, typeSlug)
         } else if (engagementChargeId) {
           await api.addEngagementChargeAttachment(engagementChargeId, filePath, harmonized, typeSlug)
@@ -229,6 +246,20 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
     }
     if (hasImage && !shareWithOrder && itemId) invalidateThumbnail(itemId)
     await load()
+  }
+
+  /// Pick files from disk and attach them straight under a forced type, with
+  /// no type prompt — used by the per-section "Ajouter" buttons.
+  const addWithType = async (typeSlug: string) => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog")
+      const selected = await open({ multiple: true, title: "Ajouter une pièce jointe" })
+      if (!selected) return
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter(Boolean) as string[]
+      if (paths.length > 0) await uploadPaths(paths, typeSlug, false)
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    }
   }
 
   const handleExport = async (att: api.Attachment) => {
@@ -282,6 +313,54 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
     )
   }
 
+  const renderRow = (att: api.Attachment) => {
+    const Icon = getFileIcon(att.mime_type)
+    return (
+      <div
+        key={att.id}
+        className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors"
+      >
+        <button
+          type="button"
+          onClick={() => setViewTarget(att)}
+          className="flex flex-1 items-center gap-3 min-w-0 text-left"
+          title="Aperçu"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+            <Icon className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate hover:text-primary transition-colors">{att.display_name}</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+              <span>{formatFileSize(att.size_bytes)}</span>
+              <span>&middot;</span>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {getTypeLabel(att.attachment_type)}
+              </Badge>
+              {att.order_id && (
+                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
+                  <Layers className="h-2.5 w-2.5" />
+                  Partagée
+                </Badge>
+              )}
+            </div>
+          </div>
+        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button variant="ghost" size="icon" onClick={() => setViewTarget(att)} title="Aperçu">
+            <Eye className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => handleExport(att)} title="Exporter">
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(att.id)} title="Supprimer">
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -323,58 +402,38 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
           onChange={(e) => handleFileSelect(e.target.files)}
         />
 
-        {/* Attachment list */}
-        {attachments.length > 0 && (
-          <div className="space-y-2">
-            {attachments.map((att) => {
-              const Icon = getFileIcon(att.mime_type)
-              return (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors"
-                >
-                  <button
-                    type="button"
-                    onClick={() => setViewTarget(att)}
-                    className="flex flex-1 items-center gap-3 min-w-0 text-left"
-                    title="Aperçu"
-                  >
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                      <Icon className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate hover:text-primary transition-colors">{att.display_name}</p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                        <span>{formatFileSize(att.size_bytes)}</span>
-                        <span>&middot;</span>
-                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                          {getTypeLabel(att.attachment_type)}
-                        </Badge>
-                        {att.order_id && (
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
-                            <Layers className="h-2.5 w-2.5" />
-                            Partagée
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <Button variant="ghost" size="icon" onClick={() => setViewTarget(att)} title="Aperçu">
-                      <Eye className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => handleExport(att)} title="Exporter">
-                      <Download className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(att.id)} title="Supprimer">
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+        {/* Attachment list, split into always-visible sections (contracts /
+            invoices / other) so the lease contract and its bills are kept
+            apart and each can be filled independently. */}
+        <div className="space-y-4">
+          {ATTACHMENT_GROUPS.map((group) => {
+            const items = attachments.filter((att) => groupOf(att.attachment_type) === group.key)
+            return (
+              <div key={group.key} className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h4>
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{items.length}</Badge>
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => (group.addType ? addWithType(group.addType) : handlePickFile())}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Ajouter
+                  </Button>
                 </div>
-              )
-            })}
-          </div>
-        )}
+                {items.length > 0 ? (
+                  <div className="space-y-2">{items.map(renderRow)}</div>
+                ) : (
+                  <p className="px-1 text-xs italic text-muted-foreground">Aucun document</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
 
         <ConfirmDialog
           open={deleteTarget !== null}
@@ -389,7 +448,7 @@ export function AttachmentsPanel({ itemId, subscriptionId, engagementId, engagem
         {pending && (
           <TypePicker
             count={pending.paths.length}
-            canShare={!!orderId && !subscriptionId && !engagementId && !engagementChargeId && !incomeId && !reimbursementId}
+            canShare={!!orderId && !engagementId && !engagementChargeId && !incomeId && !reimbursementId}
             onPick={handleConfirmType}
             onCancel={() => setPending(null)}
           />

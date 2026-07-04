@@ -41,15 +41,14 @@ export interface Item {
 }
 
 export interface Reminder {
-  /// Source row id. items.id for 'item', subscriptions.id for 'subscription',
+  /// Source row id. items.id for 'item',
   /// engagements.id for both 'engagement' and 'charge' (parent, not charge_id).
   item_id: string
-  entity_type: "item" | "subscription" | "engagement" | "charge"
+  entity_type: "item" | "engagement" | "charge"
   description: string
-  /// item_kind for items, billing cycle for subscriptions, engagement_type
-  /// for engagements/charges.
+  /// item_kind for items, engagement_type for engagements/charges.
   item_kind: string
-  reminder_type: "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
+  reminder_type: "event" | "expiration" | "due" | "charge_due" | "notice"
   target_date: string
   days_until: number
   merchant_name: string | null
@@ -107,7 +106,6 @@ export interface Attachment {
   id: string
   item_id: string | null
   order_id: string | null
-  subscription_id: string | null
   engagement_id: string | null
   engagement_charge_id: string | null
   engagement_revision_id: string | null
@@ -169,59 +167,6 @@ export interface PendingInvoiceExtraction {
   extracted_json: string | null
   /// 'extracted' | 'failed'
   status: string
-}
-
-export type BillingCycle = "monthly" | "quarterly" | "yearly" | "custom"
-export type SubscriptionStatus = "active" | "paused" | "cancelled"
-export type SubscriptionKind = "online"
-
-export interface Subscription {
-  id: string
-  name: string
-  category: string | null
-  merchant_id: string | null
-  payment_card_id: string | null
-  start_date: string
-  next_renewal_date: string
-  billing_cycle: BillingCycle
-  cycle_interval: number
-  price: number
-  currency: string
-  auto_renewal: boolean
-  trial_end_date: string | null
-  cancel_by_date: string | null
-  cancellation_url: string | null
-  status: SubscriptionStatus
-  notes: string | null
-  kind: SubscriptionKind
-  created_at: string
-  updated_at: string
-  merchant_name?: string | null
-  card_name?: string | null
-}
-
-export interface SubscriptionPayment {
-  id: string
-  subscription_id: string
-  paid_on: string
-  amount: number
-  currency: string
-  payment_card_id: string | null
-  notes: string | null
-  created_at: string
-  // true = paiement présumé généré par le roll-forward, en attente de confirmation.
-  is_presumed: boolean
-  card_name?: string | null
-}
-
-export interface SubscriptionMember {
-  id: string
-  subscription_id: string
-  name: string
-  share_amount: number | null
-  share_percent: number | null
-  notes: string | null
-  created_at: string
 }
 
 export interface VaultInfo {
@@ -384,8 +329,6 @@ export const deleteWarranty = (id: string) => invoke<void>("delete_warranty", { 
 
 // Attachment commands
 export const getAttachments = (itemId: string) => invoke<Attachment[]>("get_attachments", { itemId })
-export const getSubscriptionAttachments = (subscriptionId: string) =>
-  invoke<Attachment[]>("get_subscription_attachments", { subscriptionId })
 export const addAttachment = (
   itemId: string,
   sourcePath: string,
@@ -394,14 +337,6 @@ export const addAttachment = (
   shareWithOrder?: boolean,
 ) =>
   invoke<Attachment>("add_attachment", { itemId, sourcePath, displayName, attachmentType, shareWithOrder })
-
-export const addSubscriptionAttachment = (
-  subscriptionId: string,
-  sourcePath: string,
-  displayName?: string,
-  attachmentType?: string,
-) =>
-  invoke<Attachment>("add_subscription_attachment", { subscriptionId, sourcePath, displayName, attachmentType })
 
 // Save a code/key typed directly in the form (no file picker round-trip).
 // The text is encrypted on disk via the same ChaCha20-Poly1305 pipeline as
@@ -513,7 +448,6 @@ export interface Stats {
   total_attachments: number
   monthly_spending: Array<{ month: string; total: number }>
   monthly_engagements: Array<{ month: string; total: number }>
-  monthly_subscriptions: Array<{ month: string; total: number }>
   monthly_incomes: Array<{ month: string; total: number }>
   engagements_by_type: Array<{ type: string; total: number; count: number }>
   incomes_by_type: Array<{ type: string; total: number; count: number }>
@@ -556,6 +490,8 @@ export interface ExtractedLineItem {
 export interface ExtractedReceipt {
   description: string | null
   purchase_date: string | null
+  /// Payment due date (échéance) for a bill — distinct from purchase_date.
+  due_date: string | null
   purchase_price: number | null
   currency: string | null
   merchant: string | null
@@ -573,86 +509,31 @@ export interface ExtractedReceipt {
 export const aiExtractReceipt = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedReceipt>("ai_extract_receipt", { ocrText, config })
 
+/// Focused, schema-constrained extraction of just the payment due date —
+/// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
+/// date or null.
+export const aiExtractDueDate = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<string | null>("ai_extract_due_date", { ocrText, config })
+
+/// Vision variant: reads the due date off a rendered invoice image (base64
+/// data URL), no OCR needed. Infomaniak (cloud vision) only. Returns ISO or null.
+export const aiExtractDueDateFromImage = (imageDataUrl: string, config: AiExtractionConfig) =>
+  invoke<string | null>("ai_extract_due_date_image", { imageDataUrl, config })
+
 export const aiTestConnection = (config: AiExtractionConfig) =>
   invoke<string>("ai_test_connection", { config })
 
-// Subscription commands
-export const getSubscriptions = (params?: { status?: string; category?: string }) =>
-  invoke<Subscription[]>("get_subscriptions", params ?? {})
+/// One calendar month of accumulated AI token usage (this vault). `promptTokens`
+/// = tokens sent (input), `completionTokens` = tokens received (output).
+export interface AiUsageMonth {
+  month: string
+  prompt_tokens: number
+  completion_tokens: number
+  calls: number
+}
 
-export const getSubscription = (id: string) =>
-  invoke<Subscription>("get_subscription", { id })
-
-export const createSubscription = (subscription: {
-  name: string
-  category?: string
-  merchant_id?: string | null
-  payment_card_id?: string | null
-  start_date: string
-  next_renewal_date: string
-  billing_cycle: BillingCycle
-  cycle_interval?: number
-  price: number
-  currency?: string
-  auto_renewal?: boolean
-  trial_end_date?: string | null
-  cancel_by_date?: string | null
-  cancellation_url?: string | null
-  status?: SubscriptionStatus
-  notes?: string | null
-  kind?: SubscriptionKind
-}) => invoke<Subscription>("create_subscription", { subscription })
-
-export const updateSubscription = (subscription: Subscription) =>
-  invoke<void>("update_subscription", { subscription })
-
-export const deleteSubscription = (id: string) =>
-  invoke<void>("delete_subscription", { id })
-
-export const getUpcomingRenewals = (days?: number) =>
-  invoke<Subscription[]>("get_upcoming_renewals", { days })
-
-export const rollForwardDueSubscriptions = () =>
-  invoke<number>("roll_forward_due_subscriptions")
-
-export const markRenewed = (id: string) =>
-  invoke<Subscription>("mark_renewed", { id })
-
-export const getSubscriptionPayments = (subscriptionId: string) =>
-  invoke<SubscriptionPayment[]>("get_subscription_payments", { subscriptionId })
-
-export const logSubscriptionPayment = (payment: {
-  subscription_id: string
-  paid_on: string
-  amount: number
-  currency?: string
-  payment_card_id?: string | null
-  notes?: string | null
-}) => invoke<SubscriptionPayment>("log_subscription_payment", { payment })
-
-export const deleteSubscriptionPayment = (id: string) =>
-  invoke<void>("delete_subscription_payment", { id })
-
-// Confirme un paiement présumé (le débit a bien eu lieu) → is_presumed = false.
-export const confirmSubscriptionPayment = (id: string) =>
-  invoke<void>("confirm_subscription_payment", { id })
-
-export const getSubscriptionMembers = (subscriptionId: string) =>
-  invoke<SubscriptionMember[]>("get_subscription_members", { subscriptionId })
-
-export const addSubscriptionMember = (member: {
-  subscription_id: string
-  name: string
-  share_amount?: number | null
-  share_percent?: number | null
-  notes?: string | null
-}) => invoke<SubscriptionMember>("add_subscription_member", { member })
-
-export const updateSubscriptionMember = (member: SubscriptionMember) =>
-  invoke<void>("update_subscription_member", { member })
-
-export const deleteSubscriptionMember = (id: string) =>
-  invoke<void>("delete_subscription_member", { id })
+/// Monthly AI token usage (sent/received) for the active vault, newest first.
+export const getAiUsage = () => invoke<AiUsageMonth[]>("get_ai_usage")
 
 // ============================================================================
 // Engagements & creditors (recurring real-world charges)
@@ -719,12 +600,53 @@ export interface Engagement {
   ended_on: string | null
   notes: string | null
   clauses_json: string | null
+  // Parking specifics (engagement_type 'parking'); null otherwise.
+  parking_spot_number: string | null
+  parking_kind: ParkingKind | null
+  // Vehicle leasing specifics (engagement_type 'leasing'); null otherwise.
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_plate: string | null
+  vehicle_vin: string | null
+  vehicle_first_registration: string | null
+  leasing_vehicle_price: number | null
+  leasing_duration_months: number | null
+  leasing_down_payment: number | null
+  leasing_residual_value: number | null
+  leasing_interest_rate_pct: number | null
+  leasing_annual_mileage_km: number | null
+  leasing_excess_km_cost: number | null
+  leasing_discount: number | null
+  // Car insurance specifics (engagement_type 'insurance_car'); null otherwise.
+  insurance_coverage: CarInsuranceCoverage | null
+  insurance_franchise_casco: number | null
+  insurance_franchise_partial: number | null
+  insurance_bonus_pct: number | null
+  /// JSON array of extra-coverage slugs (see CAR_INSURANCE_OPTIONS).
+  insurance_options_json: string | null
+  /// JSON object: per-coverage premium breakdown (rc, collision, partial,
+  /// extras, passengers, taxes).
+  insurance_premium_breakdown_json: string | null
+  vehicle_category: VehicleCategory | null
+  vehicle_registration_number: string | null
+  vehicle_is_leasing: boolean | null
+  insurance_young_driver_franchise: number | null
   created_at: string
   updated_at: string
   creditor_name?: string | null
   card_name?: string | null
   parent_name?: string | null
 }
+
+// Parking spot location, for parking engagements (usually a child of a rent).
+export type ParkingKind = "outdoor" | "collective_garage" | "box"
+
+// Car insurance coverage level: RC only, RC + partial casco, RC + full casco.
+export type CarInsuranceCoverage = "rc" | "partial_casco" | "full_casco"
+
+// Vehicle category (Swiss vehicle types).
+export type VehicleCategory =
+  | "passenger_car" | "motorcycle" | "light_commercial" | "motorhome" | "other"
 
 export interface EngagementCharge {
   id: string
@@ -815,6 +737,31 @@ export const createEngagement = (engagement: {
   status?: EngagementStatus
   notes?: string | null
   clauses_json?: string | null
+  parking_spot_number?: string | null
+  parking_kind?: ParkingKind | null
+  vehicle_make?: string | null
+  vehicle_model?: string | null
+  vehicle_plate?: string | null
+  vehicle_vin?: string | null
+  vehicle_first_registration?: string | null
+  leasing_vehicle_price?: number | null
+  leasing_duration_months?: number | null
+  leasing_down_payment?: number | null
+  leasing_residual_value?: number | null
+  leasing_interest_rate_pct?: number | null
+  leasing_annual_mileage_km?: number | null
+  leasing_excess_km_cost?: number | null
+  leasing_discount?: number | null
+  insurance_coverage?: CarInsuranceCoverage | null
+  insurance_franchise_casco?: number | null
+  insurance_franchise_partial?: number | null
+  insurance_bonus_pct?: number | null
+  insurance_options_json?: string | null
+  insurance_premium_breakdown_json?: string | null
+  vehicle_category?: VehicleCategory | null
+  vehicle_registration_number?: string | null
+  vehicle_is_leasing?: boolean | null
+  insurance_young_driver_franchise?: number | null
 }) => invoke<Engagement>("create_engagement", { engagement })
 
 export const updateEngagement = (engagement: Engagement) =>
@@ -882,22 +829,6 @@ export const addEngagementRevision = (revision: {
 
 export const deleteEngagementRevision = (id: string) =>
   invoke<void>("delete_engagement_revision", { id })
-
-export const migrateSubscriptionToEngagement = (
-  subscriptionId: string,
-  engagementType: EngagementType,
-  creditorId?: string | null
-) =>
-  invoke<Engagement>("migrate_subscription_to_engagement", {
-    subscriptionId,
-    engagementType,
-    creditorId,
-  })
-
-// Migre TOUS les abonnements restants vers des engagements (type « other » par
-// défaut). Retourne le nombre migré. Module Abonnements déprécié.
-export const migrateAllSubscriptionsToEngagements = () =>
-  invoke<number>("migrate_all_subscriptions_to_engagements")
 
 // Polymorphic attachments
 export const getEngagementAttachments = (engagementId: string) =>
@@ -1207,7 +1138,6 @@ export type BankTxDirection = "debit" | "credit"
 export type BankTxMatchStatus = "unmatched" | "suggested" | "confirmed" | "created" | "ignored"
 export type BankTxTargetKind =
   | "engagement" | "engagement_charge"
-  | "subscription" | "subscription_payment"
   | "income" | "income_receipt"
   | "item" | "item_group" | "merchant" | "reimbursement"
   | "pending_invoice"

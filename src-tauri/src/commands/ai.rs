@@ -1,5 +1,94 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::State;
+
+use crate::commands::auth::AppState;
+
+/// Token usage reported by a provider for one call. `prompt_tokens` = tokens
+/// sent (input), `completion_tokens` = tokens received (output). Zero when the
+/// provider didn't report usage.
+#[derive(Debug, Default, Clone)]
+struct AiUsage {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+}
+
+/// OpenAI-compatible shape (Infomaniak): `usage.prompt_tokens` / `.completion_tokens`.
+fn parse_openai_usage(json: &Value) -> AiUsage {
+    AiUsage {
+        prompt_tokens: json["usage"]["prompt_tokens"].as_i64().unwrap_or(0),
+        completion_tokens: json["usage"]["completion_tokens"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Ollama reports token counts at the top level: `prompt_eval_count` (input)
+/// and `eval_count` (output).
+fn parse_ollama_usage(json: &Value) -> AiUsage {
+    AiUsage {
+        prompt_tokens: json["prompt_eval_count"].as_i64().unwrap_or(0),
+        completion_tokens: json["eval_count"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Best-effort: add one call's token usage to the current month's running
+/// total. Never fails a command — if the vault is locked or the write errors,
+/// we just skip it (the counter is informational, not critical).
+fn record_ai_usage(state: &State<'_, AppState>, usage: &AiUsage) {
+    if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+        return;
+    }
+    let Ok(db_guard) = state.db.lock() else { return };
+    let Some(db) = db_guard.as_ref() else { return };
+    let Ok(conn) = db.conn.lock() else { return };
+    let _ = conn.execute(
+        "INSERT INTO ai_usage (month, prompt_tokens, completion_tokens, calls, updated_at)
+         VALUES (strftime('%Y-%m','now'), ?1, ?2, 1, datetime('now'))
+         ON CONFLICT(month) DO UPDATE SET
+           prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+           completion_tokens = completion_tokens + excluded.completion_tokens,
+           calls = calls + 1,
+           updated_at = datetime('now')",
+        rusqlite::params![usage.prompt_tokens, usage.completion_tokens],
+    );
+}
+
+/// One month of accumulated AI token usage, newest first.
+#[derive(Debug, Serialize)]
+pub struct AiUsageMonth {
+    pub month: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub calls: i64,
+}
+
+/// Monthly AI token usage (sent/received) for the active vault, newest first.
+#[tauri::command]
+pub fn get_ai_usage(state: State<'_, AppState>) -> Result<Vec<AiUsageMonth>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT month, prompt_tokens, completion_tokens, calls
+             FROM ai_usage ORDER BY month DESC LIMIT 24",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AiUsageMonth {
+                month: row.get(0)?,
+                prompt_tokens: row.get(1)?,
+                completion_tokens: row.get(2)?,
+                calls: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
 
 const SYSTEM_PROMPT: &str = "Tu es un extracteur de données pour un suivi d'achats. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Si un champ est introuvable, mets null. N'invente AUCUNE valeur — préfère null à une supposition.";
 
@@ -16,7 +105,8 @@ RÈGLES STRICTES :
 3. `items[]` ne contient QUE les produits/services achetés (un objet par article). EXCLURE absolument : sous-total, total, TVA, TPS, TPQ, TVH, GST, HST, PST, QST, espèces, carte, monnaie, rendu, change, points de fidélité.
    ⚠️ Les frais de livraison, l'installation, l'extension de garantie, les licences logicielles, les bons/coupons/remises font partie de `items[]` mais avec une `category` adaptée (voir règle 11).
 4. `merchant` = raison sociale ou enseigne commerciale visible en haut. Pas l'adresse, pas le slogan, pas le nom du caissier, pas "Bienvenue chez...".
-5. `purchase_date` = date d'émission du reçu (souvent en haut, parfois en pied). PAS une date de garantie, d'échéance ou de validité.
+5. `purchase_date` = date d'émission du reçu/facture (souvent en haut, parfois en pied). PAS une date de garantie, d'échéance ou de validité.
+5b. `due_date` = DATE D'ÉCHÉANCE de paiement d'une facture (le dernier jour pour payer). Cherche les mots-clés : "payable jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (dans ce cas due_date = purchase_date + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date". Si aucune échéance n'est mentionnée → null. Ne confonds PAS avec `purchase_date`.
 6. `tax_rate` = taux principal en pourcentage (ex: 20 pour 20%, 7.7 pour la TVA suisse). Si plusieurs taux, prends le plus élevé.
 7. `price_excl_tax` = total HT (avant TVA). Doit être < `purchase_price`. Cohérence : `purchase_price ≈ price_excl_tax * (1 + tax_rate/100)`.
 8. Si tu détectes "VISA ****1234" / "MASTERCARD XX5678" / "AMEX" → mets cette info dans `notes`.
@@ -35,6 +125,7 @@ FORMAT DE RÉPONSE (JSON strict, sans markdown) :
 {
   "description": string,
   "purchase_date": "YYYY-MM-DD",
+  "due_date": "YYYY-MM-DD"|null,
   "purchase_price": number,
   "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
   "merchant": string,
@@ -75,6 +166,9 @@ pub struct AiConfig {
 pub struct ExtractedReceipt {
     pub description: Option<String>,
     pub purchase_date: Option<String>,
+    /// Payment due date (échéance) for a bill/invoice — distinct from the
+    /// issue date `purchase_date`. Null on a plain purchase receipt.
+    pub due_date: Option<String>,
     pub purchase_price: Option<f64>,
     pub currency: Option<String>,
     pub merchant: Option<String>,
@@ -98,15 +192,168 @@ pub struct ExtractedItem {
 
 #[tauri::command]
 pub async fn ai_extract_receipt(
+    state: State<'_, AppState>,
     ocr_text: String,
     config: AiConfig,
 ) -> Result<ExtractedReceipt, String> {
     let prompt = EXTRACTION_PROMPT.replace("{OCR}", &ocr_text);
-    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
+    let (raw, usage) = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
+    record_ai_usage(&state, &usage);
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned)
         .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
     Ok(parse_extracted(&value))
+}
+
+// Focused, schema-constrained "find the payment due date" extraction. Kept
+// separate from the full receipt extraction because it's a single narrow task:
+// a small local model (e.g. Ministral 8B via Ollama) is far more reliable when
+// asked one thing with a strict JSON schema (structured output) than when
+// parsing a whole receipt into free-form JSON.
+const DUE_DATE_SYSTEM_PROMPT: &str = "Tu extrais UNE seule information d'une facture : la date d'échéance de paiement. Réponds UNIQUEMENT par un objet JSON {\"due_date\": \"YYYY-MM-DD\"|null}. N'invente RIEN : si aucune échéance claire n'est présente, mets null.";
+
+const DUE_DATE_PROMPT: &str = r#"Voici le texte (OCR) d'une facture. Trouve la DATE D'ÉCHÉANCE de paiement, c'est-à-dire le dernier jour pour payer.
+
+INDICES (libellés fréquents, non exhaustif) : "payable jusqu'au", "veuillez payer jusqu'au", "veuillez payer la première fois jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (alors échéance = date de facture + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date". La date qui SUIT une de ces tournures est l'échéance, même en pleine phrase (pas seulement dans un tableau).
+
+RÈGLES :
+- Toute formulation « payer … jusqu'au <date> » désigne une échéance : prends cette <date>.
+- S'il y a PLUSIEURS échéances (ex. facture de leasing : "première fois jusqu'au …" et "dernière fois jusqu'au …"), prends la PLUS PROCHE / la plus ancienne (le prochain paiement dû).
+- Dans un TABLEAU, la valeur est dans la COLONNE "Échéance" (souvent après une colonne "Période"). Ne prends PAS le début de période ni la date d'émission de la facture.
+- Convertis toute date au format YYYY-MM-DD. Les dates suisses sont écrites JJ.MM.AAAA (ex : "15.07.2026" → "2026-07-15").
+- Si vraiment aucune échéance n'est présente, réponds {"due_date": null}.
+
+TEXTE (entre <<<>>>) :
+<<<{OCR}>>>"#;
+
+fn due_date_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "due_date": {"type": ["string", "null"]} },
+        "required": ["due_date"],
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_due_date(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<Option<String>, String> {
+    let prompt = DUE_DATE_PROMPT.replace("{OCR}", &ocr_text);
+    let schema = due_date_schema();
+    let (raw, usage) = call_provider(&config, DUE_DATE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(as_opt_string(&value["due_date"]))
+}
+
+/// Vision variant: read the due date straight off a rendered invoice image
+/// (a base64 data URL). No OCR needed — a vision-capable model reads tables
+/// visually. Cloud (Infomaniak) only; the local Ollama path would need a
+/// separate vision model, so it's rejected with an actionable message.
+#[tauri::command]
+pub async fn ai_extract_due_date_image(
+    state: State<'_, AppState>,
+    image_data_url: String,
+    config: AiConfig,
+) -> Result<Option<String>, String> {
+    match config.provider {
+        AiProvider::Infomaniak => {}
+        AiProvider::Ollama => {
+            return Err("La lecture par image nécessite Infomaniak (modèle vision).".into())
+        }
+    }
+    if config.api_key.trim().is_empty() {
+        return Err("Clé API Infomaniak manquante".into());
+    }
+    if config.infomaniak_product_id.trim().is_empty() {
+        return Err("Product ID Infomaniak manquant".into());
+    }
+
+    let url = format!(
+        "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
+        config.infomaniak_product_id.trim()
+    );
+    let schema = due_date_schema();
+    let body = json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": DUE_DATE_SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Lis cette facture (image) et renvoie la DATE D'ÉCHÉANCE de paiement (dernier jour pour payer). Toute tournure « payer … jusqu'au <date> », « payable jusqu'au », « échéance », « zahlbar bis », « scadenza »… introduit l'échéance : prends la date qui suit, même en pleine phrase. S'il y en a plusieurs (leasing : « première fois » / « dernière fois »), prends la plus proche. Dans un tableau, prends la colonne « Échéance » (pas la période ni la date d'émission). Format YYYY-MM-DD. Si vraiment absente, null."},
+                {"type": "image_url", "image_url": {"url": image_data_url}}
+            ]}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 256,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "due_date", "strict": true, "schema": schema}
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Client init: {}", e))?;
+
+    // Vision requests are heavy, and Infomaniak's gateway occasionally answers
+    // 502/503/504 while the model warms up or the upstream is momentarily busy.
+    // Those are transient, so retry a few times with a short backoff before
+    // surfacing the error to the user.
+    let mut last_err = String::new();
+    let mut json: Value = Value::Null;
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500 * attempt as u64)).await;
+        }
+        let resp = match client
+            .post(&url)
+            .bearer_auth(config.api_key.trim())
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("Requête Infomaniak (vision): {}", e);
+                continue;
+            }
+        };
+        let status = resp.status();
+        if status.is_success() {
+            json = resp.json().await.map_err(|e| format!("JSON Infomaniak: {}", e))?;
+            last_err.clear();
+            break;
+        }
+        let text = resp.text().await.unwrap_or_default();
+        last_err = format!("Infomaniak {}: {}", status, text);
+        // Only retry transient gateway/server errors; a 4xx won't fix itself.
+        if !(status.as_u16() == 502 || status.as_u16() == 503 || status.as_u16() == 504) {
+            break;
+        }
+    }
+    if !last_err.is_empty() {
+        if last_err.contains("502") || last_err.contains("503") || last_err.contains("504") {
+            return Err(format!(
+                "{} — le service de vision Infomaniak est momentanément indisponible ou le modèle sélectionné ne lit pas les images. Réessaie, ou vérifie qu'un modèle multimodal est choisi dans Réglages → IA.",
+                last_err
+            ));
+        }
+        return Err(last_err);
+    }
+    record_ai_usage(&state, &parse_openai_usage(&json));
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
+    let cleaned = strip_code_fences(content);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, content))?;
+    Ok(as_opt_string(&value["due_date"]))
 }
 
 const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
@@ -392,6 +639,7 @@ fn bank_statement_schema() -> Value {
 
 #[tauri::command]
 pub async fn ai_extract_bank_statement(
+    state: State<'_, AppState>,
     text: String,
     config: AiConfig,
     bank: Option<String>,
@@ -408,7 +656,8 @@ pub async fn ai_extract_bank_statement(
         .replace("{BANK_HINT}", &bank_hint)
         .replace("{TEXT}", &text);
     let schema = bank_statement_schema();
-    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    let (raw, usage) = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned).map_err(|e| {
         // Tronque l'aperçu pour rester lisible si le modèle a généré
@@ -553,14 +802,18 @@ fn reconcile_with_balances(
 }
 
 #[tauri::command]
-pub async fn ai_test_connection(config: AiConfig) -> Result<String, String> {
-    let reply = call_provider(
+pub async fn ai_test_connection(
+    state: State<'_, AppState>,
+    config: AiConfig,
+) -> Result<String, String> {
+    let (reply, usage) = call_provider(
         &config,
         "You are a connection test responder.",
         "Reply with the single word: OK",
         None,
     )
     .await?;
+    record_ai_usage(&state, &usage);
     Ok(reply)
 }
 
@@ -569,7 +822,7 @@ async fn call_provider(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -587,7 +840,7 @@ async fn call_infomaniak(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     if config.api_key.trim().is_empty() {
         return Err("Clé API Infomaniak manquante".into());
     }
@@ -598,22 +851,12 @@ async fn call_infomaniak(
         "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
         config.infomaniak_product_id.trim()
     );
-    // OpenAI structured outputs (json_schema + strict:true) contrainent la
+    // OpenAI structured outputs (json_schema + strict:true) contraignent le
     // décodage côté serveur — le modèle ne PEUT pas émettre de tokens hors
-    // grammaire. C'est nettement plus solide qu'un json_object générique,
-    // qui laisse encore au modèle la liberté d'inventer la forme de l'objet.
-    // Si aucun schéma n'est fourni, on retombe sur json_object basique.
-    let response_format = match json_schema {
-        Some(schema) => json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "extraction",
-                "strict": true,
-                "schema": schema
-            }
-        }),
-        None => json!({"type": "json_object"}),
-    };
+    // grammaire. Quand aucun schéma n'est fourni (test de connexion,
+    // extraction de reçu), on n'impose AUCUN `response_format` : Infomaniak ne
+    // supporte plus l'ancien "json_object", et le prompt suffit à obtenir du
+    // JSON (nettoyé ensuite par strip_code_fences).
     let mut body = json!({
         "model": config.model,
         "messages": [
@@ -621,9 +864,18 @@ async fn call_infomaniak(
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.0,
-        "max_tokens": 8192,
-        "response_format": response_format
+        "max_tokens": 8192
     });
+    if let Some(schema) = json_schema {
+        body["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "extraction",
+                "strict": true,
+                "schema": schema
+            }
+        });
+    }
 
     let resp = client
         .post(&url)
@@ -642,25 +894,27 @@ async fn call_infomaniak(
             }
         })?;
 
-    // Si le modèle ne supporte pas json_schema (modèles plus anciens),
-    // Infomaniak renvoie un 400. On retombe alors automatiquement sur
-    // json_object qui est universellement supporté — c'est mieux que de
-    // jeter une erreur incompréhensible à l'utilisateur.
-    let resp = if !resp.status().is_success() && json_schema.is_some() {
-        let status = resp.status();
+    // Si le modèle ne supporte pas json_schema, Infomaniak renvoie un 400. On
+    // réessaie alors SANS `response_format` (le prompt demande déjà du JSON) —
+    // l'ancien "json_object" n'étant plus accepté par l'API.
+    let resp = if resp.status().as_u16() == 400 && json_schema.is_some() {
         let text = resp.text().await.unwrap_or_default();
-        if status.as_u16() == 400 && text.contains("json_schema") {
-            body["response_format"] = json!({"type": "json_object"});
-            client
-                .post(&url)
-                .bearer_auth(config.api_key.trim())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| format!("Requête Infomaniak (fallback json_object): {}", e))?
-        } else {
-            return Err(format!("Infomaniak {}: {}", status, text));
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("response_format");
         }
+        let retry = client
+            .post(&url)
+            .bearer_auth(config.api_key.trim())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Requête Infomaniak (repli sans response_format): {}", e))?;
+        // If the retry ALSO fails, the original 400 (which explains why) is the
+        // more useful message to surface.
+        if !retry.status().is_success() {
+            return Err(format!("Infomaniak 400: {}", text));
+        }
+        retry
     } else {
         resp
     };
@@ -675,10 +929,12 @@ async fn call_infomaniak(
         .json()
         .await
         .map_err(|e| format!("JSON Infomaniak: {}", e))?;
-    json["choices"][0]["message"]["content"]
+    let usage = parse_openai_usage(&json);
+    let content = json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))
+        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
+    Ok((content, usage))
 }
 
 async fn call_ollama(
@@ -687,7 +943,7 @@ async fn call_ollama(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     let base = if config.ollama_url.trim().is_empty() {
         "http://localhost:11434".to_string()
     } else {
@@ -754,10 +1010,12 @@ async fn call_ollama(
         .json()
         .await
         .map_err(|e| format!("JSON Ollama: {}", e))?;
-    json["message"]["content"]
+    let usage = parse_ollama_usage(&json);
+    let content = json["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Réponse Ollama inattendue: {}", json))
+        .ok_or_else(|| format!("Réponse Ollama inattendue: {}", json))?;
+    Ok((content, usage))
 }
 
 fn strip_code_fences(s: &str) -> String {
@@ -789,6 +1047,7 @@ fn parse_extracted(v: &Value) -> ExtractedReceipt {
     ExtractedReceipt {
         description: as_opt_string(&v["description"]),
         purchase_date: as_opt_string(&v["purchase_date"]),
+        due_date: as_opt_string(&v["due_date"]),
         purchase_price: v["purchase_price"].as_f64(),
         currency: as_opt_string(&v["currency"]),
         merchant: as_opt_string(&v["merchant"]),

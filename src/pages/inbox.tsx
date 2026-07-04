@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
-import { scanQrFromBytes, scanQrFromFile } from "@/lib/qr-scan"
+import { scanQrFromBytes, extractTextFromBytes, ocrSourceToText, findDueDateInText, renderFirstPageJpeg } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
 
@@ -43,10 +43,17 @@ export function InboxPage() {
   // A scanner returns the "SPC…" payload (or null). Decode it and hand off to
   // the review modal exactly like the manual-paste path; on no-match, fall
   // back to that paste modal rather than leaving the user stuck.
-  async function runScan(scan: () => Promise<string | null>) {
+  async function runScan(source: { bytes: Uint8Array; isPdf: boolean } | { file: File }) {
     setScanning(true)
     try {
-      const payload = await scan()
+      const bytes = "file" in source
+        ? new Uint8Array(await source.file.arrayBuffer())
+        : source.bytes
+      const isPdf = "file" in source
+        ? source.file.type === "application/pdf" || source.file.name.toLowerCase().endsWith(".pdf")
+        : source.isPdf
+
+      const payload = await scanQrFromBytes(bytes, isPdf)
       if (!payload) {
         toast(
           "Aucune QR-facture suisse détectée sur ce document. Vous pouvez coller le texte manuellement.",
@@ -56,7 +63,33 @@ export function InboxPage() {
         return
       }
       const decoded = await api.decodeQrbill(payload)
+      // Get the invoice text so the review modal can find the due date (the QR
+      // payload carries none). Prefer the PDF text layer; fall back to OCR for
+      // photos / image-only PDFs. A quick regex guess pre-fills the field; the
+      // full text is kept so the AI can read tabular layouts. Best-effort.
+      let text = ""
+      try {
+        text = await extractTextFromBytes(bytes, isPdf)
+        if (!text.trim()) text = await ocrSourceToText(bytes, isPdf)
+      } catch {
+        // best effort
+      }
+      const dueHint = text ? findDueDateInText(text) : null
+      // Also keep a compact page image so the modal can ask a vision model for
+      // the due date when there's no usable text (photo / scanned PDF / table).
+      let image: string | null = null
+      try {
+        image = await renderFirstPageJpeg(bytes, isPdf)
+      } catch {
+        // best effort
+      }
       sessionStorage.setItem("qrbill-pending", JSON.stringify(decoded))
+      if (text) sessionStorage.setItem("qrbill-text", text)
+      else sessionStorage.removeItem("qrbill-text")
+      if (image) sessionStorage.setItem("qrbill-image", image)
+      else sessionStorage.removeItem("qrbill-image")
+      if (dueHint) sessionStorage.setItem("qrbill-due-hint", dueHint)
+      else sessionStorage.removeItem("qrbill-due-hint")
       window.dispatchEvent(new Event("qrbill-decoded"))
     } catch (e) {
       toast(String(e), "error")
@@ -80,7 +113,7 @@ export function InboxPage() {
       if (!selected) return
       const path = selected as string
       const b64 = await api.readBinaryFileBase64(path)
-      void runScan(() => scanQrFromBytes(base64ToBytes(b64), path.toLowerCase().endsWith(".pdf")))
+      void runScan({ bytes: base64ToBytes(b64), isPdf: path.toLowerCase().endsWith(".pdf") })
     } catch {
       // Not running under Tauri (or dialog unavailable) → use the file input.
       fileInputRef.current?.click()
@@ -90,13 +123,13 @@ export function InboxPage() {
   function onFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = "" // allow re-picking the same file
-    if (file) void runScan(() => scanQrFromFile(file))
+    if (file) void runScan({ file })
   }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     const file = e.dataTransfer.files?.[0]
-    if (file) void runScan(() => scanQrFromFile(file))
+    if (file) void runScan({ file })
   }
 
   return (

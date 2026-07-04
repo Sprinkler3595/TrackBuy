@@ -960,13 +960,6 @@ pub fn list_statement_transactions(
                         |row| row.get(0),
                     )
                     .ok(),
-                "subscription" | "subscription_payment" => conn
-                    .query_row(
-                        "SELECT name FROM subscriptions WHERE id = ?1",
-                        [target_id],
-                        |row| row.get(0),
-                    )
-                    .ok(),
                 "income" | "income_receipt" => conn
                     .query_row(
                         "SELECT name FROM incomes WHERE id = ?1",
@@ -1021,7 +1014,7 @@ pub fn list_statement_transactions(
 
 /// Compute suggestions for every transaction of a statement that's still
 /// `unmatched`: (1) check learned rules first (best signal), then fall back
-/// to a substring match against engagements / subscriptions / merchants.
+/// to a substring match against engagements / merchants.
 /// Each suggested transaction is moved to `suggested` with a confidence and
 /// — when a rule fired — the rule's `match_rule_id`. Rule hit_count is
 /// incremented in the same transaction so popular rules surface in the
@@ -1119,14 +1112,12 @@ pub fn suggest_matches_for_statement(
             }
         }
 
-        // 2) Heuristic: engagements / subscriptions / merchants by name.
+        // 2) Heuristic: engagements / merchants by name.
         if matched.is_none() {
             let candidates: Vec<(String, String, String)> = {
                 let mut stmt = conn
                     .prepare(
                         "SELECT 'engagement' as kind, id, lower(name) as needle FROM engagements WHERE status = 'active'
-                         UNION ALL
-                         SELECT 'subscription' as kind, id, lower(name) FROM subscriptions WHERE status = 'active'
                          UNION ALL
                          SELECT 'merchant' as kind, id, lower(name) FROM merchants
                          UNION ALL
@@ -1154,7 +1145,7 @@ pub fn suggest_matches_for_statement(
         }
 
         // 3) Items: exact amount + (optional) merchant signal + date window.
-        // Runs last so engagement/subscription rules (richer signal) keep
+        // Runs last so engagement rules (richer signal) keep
         // priority. Single-item path first; grouped sum only if the single
         // path failed and several items at the same merchant/day add up.
         if matched.is_none() && direction == "debit" {
@@ -1358,7 +1349,7 @@ pub fn apply_transaction_match(
 
     // Rule learning: skip for item_group (orders are one-off, the libellé
     // wouldn't recur). Also skip for individual items by default — they're
-    // not recurring either. The existing engagement/subscription path
+    // not recurring either. The existing engagement path
     // remains the main beneficiary of learned rules.
     let skip_learn = target_kind == "item_group" || target_kind == "item";
     if learn_rule.unwrap_or(false) && !skip_learn {

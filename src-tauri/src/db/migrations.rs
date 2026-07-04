@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 17;
+pub const CURRENT_SCHEMA_VERSION: i64 = 25;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -81,6 +81,30 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 17 {
         migrate_v17(conn)?;
+    }
+    if current_version < 18 {
+        migrate_v18(conn)?;
+    }
+    if current_version < 19 {
+        migrate_v19(conn)?;
+    }
+    if current_version < 20 {
+        migrate_v20(conn)?;
+    }
+    if current_version < 21 {
+        migrate_v21(conn)?;
+    }
+    if current_version < 22 {
+        migrate_v22(conn)?;
+    }
+    if current_version < 23 {
+        migrate_v23(conn)?;
+    }
+    if current_version < 24 {
+        migrate_v24(conn)?;
+    }
+    if current_version < 25 {
+        migrate_v25(conn)?;
     }
 
     Ok(())
@@ -1252,4 +1276,366 @@ fn migrate_v17(conn: &Connection) -> Result<(), String> {
     ).map_err(|e| format!("Migration v17 failed: {}", e))?;
 
     Ok(())
+}
+
+/// Retire the deprecated `subscriptions` domain. Online subscriptions were
+/// superseded by `engagements` (richer real-world contract model) and users
+/// have migrated their data across, so the tables, their FTS mirror and the
+/// polymorphic `subscription_id` link on `attachments` are dropped for good.
+///
+/// `attachments` is rebuilt one last time (same `_new` swap pattern as
+/// v3/v5/v9/v10/v11) to remove the `subscription_id` column, its FK and its
+/// slot in the CHECK constraint. Any attachment that pointed ONLY at a
+/// subscription is left behind by the copy (it would otherwise violate the
+/// tightened CHECK); migration of subscriptions to engagements already
+/// re-pointed real invoices/contracts, so these are stale rows.
+///
+/// Child tables are dropped before their parent (`subscriptions`) so the
+/// implicit row-clearing DROP performs under `foreign_keys=ON` without
+/// tripping a constraint.
+fn migrate_v18(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        -- Rebuild attachments without subscription_id.
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            income_id TEXT,
+            income_receipt_id TEXT,
+            reimbursement_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL
+                   OR income_id IS NOT NULL OR income_receipt_id IS NOT NULL
+                   OR reimbursement_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE,
+            FOREIGN KEY (reimbursement_id) REFERENCES pending_reimbursements(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             income_id, income_receipt_id, reimbursement_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, engagement_id,
+               engagement_charge_id, engagement_revision_id,
+               income_id, income_receipt_id, reimbursement_id,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments
+        WHERE subscription_id IS NULL;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+        CREATE INDEX idx_attachments_income ON attachments(income_id);
+        CREATE INDEX idx_attachments_income_receipt ON attachments(income_receipt_id);
+        CREATE INDEX idx_attachments_reimbursement ON attachments(reimbursement_id);
+
+        -- Drop the subscription FTS mirror and its sync triggers first so they
+        -- can't fire while the base tables are torn down.
+        DROP TRIGGER IF EXISTS subscriptions_ai;
+        DROP TRIGGER IF EXISTS subscriptions_au;
+        DROP TRIGGER IF EXISTS subscriptions_ad;
+        DROP TABLE IF EXISTS subscriptions_fts;
+
+        -- Children before parent (FK-safe under foreign_keys=ON).
+        DROP TABLE IF EXISTS subscription_members;
+        DROP TABLE IF EXISTS subscription_payments;
+        DROP TABLE IF EXISTS subscriptions;
+
+        INSERT INTO schema_version (version) VALUES (18);
+        "
+    ).map_err(|e| format!("Migration v18 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Parking specifics for `engagement_type='parking'`. A parking spot is modelled
+/// as a child engagement of the apartment's rent; these two columns hold the
+/// structured details the rent assistant collects.
+///   - parking_spot_number : the spot label/number on the lease (e.g. "42").
+///   - parking_kind        : 'outdoor' | 'collective_garage' | 'box'.
+/// NULL for every non-parking engagement.
+fn migrate_v19(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN parking_spot_number TEXT;
+        ALTER TABLE engagements ADD COLUMN parking_kind TEXT;
+
+        INSERT INTO schema_version (version) VALUES (19);
+        "
+    ).map_err(|e| format!("Migration v19 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Vehicle leasing specifics for `engagement_type='leasing'`. Car leasing in
+/// Switzerland is driven by a handful of structured terms the assistant
+/// collects: the vehicle identity (make/model/plate/VIN/first registration)
+/// and the financial terms (vehicle price, duration, down payment, residual
+/// value, effective rate (TAEG), included annual mileage and the cost of each
+/// extra km). All NULL for non-leasing engagements.
+fn migrate_v20(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN vehicle_make TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_model TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_plate TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_vin TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_first_registration TEXT;
+        ALTER TABLE engagements ADD COLUMN leasing_vehicle_price REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_duration_months INTEGER;
+        ALTER TABLE engagements ADD COLUMN leasing_down_payment REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_residual_value REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_interest_rate_pct REAL;
+        ALTER TABLE engagements ADD COLUMN leasing_annual_mileage_km INTEGER;
+        ALTER TABLE engagements ADD COLUMN leasing_excess_km_cost REAL;
+
+        INSERT INTO schema_version (version) VALUES (20);
+        "
+    ).map_err(|e| format!("Migration v20 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Commercial discount on a leasing (e.g. a manufacturer/dealer offer such as
+/// a Tesla promotion the customer accepted). Stored separately from the gross
+/// down payment so both the headline terms and the deal are kept: the net the
+/// customer actually pays up front is `leasing_down_payment - leasing_discount`.
+/// NULL for non-leasing engagements.
+fn migrate_v21(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN leasing_discount REAL;
+
+        INSERT INTO schema_version (version) VALUES (21);
+        "
+    ).map_err(|e| format!("Migration v21 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Car insurance specifics for `engagement_type='insurance_car'`. Reuses the
+/// generic `vehicle_*` columns (v20) for the insured vehicle, and adds:
+///   - insurance_coverage        : 'rc' | 'partial_casco' | 'full_casco'.
+///   - insurance_franchise_casco : collision/full-casco deductible (CHF).
+///   - insurance_franchise_partial: partial-casco deductible (CHF).
+///   - insurance_bonus_pct       : no-claims bonus level (% of base premium).
+///   - insurance_options_json    : JSON array of extra-coverage slugs (parking
+///                                 damage, bonus protection, passengers, legal
+///                                 protection, assistance, new value…). Stored
+///                                 opaque — the backend never parses it.
+/// All NULL for non-insurance engagements.
+fn migrate_v22(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN insurance_coverage TEXT;
+        ALTER TABLE engagements ADD COLUMN insurance_franchise_casco REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_franchise_partial REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_bonus_pct REAL;
+        ALTER TABLE engagements ADD COLUMN insurance_options_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (22);
+        "
+    ).map_err(|e| format!("Migration v22 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Per-coverage premium breakdown for a car insurance, mirroring a real Swiss
+/// offer (RC / casco collision / casco partielle / extra coverages / passenger
+/// accident, plus taxes). Stored as an opaque JSON object so the headline
+/// `current_amount` stays the budget figure (total incl. taxes) while the
+/// detail is kept for reference. NULL when not provided.
+fn migrate_v23(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN insurance_premium_breakdown_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (23);
+        "
+    ).map_err(|e| format!("Migration v23 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// More vehicle/insurance details taken from a real Swiss offer:
+///   - vehicle_category             : 'passenger_car' | 'motorcycle' | … .
+///   - vehicle_registration_number  : Swiss registration no. (n° de matricule).
+///   - vehicle_is_leasing           : the vehicle is leased (offer "Leasing: Oui").
+///   - insurance_young_driver_franchise: extra deductible for young drivers (CHF).
+/// All NULL when not applicable.
+fn migrate_v24(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN vehicle_category TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_registration_number TEXT;
+        ALTER TABLE engagements ADD COLUMN vehicle_is_leasing INTEGER;
+        ALTER TABLE engagements ADD COLUMN insurance_young_driver_franchise REAL;
+
+        INSERT INTO schema_version (version) VALUES (24);
+        "
+    ).map_err(|e| format!("Migration v24 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Monthly AI token usage counter. One row per calendar month ('YYYY-MM'),
+/// accumulating tokens sent (`prompt_tokens`) and received (`completion_tokens`)
+/// plus the number of AI calls. Lets the user see their AI consumption per
+/// month. Purely informational; written best-effort after each AI call.
+fn migrate_v25(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            month TEXT PRIMARY KEY,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            calls INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO schema_version (version) VALUES (25);
+        "
+    ).map_err(|e| format!("Migration v25 failed: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Replays v1..=v17 on a fresh in-memory DB with foreign keys ON, leaving
+    /// the schema in the pre-v18 state (subscriptions still present).
+    fn conn_at_v17() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        migrate_v1(&conn).unwrap();
+        migrate_v2(&conn).unwrap();
+        migrate_v3(&conn).unwrap();
+        migrate_v4(&conn).unwrap();
+        migrate_v5(&conn).unwrap();
+        migrate_v6(&conn).unwrap();
+        migrate_v7(&conn).unwrap();
+        migrate_v8(&conn).unwrap();
+        migrate_v9(&conn).unwrap();
+        migrate_v10(&conn).unwrap();
+        migrate_v11(&conn).unwrap();
+        migrate_v12(&conn).unwrap();
+        migrate_v13(&conn).unwrap();
+        migrate_v14(&conn).unwrap();
+        migrate_v15(&conn).unwrap();
+        migrate_v16(&conn).unwrap();
+        migrate_v17(&conn).unwrap();
+        conn
+    }
+
+    /// v18 must drop the subscription tables/FTS and the `subscription_id`
+    /// column on `attachments`, discard attachments that pointed ONLY at a
+    /// subscription, and keep every other attachment intact — even with live
+    /// rows present and foreign keys enforced.
+    #[test]
+    fn v18_purges_subscriptions_but_keeps_other_attachments() {
+        let conn = conn_at_v17();
+
+        // An item with its own attachment (must survive).
+        conn.execute("INSERT INTO merchants (id, name) VALUES ('m1', 'M')", []).unwrap();
+        conn.execute("INSERT INTO locations (id, name) VALUES ('l1', 'L')", []).unwrap();
+        conn.execute(
+            "INSERT INTO items (id, description, purchase_date, purchase_price, merchant_id, location_id)
+             VALUES ('i1', 'x', '2024-01-01', 1.0, 'm1', 'l1')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, item_id, original_name, display_name, mime_type, file_path, size_bytes)
+             VALUES ('a_item', 'i1', 'n', 'n', 'x', 'p', 1)",
+            [],
+        ).unwrap();
+
+        // A subscription with payment + member + a subscription-only attachment
+        // (all must disappear).
+        conn.execute(
+            "INSERT INTO subscriptions (id, name, start_date, next_renewal_date, billing_cycle, price)
+             VALUES ('s1', 'Netflix', '2024-01-01', '2024-02-01', 'monthly', 12.0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO subscription_payments (id, subscription_id, paid_on, amount, currency)
+             VALUES ('p1', 's1', '2024-01-01', 12.0, 'CHF')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO subscription_members (id, subscription_id, name) VALUES ('mem1', 's1', 'Alice')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, subscription_id, original_name, display_name, mime_type, file_path, size_bytes)
+             VALUES ('a_sub', 's1', 'n', 'n', 'x', 'p', 1)",
+            [],
+        ).unwrap();
+
+        migrate_v18(&conn).unwrap();
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('subscriptions','subscription_payments','subscription_members','subscriptions_fts')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "subscription tables/FTS must be gone");
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('attachments') WHERE name='subscription_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 0, "attachments.subscription_id column must be gone");
+
+        let item_att: i64 = conn
+            .query_row("SELECT count(*) FROM attachments WHERE id='a_item'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(item_att, 1, "the item attachment must survive");
+
+        let sub_att: i64 = conn
+            .query_row("SELECT count(*) FROM attachments WHERE id='a_sub'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sub_att, 0, "the subscription-only attachment must be dropped");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 18);
+    }
 }

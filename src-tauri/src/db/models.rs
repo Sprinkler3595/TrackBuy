@@ -102,7 +102,6 @@ pub struct Attachment {
     pub id: String,
     pub item_id: Option<String>,
     pub order_id: Option<String>,
-    pub subscription_id: Option<String>,
     pub engagement_id: Option<String>,
     pub engagement_charge_id: Option<String>,
     pub engagement_revision_id: Option<String>,
@@ -217,7 +216,6 @@ pub struct CreateItemRequest {
 pub struct Reminder {
     /// Source entity row id. Depends on `entity_type`:
     /// - 'item'         → items.id
-    /// - 'subscription' → subscriptions.id
     /// - 'engagement'   → engagements.id
     /// - 'charge'       → engagements.id (the parent of the scheduled
     ///                    charge, not the charge_id, so the dashboard can
@@ -226,11 +224,10 @@ pub struct Reminder {
     pub item_id: String,
     pub entity_type: String,
     pub description: String,
-    /// For items this is the item_kind ("ticket", "voucher", "license"); for
-    /// subscriptions it carries the billing_cycle so the UI can colour-code;
+    /// For items this is the item_kind ("ticket", "voucher", "license");
     /// for engagements/charges it carries the canonical engagement_type.
     pub item_kind: String,
-    /// "event" | "expiration" | "renewal" | "due" | "charge_due" | "notice"
+    /// "event" | "expiration" | "due" | "charge_due" | "notice"
     pub reminder_type: String,
     pub target_date: String,
     pub days_until: i64,
@@ -310,111 +307,6 @@ pub struct CreateWarrantyRequest {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Subscription {
-    pub id: String,
-    pub name: String,
-    pub category: Option<String>,
-    pub merchant_id: Option<String>,
-    pub payment_card_id: Option<String>,
-    pub start_date: String,
-    pub next_renewal_date: String,
-    /// 'monthly' | 'quarterly' | 'yearly' | 'custom'
-    pub billing_cycle: String,
-    /// Multiplier on the billing cycle unit (e.g. cycle='monthly', interval=3
-    /// = every 3 months). Defaults to 1.
-    pub cycle_interval: i32,
-    pub price: f64,
-    pub currency: String,
-    pub auto_renewal: bool,
-    pub trial_end_date: Option<String>,
-    pub cancel_by_date: Option<String>,
-    pub cancellation_url: Option<String>,
-    /// 'active' | 'paused' | 'cancelled'
-    pub status: String,
-    pub notes: Option<String>,
-    /// Discriminator for the subscription scope. 'online' covers streaming,
-    /// SaaS, cloud, hosting, gaming. Real-world recurring charges (insurance,
-    /// rent, utilities…) belong in the separate `engagements` domain.
-    pub kind: String,
-    pub created_at: String,
-    pub updated_at: String,
-    // Joined fields
-    #[serde(skip_deserializing)]
-    pub merchant_name: Option<String>,
-    #[serde(skip_deserializing)]
-    pub card_name: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateSubscriptionRequest {
-    pub name: String,
-    pub category: Option<String>,
-    pub merchant_id: Option<String>,
-    pub payment_card_id: Option<String>,
-    pub start_date: String,
-    pub next_renewal_date: String,
-    pub billing_cycle: String,
-    pub cycle_interval: Option<i32>,
-    pub price: f64,
-    pub currency: Option<String>,
-    pub auto_renewal: Option<bool>,
-    pub trial_end_date: Option<String>,
-    pub cancel_by_date: Option<String>,
-    pub cancellation_url: Option<String>,
-    pub status: Option<String>,
-    pub notes: Option<String>,
-    pub kind: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SubscriptionPayment {
-    pub id: String,
-    pub subscription_id: String,
-    pub paid_on: String,
-    pub amount: f64,
-    pub currency: String,
-    pub payment_card_id: Option<String>,
-    pub notes: Option<String>,
-    pub created_at: String,
-    /// true = ligne présumée générée par le roll-forward, en attente de
-    /// confirmation (le débit n'est pas garanti d'avoir eu lieu).
-    #[serde(default)]
-    pub is_presumed: bool,
-    #[serde(skip_deserializing)]
-    pub card_name: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateSubscriptionPaymentRequest {
-    pub subscription_id: String,
-    pub paid_on: String,
-    pub amount: f64,
-    pub currency: Option<String>,
-    pub payment_card_id: Option<String>,
-    pub notes: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SubscriptionMember {
-    pub id: String,
-    pub subscription_id: String,
-    pub name: String,
-    pub share_amount: Option<f64>,
-    pub share_percent: Option<f64>,
-    pub notes: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateSubscriptionMemberRequest {
-    pub subscription_id: String,
-    pub name: String,
-    pub share_amount: Option<f64>,
-    pub share_percent: Option<f64>,
-    pub notes: Option<String>,
-}
-
 // =====================================================================
 // Creditors & Engagements (recurring real-world charges)
 // =====================================================================
@@ -480,6 +372,45 @@ pub struct Engagement {
     /// Free-form JSON for franchises, caps, options; not parsed by the
     /// backend.
     pub clauses_json: Option<String>,
+    // Parking specifics (engagement_type='parking'); NULL otherwise. See v19.
+    /// Spot label/number on the lease.
+    pub parking_spot_number: Option<String>,
+    /// 'outdoor' | 'collective_garage' | 'box'.
+    pub parking_kind: Option<String>,
+    // Vehicle leasing specifics (engagement_type='leasing'); NULL otherwise. v20.
+    pub vehicle_make: Option<String>,
+    pub vehicle_model: Option<String>,
+    pub vehicle_plate: Option<String>,
+    pub vehicle_vin: Option<String>,
+    pub vehicle_first_registration: Option<String>,
+    pub leasing_vehicle_price: Option<f64>,
+    pub leasing_duration_months: Option<i32>,
+    pub leasing_down_payment: Option<f64>,
+    pub leasing_residual_value: Option<f64>,
+    pub leasing_interest_rate_pct: Option<f64>,
+    pub leasing_annual_mileage_km: Option<i32>,
+    pub leasing_excess_km_cost: Option<f64>,
+    /// Commercial discount / accepted offer, deducted from the down payment.
+    pub leasing_discount: Option<f64>,
+    // Car insurance specifics (engagement_type='insurance_car'); NULL otherwise. v22.
+    /// 'rc' | 'partial_casco' | 'full_casco'.
+    pub insurance_coverage: Option<String>,
+    pub insurance_franchise_casco: Option<f64>,
+    pub insurance_franchise_partial: Option<f64>,
+    pub insurance_bonus_pct: Option<f64>,
+    /// JSON array of extra-coverage slugs; stored opaque.
+    pub insurance_options_json: Option<String>,
+    /// JSON object with the per-coverage premium breakdown; stored opaque.
+    pub insurance_premium_breakdown_json: Option<String>,
+    // More vehicle/insurance details (v24).
+    /// 'passenger_car' | 'motorcycle' | 'light_commercial' | 'motorhome' | 'other'.
+    pub vehicle_category: Option<String>,
+    /// Swiss registration number (n° de matricule / Stammnummer).
+    pub vehicle_registration_number: Option<String>,
+    /// The vehicle is leased (offer's "Leasing: Oui").
+    pub vehicle_is_leasing: Option<bool>,
+    /// Extra casco deductible applied to young drivers (CHF).
+    pub insurance_young_driver_franchise: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
     // Joined fields
@@ -512,6 +443,34 @@ pub struct CreateEngagementRequest {
     pub status: Option<String>,
     pub notes: Option<String>,
     pub clauses_json: Option<String>,
+    // Parking specifics (see Engagement). Optional on create/update.
+    pub parking_spot_number: Option<String>,
+    pub parking_kind: Option<String>,
+    // Vehicle leasing specifics (see Engagement). Optional on create/update.
+    pub vehicle_make: Option<String>,
+    pub vehicle_model: Option<String>,
+    pub vehicle_plate: Option<String>,
+    pub vehicle_vin: Option<String>,
+    pub vehicle_first_registration: Option<String>,
+    pub leasing_vehicle_price: Option<f64>,
+    pub leasing_duration_months: Option<i32>,
+    pub leasing_down_payment: Option<f64>,
+    pub leasing_residual_value: Option<f64>,
+    pub leasing_interest_rate_pct: Option<f64>,
+    pub leasing_annual_mileage_km: Option<i32>,
+    pub leasing_excess_km_cost: Option<f64>,
+    pub leasing_discount: Option<f64>,
+    // Car insurance specifics (see Engagement). Optional on create/update.
+    pub insurance_coverage: Option<String>,
+    pub insurance_franchise_casco: Option<f64>,
+    pub insurance_franchise_partial: Option<f64>,
+    pub insurance_bonus_pct: Option<f64>,
+    pub insurance_options_json: Option<String>,
+    pub insurance_premium_breakdown_json: Option<String>,
+    pub vehicle_category: Option<String>,
+    pub vehicle_registration_number: Option<String>,
+    pub vehicle_is_leasing: Option<bool>,
+    pub insurance_young_driver_franchise: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -721,7 +680,7 @@ pub struct CreateReimbursementRequest {
 
 // =====================================================================
 // Bank statements: monthly PDF imported, parsed by AI, then each line
-// matched to an engagement_charge / subscription_payment / item /
+// matched to an engagement_charge / item /
 // income_receipt / reimbursement. Patterns learned during review live in
 // `bank_match_rules` to auto-suggest matches on the next month.
 // =====================================================================
@@ -765,8 +724,7 @@ pub struct BankStatementTransaction {
     pub direction: String,
     pub reference_number: Option<String>,
     pub counterparty_iban: Option<String>,
-    /// 'engagement' | 'engagement_charge' | 'subscription'
-    /// | 'subscription_payment' | 'income' | 'income_receipt'
+    /// 'engagement' | 'engagement_charge' | 'income' | 'income_receipt'
     /// | 'item' | 'item_group' | 'merchant' | 'reimbursement' | NULL
     pub match_target_kind: Option<String>,
     pub match_target_id: Option<String>,
@@ -825,7 +783,7 @@ pub struct BankMatchRule {
     pub direction: Option<String>,
     pub amount_min: Option<f64>,
     pub amount_max: Option<f64>,
-    /// 'engagement' | 'subscription' | 'income' | 'merchant' | 'reimbursement'
+    /// 'engagement' | 'income' | 'merchant' | 'reimbursement'
     pub target_kind: String,
     pub target_id: String,
     pub learned: bool,

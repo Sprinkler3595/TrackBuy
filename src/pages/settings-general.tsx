@@ -31,6 +31,22 @@ function formatBytes(n: number, locale: "fr" | "en"): string {
   return `${locale === "fr" ? formatted.replace(".", ",") : formatted} ${units[i]}`
 }
 
+/// "2026-07" → "juillet 2026" / "July 2026". Falls back to the raw string.
+function formatMonth(month: string, locale: "fr" | "en"): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(month)
+  if (!m) return month
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, 1)
+  return date.toLocaleDateString(locale === "fr" ? "fr-CH" : "en-GB", {
+    month: "long",
+    year: "numeric",
+  })
+}
+
+/// Group thousands with a locale-appropriate separator (e.g. "12 345").
+function formatCount(n: number, locale: "fr" | "en"): string {
+  return n.toLocaleString(locale === "fr" ? "fr-CH" : "en-GB")
+}
+
 export function GeneralSettings() {
   const { theme, setTheme } = useTheme()
   const { locale, setLocale, t } = useI18n()
@@ -41,6 +57,7 @@ export function GeneralSettings() {
   const [ai, setAi] = useState<AiSettings>(() => getAiSettings())
   const [showApiKey, setShowApiKey] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [aiUsage, setAiUsage] = useState<api.AiUsageMonth[]>([])
   // Rotation du mot de passe maître.
   const [oldPwd, setOldPwd] = useState("")
   const [newPwd, setNewPwd] = useState("")
@@ -108,10 +125,19 @@ export function GeneralSettings() {
       .catch((e) => {
         if (!cancelled) setVaultLocError(typeof e === "string" ? e : String(e))
       })
+    api.getAiUsage()
+      .then((u) => {
+        if (!cancelled) setAiUsage(u)
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
   }, [])
+
+  const refreshAiUsage = () => {
+    api.getAiUsage().then(setAiUsage).catch(() => undefined)
+  }
 
   const revealFolder = async () => {
     if (!vaultLoc) return
@@ -165,6 +191,7 @@ export function GeneralSettings() {
       toast(`${locale === "fr" ? "Échec" : "Failed"}: ${e}`, "error")
     } finally {
       setTesting(false)
+      refreshAiUsage()
     }
   }
 
@@ -391,6 +418,47 @@ export function GeneralSettings() {
                 </Button>
               </div>
             </>
+          )}
+
+          {aiUsage.length > 0 && (
+            <div className="space-y-2 border-t pt-4">
+              <div className="text-sm font-medium">
+                {locale === "fr" ? "Consommation (tokens)" : "Usage (tokens)"}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {locale === "fr"
+                  ? "Tokens envoyés (entrée) et reçus (sortie) par mois, pour ce coffre."
+                  : "Tokens sent (input) and received (output) per month, for this vault."}
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-muted-foreground">
+                      <th className="py-1 pr-3 font-medium">{locale === "fr" ? "Mois" : "Month"}</th>
+                      <th className="py-1 px-3 text-right font-medium">{locale === "fr" ? "Envoyés" : "Sent"}</th>
+                      <th className="py-1 px-3 text-right font-medium">{locale === "fr" ? "Reçus" : "Received"}</th>
+                      <th className="py-1 px-3 text-right font-medium">Total</th>
+                      <th className="py-1 pl-3 text-right font-medium">{locale === "fr" ? "Appels" : "Calls"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {aiUsage.map((u) => (
+                      <tr key={u.month} className="border-t">
+                        <td className="py-1 pr-3 font-medium">{formatMonth(u.month, locale)}</td>
+                        <td className="py-1 px-3 text-right tabular-nums">{formatCount(u.prompt_tokens, locale)}</td>
+                        <td className="py-1 px-3 text-right tabular-nums">{formatCount(u.completion_tokens, locale)}</td>
+                        <td className="py-1 px-3 text-right tabular-nums font-medium">
+                          {formatCount(u.prompt_tokens + u.completion_tokens, locale)}
+                        </td>
+                        <td className="py-1 pl-3 text-right tabular-nums text-muted-foreground">
+                          {formatCount(u.calls, locale)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
