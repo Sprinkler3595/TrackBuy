@@ -1,5 +1,5 @@
 import { useEffect, useState, useContext } from "react"
-import { Link2, Plus } from "lucide-react"
+import { Link2, Plus, Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
@@ -7,6 +7,7 @@ import { formatPrice } from "@/lib/utils"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { InlineCreateSelect } from "@/components/ui/inline-create-select"
+import { getAiSettings } from "@/lib/ai-settings"
 import * as api from "@/lib/tauri"
 
 /// Engagement types grouped by category, so creating a new engagement from a
@@ -74,7 +75,10 @@ export function QrBillReview() {
   // Payment due date: derived from the QR-bill's Swico billing info when
   // present, otherwise the user sets it (defaults to today).
   const [dueDate, setDueDate] = useState("")
-  const [dueSource, setDueSource] = useState<"swico" | "pdf" | "manual">("manual")
+  const [dueSource, setDueSource] = useState<"swico" | "pdf" | "ia" | "manual">("manual")
+  // Invoice text layer (kept from the scan) so the AI can find the due date.
+  const [pdfText, setPdfText] = useState("")
+  const [aiBusy, setAiBusy] = useState(false)
 
   // "Create a new engagement" inline form.
   const [showCreate, setShowCreate] = useState(false)
@@ -100,6 +104,8 @@ export function QrBillReview() {
         sessionStorage.removeItem("qrbill-due-hint")
         setDueDate(swico ?? pdfHint ?? new Date().toISOString().slice(0, 10))
         setDueSource(swico ? "swico" : pdfHint ? "pdf" : "manual")
+        setPdfText(sessionStorage.getItem("qrbill-text") ?? "")
+        sessionStorage.removeItem("qrbill-text")
         Promise.all([api.getCreditors(), api.getEngagements({ status: "active" })])
           .then(([c, e]) => {
             setCreditors(c)
@@ -124,7 +130,36 @@ export function QrBillReview() {
   const dueNote =
     dueSource === "swico" ? "Déduite de la QR-facture (date de facture + délai)." :
     dueSource === "pdf"   ? "Lue sur le PDF de la facture — à vérifier." :
+    dueSource === "ia"    ? "Trouvée par l'IA sur la facture — à vérifier." :
                             "Non indiquée sur la QR-facture — à saisir."
+
+  /// Ask the configured AI to read the payment due date off the invoice text.
+  async function detectDueDateWithAi() {
+    const ai = getAiSettings()
+    if (!ai.enabled) {
+      toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
+      return
+    }
+    if (!pdfText.trim()) {
+      toast("Aucun texte lisible sur ce document (photo/scan ?).", "error")
+      return
+    }
+    setAiBusy(true)
+    try {
+      const r = await api.aiExtractReceipt(pdfText, ai)
+      if (r.due_date) {
+        setDueDate(r.due_date)
+        setDueSource("ia")
+        toast("Échéance détectée par l'IA.", "success")
+      } else {
+        toast("L'IA n'a pas trouvé d'échéance sur ce document.", "error")
+      }
+    } catch (e) {
+      toast(String(e), "error")
+    } finally {
+      setAiBusy(false)
+    }
+  }
 
   async function linkToEngagement() {
     if (!decoded || !selectedEngagement) return
@@ -305,6 +340,13 @@ export function QrBillReview() {
                   <p className="mt-1 text-xs text-muted-foreground">
                     {dueNote}
                   </p>
+                  {pdfText && (
+                    <Button type="button" variant="outline" size="sm" className="mt-2 h-7 text-xs"
+                      onClick={detectDueDateWithAi} disabled={aiBusy}>
+                      {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+                      Détecter l'échéance avec l'IA
+                    </Button>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -387,6 +429,13 @@ export function QrBillReview() {
                       <p className="text-xs text-muted-foreground">
                         {dueNote}
                       </p>
+                      {pdfText && (
+                        <Button type="button" variant="outline" size="sm" className="mt-1 h-7 text-xs"
+                          onClick={detectDueDateWithAi} disabled={aiBusy}>
+                          {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+                          Détecter l'échéance avec l'IA
+                        </Button>
+                      )}
                     </div>
 
                     <p className="text-xs text-muted-foreground">

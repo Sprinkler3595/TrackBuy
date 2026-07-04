@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
-import { scanQrFromBytes, scanQrFromFile, extractDueDateFromBytes, extractDueDateFromFile } from "@/lib/qr-scan"
+import { scanQrFromBytes, scanQrFromFile, extractTextFromBytes, extractTextFromFile, findDueDateInText } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
 
@@ -58,17 +58,21 @@ export function InboxPage() {
         return
       }
       const decoded = await api.decodeQrbill(payload)
-      // Best-effort: pull the payment due date from the PDF's text layer (the
-      // QR payload itself has none). Silently ignored for images/scans.
-      let dueHint: string | null = null
+      // Read the PDF's text layer once (the QR payload has no due date). A
+      // quick regex guess pre-fills the field; the full text is kept so the
+      // review modal can ask the AI for the due date on demand. Best-effort.
+      let text = ""
       try {
-        dueHint = "file" in source
-          ? await extractDueDateFromFile(source.file)
-          : await extractDueDateFromBytes(source.bytes, source.isPdf)
+        text = "file" in source
+          ? await extractTextFromFile(source.file)
+          : await extractTextFromBytes(source.bytes, source.isPdf)
       } catch {
         // best effort
       }
+      const dueHint = text ? findDueDateInText(text) : null
       sessionStorage.setItem("qrbill-pending", JSON.stringify(decoded))
+      if (text) sessionStorage.setItem("qrbill-text", text)
+      else sessionStorage.removeItem("qrbill-text")
       if (dueHint) sessionStorage.setItem("qrbill-due-hint", dueHint)
       else sessionStorage.removeItem("qrbill-due-hint")
       window.dispatchEvent(new Event("qrbill-decoded"))

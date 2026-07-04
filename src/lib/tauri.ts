@@ -490,6 +490,8 @@ export interface ExtractedLineItem {
 export interface ExtractedReceipt {
   description: string | null
   purchase_date: string | null
+  /// Payment due date (échéance) for a bill — distinct from purchase_date.
+  due_date: string | null
   purchase_price: number | null
   currency: string | null
   merchant: string | null

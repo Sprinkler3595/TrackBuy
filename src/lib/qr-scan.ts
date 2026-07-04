@@ -154,8 +154,10 @@ export function findDueDateInText(text: string): string | null {
   return firstDateToIso(flat.slice(start, start + 40))
 }
 
-/// Extract the payment due date from a digital PDF's text layer (best-effort).
-async function dueDateFromPdf(buf: ArrayBuffer, maxPages = 3): Promise<string | null> {
+/// Read a digital PDF's text layer (best-effort). Returns "" for image-only
+/// PDFs (no text layer) or on failure. The text feeds both the quick regex
+/// due-date guess and the optional AI extraction.
+async function pdfText(buf: ArrayBuffer, maxPages = 3): Promise<string> {
   try {
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise
     const pages = Math.min(pdf.numPages, maxPages)
@@ -165,25 +167,22 @@ async function dueDateFromPdf(buf: ArrayBuffer, maxPages = 3): Promise<string | 
       const content = await page.getTextContent()
       text += " " + content.items.map((it) => ("str" in it ? it.str : "")).join(" ")
     }
-    return findDueDateInText(text)
+    return text
   } catch {
-    return null
+    return ""
   }
 }
 
-/// Best-effort due date from the same source used for QR scanning. Only digital
-/// PDFs (text layer) are supported; images return null.
-export async function extractDueDateFromBytes(
-  bytes: Uint8Array,
-  isPdf: boolean,
-): Promise<string | null> {
-  if (!isPdf) return null
-  return dueDateFromPdf(bytes.slice().buffer)
+/// Extract the invoice text from the same source used for QR scanning. Only
+/// digital PDFs are supported; images return "".
+export async function extractTextFromBytes(bytes: Uint8Array, isPdf: boolean): Promise<string> {
+  if (!isPdf) return ""
+  return pdfText(bytes.slice().buffer)
 }
 
-export async function extractDueDateFromFile(file: File): Promise<string | null> {
+export async function extractTextFromFile(file: File): Promise<string> {
   const isPdf =
     file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
-  if (!isPdf) return null
-  return dueDateFromPdf(await file.arrayBuffer())
+  if (!isPdf) return ""
+  return pdfText(await file.arrayBuffer())
 }

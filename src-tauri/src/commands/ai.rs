@@ -16,7 +16,8 @@ RÈGLES STRICTES :
 3. `items[]` ne contient QUE les produits/services achetés (un objet par article). EXCLURE absolument : sous-total, total, TVA, TPS, TPQ, TVH, GST, HST, PST, QST, espèces, carte, monnaie, rendu, change, points de fidélité.
    ⚠️ Les frais de livraison, l'installation, l'extension de garantie, les licences logicielles, les bons/coupons/remises font partie de `items[]` mais avec une `category` adaptée (voir règle 11).
 4. `merchant` = raison sociale ou enseigne commerciale visible en haut. Pas l'adresse, pas le slogan, pas le nom du caissier, pas "Bienvenue chez...".
-5. `purchase_date` = date d'émission du reçu (souvent en haut, parfois en pied). PAS une date de garantie, d'échéance ou de validité.
+5. `purchase_date` = date d'émission du reçu/facture (souvent en haut, parfois en pied). PAS une date de garantie, d'échéance ou de validité.
+5b. `due_date` = DATE D'ÉCHÉANCE de paiement d'une facture (le dernier jour pour payer). Cherche les mots-clés : "payable jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (dans ce cas due_date = purchase_date + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date". Si aucune échéance n'est mentionnée → null. Ne confonds PAS avec `purchase_date`.
 6. `tax_rate` = taux principal en pourcentage (ex: 20 pour 20%, 7.7 pour la TVA suisse). Si plusieurs taux, prends le plus élevé.
 7. `price_excl_tax` = total HT (avant TVA). Doit être < `purchase_price`. Cohérence : `purchase_price ≈ price_excl_tax * (1 + tax_rate/100)`.
 8. Si tu détectes "VISA ****1234" / "MASTERCARD XX5678" / "AMEX" → mets cette info dans `notes`.
@@ -35,6 +36,7 @@ FORMAT DE RÉPONSE (JSON strict, sans markdown) :
 {
   "description": string,
   "purchase_date": "YYYY-MM-DD",
+  "due_date": "YYYY-MM-DD"|null,
   "purchase_price": number,
   "currency": "CHF"|"EUR"|"USD"|"GBP"|"CAD",
   "merchant": string,
@@ -75,6 +77,9 @@ pub struct AiConfig {
 pub struct ExtractedReceipt {
     pub description: Option<String>,
     pub purchase_date: Option<String>,
+    /// Payment due date (échéance) for a bill/invoice — distinct from the
+    /// issue date `purchase_date`. Null on a plain purchase receipt.
+    pub due_date: Option<String>,
     pub purchase_price: Option<f64>,
     pub currency: Option<String>,
     pub merchant: Option<String>,
@@ -789,6 +794,7 @@ fn parse_extracted(v: &Value) -> ExtractedReceipt {
     ExtractedReceipt {
         description: as_opt_string(&v["description"]),
         purchase_date: as_opt_string(&v["purchase_date"]),
+        due_date: as_opt_string(&v["due_date"]),
         purchase_price: v["purchase_price"].as_f64(),
         currency: as_opt_string(&v["currency"]),
         merchant: as_opt_string(&v["merchant"]),
