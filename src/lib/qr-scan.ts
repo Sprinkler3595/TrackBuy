@@ -125,7 +125,7 @@ export async function scanQrFromFile(file: File): Promise<string | null> {
 // Labels that introduce a payment due date, across the four Swiss languages
 // (+ English). Kept permissive; the date search is anchored right after a hit.
 const DUE_LABELS =
-  /(payable\s+jusqu[’'`]?\s*au|[ée]ch[ée]ance|[àa]\s+payer\s+(?:avant|jusqu[’'`]?\s*au)|payable\s+avant(?:\s+le)?|zahlbar\s+bis(?:\s+am)?|f[äa]llig(?:keitsdatum|keit|\s+am)?|scadenza|pagabile\s+(?:entro|fino\s+al)|payable\s+until|due\s+date|pay(?:able)?\s+by)/i
+  /((?:payer|payable)(?:\s+(?:la\s+première\s+fois|une\s+fois))?\s+jusqu[’'`]?\s*au|[ée]ch[ée]ance|[àa]\s+payer\s+(?:avant|jusqu[’'`]?\s*au)|(?:payer|payable)\s+avant(?:\s+le)?|zahlbar\s+bis(?:\s+am)?|f[äa]llig(?:keitsdatum|keit|\s+am)?|scadenza|pagabile\s+(?:entro|fino\s+al)|payable\s+until|due\s+date|pay(?:able)?\s+by)/i
 
 /// Turn the first date found in `s` into an ISO `YYYY-MM-DD`, or null.
 /// Accepts DD.MM.YYYY / DD.MM.YY / DD/MM/YYYY / DD-MM-YYYY and ISO.

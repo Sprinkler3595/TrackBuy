@@ -123,12 +123,14 @@ const DUE_DATE_SYSTEM_PROMPT: &str = "Tu extrais UNE seule information d'une fac
 
 const DUE_DATE_PROMPT: &str = r#"Voici le texte (OCR) d'une facture. Trouve la DATE D'ÉCHÉANCE de paiement, c'est-à-dire le dernier jour pour payer.
 
-INDICES (libellés fréquents) : "payable jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (dans ce cas échéance = date de facture + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date".
+INDICES (libellés fréquents, non exhaustif) : "payable jusqu'au", "veuillez payer jusqu'au", "veuillez payer la première fois jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (alors échéance = date de facture + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date". La date qui SUIT une de ces tournures est l'échéance, même en pleine phrase (pas seulement dans un tableau).
 
 RÈGLES :
+- Toute formulation « payer … jusqu'au <date> » désigne une échéance : prends cette <date>.
+- S'il y a PLUSIEURS échéances (ex. facture de leasing : "première fois jusqu'au …" et "dernière fois jusqu'au …"), prends la PLUS PROCHE / la plus ancienne (le prochain paiement dû).
 - Dans un TABLEAU, la valeur est dans la COLONNE "Échéance" (souvent après une colonne "Période"). Ne prends PAS le début de période ni la date d'émission de la facture.
 - Convertis toute date au format YYYY-MM-DD. Les dates suisses sont écrites JJ.MM.AAAA (ex : "15.07.2026" → "2026-07-15").
-- Si aucune échéance claire n'est présente, réponds {"due_date": null}.
+- Si vraiment aucune échéance n'est présente, réponds {"due_date": null}.
 
 TEXTE (entre <<<>>>) :
 <<<{OCR}>>>"#;
@@ -188,7 +190,7 @@ pub async fn ai_extract_due_date_image(
         "messages": [
             {"role": "system", "content": DUE_DATE_SYSTEM_PROMPT},
             {"role": "user", "content": [
-                {"type": "text", "text": "Lis cette facture (image) et renvoie la DATE D'ÉCHÉANCE de paiement. Dans un tableau, prends la colonne « Échéance » (pas la période ni la date d'émission). Format YYYY-MM-DD. Si absente, null."},
+                {"type": "text", "text": "Lis cette facture (image) et renvoie la DATE D'ÉCHÉANCE de paiement (dernier jour pour payer). Toute tournure « payer … jusqu'au <date> », « payable jusqu'au », « échéance », « zahlbar bis », « scadenza »… introduit l'échéance : prends la date qui suit, même en pleine phrase. S'il y en a plusieurs (leasing : « première fois » / « dernière fois »), prends la plus proche. Dans un tableau, prends la colonne « Échéance » (pas la période ni la date d'émission). Format YYYY-MM-DD. Si vraiment absente, null."},
                 {"type": "image_url", "image_url": {"url": image_data_url}}
             ]}
         ],
