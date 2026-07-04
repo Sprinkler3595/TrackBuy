@@ -155,9 +155,9 @@ export function QrBillReview() {
     }
     setAiBusy(true)
     try {
-      const r = await api.aiExtractReceipt(pdfText, ai)
-      if (r.due_date) {
-        setDueDate(r.due_date)
+      const found = await api.aiExtractDueDate(pdfText, ai)
+      if (found) {
+        setDueDate(found)
         setDueSource("ia")
         toast("Échéance détectée par l'IA.", "success")
       } else {

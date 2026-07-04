@@ -114,6 +114,48 @@ pub async fn ai_extract_receipt(
     Ok(parse_extracted(&value))
 }
 
+// Focused, schema-constrained "find the payment due date" extraction. Kept
+// separate from the full receipt extraction because it's a single narrow task:
+// a small local model (e.g. Ministral 8B via Ollama) is far more reliable when
+// asked one thing with a strict JSON schema (structured output) than when
+// parsing a whole receipt into free-form JSON.
+const DUE_DATE_SYSTEM_PROMPT: &str = "Tu extrais UNE seule information d'une facture : la date d'échéance de paiement. Réponds UNIQUEMENT par un objet JSON {\"due_date\": \"YYYY-MM-DD\"|null}. N'invente RIEN : si aucune échéance claire n'est présente, mets null.";
+
+const DUE_DATE_PROMPT: &str = r#"Voici le texte (OCR) d'une facture. Trouve la DATE D'ÉCHÉANCE de paiement, c'est-à-dire le dernier jour pour payer.
+
+INDICES (libellés fréquents) : "payable jusqu'au", "à payer avant/jusqu'au", "échéance", "date d'échéance", "délai de paiement", "payable dans X jours" (dans ce cas échéance = date de facture + X jours), "zahlbar bis", "fällig", "scadenza", "payable until", "due date".
+
+RÈGLES :
+- Dans un TABLEAU, la valeur est dans la COLONNE "Échéance" (souvent après une colonne "Période"). Ne prends PAS le début de période ni la date d'émission de la facture.
+- Convertis toute date au format YYYY-MM-DD. Les dates suisses sont écrites JJ.MM.AAAA (ex : "15.07.2026" → "2026-07-15").
+- Si aucune échéance claire n'est présente, réponds {"due_date": null}.
+
+TEXTE (entre <<<>>>) :
+<<<{OCR}>>>"#;
+
+fn due_date_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "due_date": {"type": ["string", "null"]} },
+        "required": ["due_date"],
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_due_date(
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<Option<String>, String> {
+    let prompt = DUE_DATE_PROMPT.replace("{OCR}", &ocr_text);
+    let schema = due_date_schema();
+    let raw = call_provider(&config, DUE_DATE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(as_opt_string(&value["due_date"]))
+}
+
 const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
 
 const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction réelle PRÉSENTE DANS LE TEXTE.

@@ -509,6 +509,12 @@ export interface ExtractedReceipt {
 export const aiExtractReceipt = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedReceipt>("ai_extract_receipt", { ocrText, config })
 
+/// Focused, schema-constrained extraction of just the payment due date —
+/// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
+/// date or null.
+export const aiExtractDueDate = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<string | null>("ai_extract_due_date", { ocrText, config })
+
 export const aiTestConnection = (config: AiExtractionConfig) =>
   invoke<string>("ai_test_connection", { config })
 
