@@ -152,32 +152,41 @@ export function QrBillReview() {
     dueSource === "ia"    ? "Trouvée par l'IA sur la facture — à vérifier." :
                             "Non indiquée sur la QR-facture — à saisir."
 
-  /// Ask the configured AI to read the payment due date off the invoice. Uses
-  /// the text layer when there is one (cheaper); otherwise sends the rendered
-  /// page image to the vision model (works on scanned/photo/tabular invoices,
-  /// where the date lives in a layout the regex can't follow). `silent` skips
-  /// the toasts for the automatic run.
+  /// Ask the configured AI to read the payment due date off the invoice. Tries
+  /// the text layer first (cheaper), then — if the text yields nothing — the
+  /// rendered page image via the vision model (scanned/photo/tabular invoices
+  /// where the date sits in a layout the text/regex can't follow). The error
+  /// message names the path used and the amount of text seen, so a failure is
+  /// diagnosable at a glance. `silent` skips the toasts for the automatic run.
   async function detectDueDateWithAi(opts?: { silent?: boolean }) {
     const ai = getAiSettings()
     if (!ai.enabled) {
       if (!opts?.silent) toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
       return
     }
-    if (!pdfText.trim() && !pageImage) {
+    const hasText = pdfText.trim().length > 0
+    if (!hasText && !pageImage) {
       if (!opts?.silent) toast("Aucun document à analyser.", "error")
       return
     }
     setAiBusy(true)
     try {
-      const found = pdfText.trim()
-        ? await api.aiExtractDueDate(pdfText, ai)
-        : await api.aiExtractDueDateFromImage(pageImage, ai)
+      let found: string | null = null
+      const tried: string[] = []
+      if (hasText) {
+        tried.push(`texte ${pdfText.length} car.`)
+        found = await api.aiExtractDueDate(pdfText, ai)
+      }
+      if (!found && pageImage) {
+        tried.push("image")
+        found = await api.aiExtractDueDateFromImage(pageImage, ai)
+      }
       if (found) {
         setDueDate(found)
         setDueSource("ia")
         if (!opts?.silent) toast("Échéance détectée par l'IA.", "success")
       } else if (!opts?.silent) {
-        toast("L'IA n'a pas trouvé d'échéance sur ce document.", "error")
+        toast(`L'IA n'a pas trouvé d'échéance (essayé : ${tried.join(", ")}).`, "error")
       }
     } catch (e) {
       if (!opts?.silent) toast(String(e), "error")
