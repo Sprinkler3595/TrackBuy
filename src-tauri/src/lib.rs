@@ -157,6 +157,7 @@ pub fn run() {
             commands::ai::ai_extract_due_date_image,
             commands::ai::ai_extract_bank_statement,
             commands::ai::ai_test_connection,
+            commands::ai::get_ai_usage,
             commands::household::list_household_members,
             commands::household::create_household_member,
             commands::household::update_household_member,

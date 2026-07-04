@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 24;
+pub const CURRENT_SCHEMA_VERSION: i64 = 25;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -102,6 +102,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 24 {
         migrate_v24(conn)?;
+    }
+    if current_version < 25 {
+        migrate_v25(conn)?;
     }
 
     Ok(())
@@ -1496,6 +1499,28 @@ fn migrate_v24(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (24);
         "
     ).map_err(|e| format!("Migration v24 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Monthly AI token usage counter. One row per calendar month ('YYYY-MM'),
+/// accumulating tokens sent (`prompt_tokens`) and received (`completion_tokens`)
+/// plus the number of AI calls. Lets the user see their AI consumption per
+/// month. Purely informational; written best-effort after each AI call.
+fn migrate_v25(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            month TEXT PRIMARY KEY,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            calls INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        INSERT INTO schema_version (version) VALUES (25);
+        "
+    ).map_err(|e| format!("Migration v25 failed: {}", e))?;
 
     Ok(())
 }

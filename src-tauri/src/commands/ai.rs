@@ -1,5 +1,94 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::State;
+
+use crate::commands::auth::AppState;
+
+/// Token usage reported by a provider for one call. `prompt_tokens` = tokens
+/// sent (input), `completion_tokens` = tokens received (output). Zero when the
+/// provider didn't report usage.
+#[derive(Debug, Default, Clone)]
+struct AiUsage {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+}
+
+/// OpenAI-compatible shape (Infomaniak): `usage.prompt_tokens` / `.completion_tokens`.
+fn parse_openai_usage(json: &Value) -> AiUsage {
+    AiUsage {
+        prompt_tokens: json["usage"]["prompt_tokens"].as_i64().unwrap_or(0),
+        completion_tokens: json["usage"]["completion_tokens"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Ollama reports token counts at the top level: `prompt_eval_count` (input)
+/// and `eval_count` (output).
+fn parse_ollama_usage(json: &Value) -> AiUsage {
+    AiUsage {
+        prompt_tokens: json["prompt_eval_count"].as_i64().unwrap_or(0),
+        completion_tokens: json["eval_count"].as_i64().unwrap_or(0),
+    }
+}
+
+/// Best-effort: add one call's token usage to the current month's running
+/// total. Never fails a command — if the vault is locked or the write errors,
+/// we just skip it (the counter is informational, not critical).
+fn record_ai_usage(state: &State<'_, AppState>, usage: &AiUsage) {
+    if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+        return;
+    }
+    let Ok(db_guard) = state.db.lock() else { return };
+    let Some(db) = db_guard.as_ref() else { return };
+    let Ok(conn) = db.conn.lock() else { return };
+    let _ = conn.execute(
+        "INSERT INTO ai_usage (month, prompt_tokens, completion_tokens, calls, updated_at)
+         VALUES (strftime('%Y-%m','now'), ?1, ?2, 1, datetime('now'))
+         ON CONFLICT(month) DO UPDATE SET
+           prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+           completion_tokens = completion_tokens + excluded.completion_tokens,
+           calls = calls + 1,
+           updated_at = datetime('now')",
+        rusqlite::params![usage.prompt_tokens, usage.completion_tokens],
+    );
+}
+
+/// One month of accumulated AI token usage, newest first.
+#[derive(Debug, Serialize)]
+pub struct AiUsageMonth {
+    pub month: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub calls: i64,
+}
+
+/// Monthly AI token usage (sent/received) for the active vault, newest first.
+#[tauri::command]
+pub fn get_ai_usage(state: State<'_, AppState>) -> Result<Vec<AiUsageMonth>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT month, prompt_tokens, completion_tokens, calls
+             FROM ai_usage ORDER BY month DESC LIMIT 24",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(AiUsageMonth {
+                month: row.get(0)?,
+                prompt_tokens: row.get(1)?,
+                completion_tokens: row.get(2)?,
+                calls: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
 
 const SYSTEM_PROMPT: &str = "Tu es un extracteur de données pour un suivi d'achats. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Si un champ est introuvable, mets null. N'invente AUCUNE valeur — préfère null à une supposition.";
 
@@ -103,11 +192,13 @@ pub struct ExtractedItem {
 
 #[tauri::command]
 pub async fn ai_extract_receipt(
+    state: State<'_, AppState>,
     ocr_text: String,
     config: AiConfig,
 ) -> Result<ExtractedReceipt, String> {
     let prompt = EXTRACTION_PROMPT.replace("{OCR}", &ocr_text);
-    let raw = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
+    let (raw, usage) = call_provider(&config, SYSTEM_PROMPT, &prompt, None).await?;
+    record_ai_usage(&state, &usage);
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned)
         .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
@@ -146,12 +237,14 @@ fn due_date_schema() -> Value {
 
 #[tauri::command]
 pub async fn ai_extract_due_date(
+    state: State<'_, AppState>,
     ocr_text: String,
     config: AiConfig,
 ) -> Result<Option<String>, String> {
     let prompt = DUE_DATE_PROMPT.replace("{OCR}", &ocr_text);
     let schema = due_date_schema();
-    let raw = call_provider(&config, DUE_DATE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    let (raw, usage) = call_provider(&config, DUE_DATE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned)
         .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
@@ -164,6 +257,7 @@ pub async fn ai_extract_due_date(
 /// separate vision model, so it's rejected with an actionable message.
 #[tauri::command]
 pub async fn ai_extract_due_date_image(
+    state: State<'_, AppState>,
     image_data_url: String,
     config: AiConfig,
 ) -> Result<Option<String>, String> {
@@ -252,6 +346,7 @@ pub async fn ai_extract_due_date_image(
         }
         return Err(last_err);
     }
+    record_ai_usage(&state, &parse_openai_usage(&json));
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
@@ -544,6 +639,7 @@ fn bank_statement_schema() -> Value {
 
 #[tauri::command]
 pub async fn ai_extract_bank_statement(
+    state: State<'_, AppState>,
     text: String,
     config: AiConfig,
     bank: Option<String>,
@@ -560,7 +656,8 @@ pub async fn ai_extract_bank_statement(
         .replace("{BANK_HINT}", &bank_hint)
         .replace("{TEXT}", &text);
     let schema = bank_statement_schema();
-    let raw = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    let (raw, usage) = call_provider(&config, BANK_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
     let cleaned = strip_code_fences(&raw);
     let value: Value = serde_json::from_str(&cleaned).map_err(|e| {
         // Tronque l'aperçu pour rester lisible si le modèle a généré
@@ -705,14 +802,18 @@ fn reconcile_with_balances(
 }
 
 #[tauri::command]
-pub async fn ai_test_connection(config: AiConfig) -> Result<String, String> {
-    let reply = call_provider(
+pub async fn ai_test_connection(
+    state: State<'_, AppState>,
+    config: AiConfig,
+) -> Result<String, String> {
+    let (reply, usage) = call_provider(
         &config,
         "You are a connection test responder.",
         "Reply with the single word: OK",
         None,
     )
     .await?;
+    record_ai_usage(&state, &usage);
     Ok(reply)
 }
 
@@ -721,7 +822,7 @@ async fn call_provider(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -739,7 +840,7 @@ async fn call_infomaniak(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     if config.api_key.trim().is_empty() {
         return Err("Clé API Infomaniak manquante".into());
     }
@@ -828,10 +929,12 @@ async fn call_infomaniak(
         .json()
         .await
         .map_err(|e| format!("JSON Infomaniak: {}", e))?;
-    json["choices"][0]["message"]["content"]
+    let usage = parse_openai_usage(&json);
+    let content = json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))
+        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
+    Ok((content, usage))
 }
 
 async fn call_ollama(
@@ -840,7 +943,7 @@ async fn call_ollama(
     system_prompt: &str,
     user_prompt: &str,
     json_schema: Option<&Value>,
-) -> Result<String, String> {
+) -> Result<(String, AiUsage), String> {
     let base = if config.ollama_url.trim().is_empty() {
         "http://localhost:11434".to_string()
     } else {
@@ -907,10 +1010,12 @@ async fn call_ollama(
         .json()
         .await
         .map_err(|e| format!("JSON Ollama: {}", e))?;
-    json["message"]["content"]
+    let usage = parse_ollama_usage(&json);
+    let content = json["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Réponse Ollama inattendue: {}", json))
+        .ok_or_else(|| format!("Réponse Ollama inattendue: {}", json))?;
+    Ok((content, usage))
 }
 
 fn strip_code_fences(s: &str) -> String {

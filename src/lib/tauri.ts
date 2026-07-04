@@ -523,6 +523,18 @@ export const aiExtractDueDateFromImage = (imageDataUrl: string, config: AiExtrac
 export const aiTestConnection = (config: AiExtractionConfig) =>
   invoke<string>("ai_test_connection", { config })
 
+/// One calendar month of accumulated AI token usage (this vault). `promptTokens`
+/// = tokens sent (input), `completionTokens` = tokens received (output).
+export interface AiUsageMonth {
+  month: string
+  prompt_tokens: number
+  completion_tokens: number
+  calls: number
+}
+
+/// Monthly AI token usage (sent/received) for the active vault, newest first.
+export const getAiUsage = () => invoke<AiUsageMonth[]>("get_ai_usage")
+
 // ============================================================================
 // Engagements & creditors (recurring real-world charges)
 // ============================================================================
