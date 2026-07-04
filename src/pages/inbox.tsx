@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
-import { scanQrFromBytes, scanQrFromFile, extractTextFromBytes, extractTextFromFile, findDueDateInText } from "@/lib/qr-scan"
+import { scanQrFromBytes, extractTextFromBytes, ocrSourceToText, findDueDateInText } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
 
@@ -46,9 +46,14 @@ export function InboxPage() {
   async function runScan(source: { bytes: Uint8Array; isPdf: boolean } | { file: File }) {
     setScanning(true)
     try {
-      const payload = "file" in source
-        ? await scanQrFromFile(source.file)
-        : await scanQrFromBytes(source.bytes, source.isPdf)
+      const bytes = "file" in source
+        ? new Uint8Array(await source.file.arrayBuffer())
+        : source.bytes
+      const isPdf = "file" in source
+        ? source.file.type === "application/pdf" || source.file.name.toLowerCase().endsWith(".pdf")
+        : source.isPdf
+
+      const payload = await scanQrFromBytes(bytes, isPdf)
       if (!payload) {
         toast(
           "Aucune QR-facture suisse détectée sur ce document. Vous pouvez coller le texte manuellement.",
@@ -58,14 +63,14 @@ export function InboxPage() {
         return
       }
       const decoded = await api.decodeQrbill(payload)
-      // Read the PDF's text layer once (the QR payload has no due date). A
-      // quick regex guess pre-fills the field; the full text is kept so the
-      // review modal can ask the AI for the due date on demand. Best-effort.
+      // Get the invoice text so the review modal can find the due date (the QR
+      // payload carries none). Prefer the PDF text layer; fall back to OCR for
+      // photos / image-only PDFs. A quick regex guess pre-fills the field; the
+      // full text is kept so the AI can read tabular layouts. Best-effort.
       let text = ""
       try {
-        text = "file" in source
-          ? await extractTextFromFile(source.file)
-          : await extractTextFromBytes(source.bytes, source.isPdf)
+        text = await extractTextFromBytes(bytes, isPdf)
+        if (!text.trim()) text = await ocrSourceToText(bytes, isPdf)
       } catch {
         // best effort
       }

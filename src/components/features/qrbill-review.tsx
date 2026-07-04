@@ -121,6 +121,15 @@ export function QrBillReview() {
     return () => window.removeEventListener("qrbill-decoded", pick)
   }, [])
 
+  // When neither the Swico field nor the regex found a due date, and the AI is
+  // configured, ask it automatically (the user just wants the date filled).
+  useEffect(() => {
+    if (!decoded || dueSource !== "manual" || !pdfText.trim()) return
+    if (!getAiSettings().enabled) return
+    void detectDueDateWithAi()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decoded, pdfText])
+
   if (!decoded) return null
 
   const matchedEngagement = engagements.find((e) => e.id === selectedEngagement)

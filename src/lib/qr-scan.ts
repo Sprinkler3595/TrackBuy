@@ -186,3 +186,22 @@ export async function extractTextFromFile(file: File): Promise<string> {
   if (!isPdf) return ""
   return pdfText(await file.arrayBuffer())
 }
+
+/// OCR fallback: for a photo or an image-only PDF (no text layer), render the
+/// source to images and run Tesseract over them. Returns "" if OCR isn't
+/// available. Heavier than the text layer, so callers use it only when the
+/// text layer came back empty.
+export async function ocrSourceToText(bytes: Uint8Array, isPdf: boolean): Promise<string> {
+  const { ocrImagesToText } = await import("@/lib/ocr")
+  if (isPdf) {
+    const images = await pdfDataToImageDatas(bytes.slice().buffer, 2)
+    return ocrImagesToText(images)
+  }
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
+  try {
+    const image = await imageSrcToImageData(url)
+    return ocrImagesToText([image])
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
