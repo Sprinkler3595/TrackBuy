@@ -125,15 +125,17 @@ export function QrBillReview() {
     return () => window.removeEventListener("qrbill-decoded", pick)
   }, [])
 
-  // When neither the Swico field nor the regex found a due date, and the AI is
-  // configured, ask it automatically (the user just wants the date filled).
-  // Works from the text layer, or — for a scanned/photo invoice with no text —
-  // from the rendered page image via the vision model.
+  // AI-first: as soon as we have a document (text layer or rendered image) and
+  // no authoritative date from the QR-bill itself (Swico), ask the AI — it
+  // understands varied wordings the regex can't. The regex guess (dueSource
+  // "pdf") is only a fallback shown until the AI answers, and the AI overrides
+  // it if it finds something. Runs silently (no error toast) since the field
+  // stays usable either way.
   useEffect(() => {
-    if (!decoded || dueSource !== "manual") return
+    if (!decoded || dueSource === "swico") return
     if (!pdfText.trim() && !pageImage) return
     if (!getAiSettings().enabled) return
-    void detectDueDateWithAi()
+    void detectDueDateWithAi({ silent: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [decoded, pdfText, pageImage])
 
@@ -144,23 +146,25 @@ export function QrBillReview() {
   const typeKey = (typ: api.EngagementType): keyof TranslationKeys =>
     `engagements.type.${typ}` as keyof TranslationKeys
   const dueNote =
+    aiBusy                ? "Recherche de l'échéance par l'IA…" :
     dueSource === "swico" ? "Déduite de la QR-facture (date de facture + délai)." :
     dueSource === "pdf"   ? "Lue sur le PDF de la facture — à vérifier." :
     dueSource === "ia"    ? "Trouvée par l'IA sur la facture — à vérifier." :
                             "Non indiquée sur la QR-facture — à saisir."
 
   /// Ask the configured AI to read the payment due date off the invoice. Uses
-  /// the text layer when there is one; otherwise sends the rendered page image
-  /// to the vision model (the robust path for scanned/photo/tabular invoices,
-  /// where the date lives in a table the regex can't follow).
-  async function detectDueDateWithAi() {
+  /// the text layer when there is one (cheaper); otherwise sends the rendered
+  /// page image to the vision model (works on scanned/photo/tabular invoices,
+  /// where the date lives in a layout the regex can't follow). `silent` skips
+  /// the toasts for the automatic run.
+  async function detectDueDateWithAi(opts?: { silent?: boolean }) {
     const ai = getAiSettings()
     if (!ai.enabled) {
-      toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
+      if (!opts?.silent) toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
       return
     }
     if (!pdfText.trim() && !pageImage) {
-      toast("Aucun document à analyser.", "error")
+      if (!opts?.silent) toast("Aucun document à analyser.", "error")
       return
     }
     setAiBusy(true)
@@ -171,12 +175,12 @@ export function QrBillReview() {
       if (found) {
         setDueDate(found)
         setDueSource("ia")
-        toast("Échéance détectée par l'IA.", "success")
-      } else {
+        if (!opts?.silent) toast("Échéance détectée par l'IA.", "success")
+      } else if (!opts?.silent) {
         toast("L'IA n'a pas trouvé d'échéance sur ce document.", "error")
       }
     } catch (e) {
-      toast(String(e), "error")
+      if (!opts?.silent) toast(String(e), "error")
     } finally {
       setAiBusy(false)
     }
@@ -363,7 +367,7 @@ export function QrBillReview() {
                   </p>
                   {(pdfText || pageImage) && (
                     <Button type="button" variant="outline" size="sm" className="mt-2 h-7 text-xs"
-                      onClick={detectDueDateWithAi} disabled={aiBusy}>
+                      onClick={() => detectDueDateWithAi()} disabled={aiBusy}>
                       {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
                       Détecter l'échéance avec l'IA
                     </Button>
@@ -452,7 +456,7 @@ export function QrBillReview() {
                       </p>
                       {(pdfText || pageImage) && (
                         <Button type="button" variant="outline" size="sm" className="mt-1 h-7 text-xs"
-                          onClick={detectDueDateWithAi} disabled={aiBusy}>
+                          onClick={() => detectDueDateWithAi()} disabled={aiBusy}>
                           {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
                           Détecter l'échéance avec l'IA
                         </Button>
