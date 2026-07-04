@@ -188,9 +188,13 @@ export async function extractTextFromFile(file: File): Promise<string> {
 }
 
 /// Render the first page (PDF) or the image itself to a compact JPEG data URL,
-/// downscaled to ~1600px wide. Used to send the invoice to a vision model when
-/// there's no usable text. Returns null on failure. Kept small enough for
-/// sessionStorage and a single API call.
+/// downscaled to ~1280px wide. Used to send the invoice to a vision model when
+/// there's no usable text. Kept deliberately light — a due date is perfectly
+/// legible at this size, and a smaller payload avoids Infomaniak's gateway
+/// choking (502) on multi-megabyte requests. Returns null on failure.
+const VISION_MAX_WIDTH = 1280
+const VISION_JPEG_QUALITY = 0.6
+
 export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Promise<string | null> {
   try {
     const canvas = document.createElement("canvas")
@@ -198,7 +202,7 @@ export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Pr
       const pdf = await pdfjsLib.getDocument({ data: bytes.slice().buffer }).promise
       const page = await pdf.getPage(1)
       const base = page.getViewport({ scale: 1 })
-      const scale = Math.min(2.5, 1600 / base.width)
+      const scale = Math.min(2, VISION_MAX_WIDTH / base.width)
       const viewport = page.getViewport({ scale })
       canvas.width = viewport.width
       canvas.height = viewport.height
@@ -214,7 +218,7 @@ export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Pr
           img.onerror = () => reject(new Error("image"))
           img.src = url
         })
-        const scale = Math.min(1, 1600 / (img.naturalWidth || 1600))
+        const scale = Math.min(1, VISION_MAX_WIDTH / (img.naturalWidth || VISION_MAX_WIDTH))
         canvas.width = Math.round(img.naturalWidth * scale)
         canvas.height = Math.round(img.naturalHeight * scale)
         const ctx = canvas.getContext("2d")
@@ -224,7 +228,7 @@ export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Pr
         URL.revokeObjectURL(url)
       }
     }
-    return canvas.toDataURL("image/jpeg", 0.72)
+    return canvas.toDataURL("image/jpeg", VISION_JPEG_QUALITY)
   } catch {
     return null
   }

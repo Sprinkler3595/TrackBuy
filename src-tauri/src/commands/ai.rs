@@ -204,19 +204,52 @@ pub async fn ai_extract_due_date_image(
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("Client init: {}", e))?;
-    let resp = client
-        .post(&url)
-        .bearer_auth(config.api_key.trim())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Requête Infomaniak (vision): {}", e))?;
-    if !resp.status().is_success() {
+
+    // Vision requests are heavy, and Infomaniak's gateway occasionally answers
+    // 502/503/504 while the model warms up or the upstream is momentarily busy.
+    // Those are transient, so retry a few times with a short backoff before
+    // surfacing the error to the user.
+    let mut last_err = String::new();
+    let mut json: Value = Value::Null;
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1500 * attempt as u64)).await;
+        }
+        let resp = match client
+            .post(&url)
+            .bearer_auth(config.api_key.trim())
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("Requête Infomaniak (vision): {}", e);
+                continue;
+            }
+        };
         let status = resp.status();
+        if status.is_success() {
+            json = resp.json().await.map_err(|e| format!("JSON Infomaniak: {}", e))?;
+            last_err.clear();
+            break;
+        }
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Infomaniak {}: {}", status, text));
+        last_err = format!("Infomaniak {}: {}", status, text);
+        // Only retry transient gateway/server errors; a 4xx won't fix itself.
+        if !(status.as_u16() == 502 || status.as_u16() == 503 || status.as_u16() == 504) {
+            break;
+        }
     }
-    let json: Value = resp.json().await.map_err(|e| format!("JSON Infomaniak: {}", e))?;
+    if !last_err.is_empty() {
+        if last_err.contains("502") || last_err.contains("503") || last_err.contains("504") {
+            return Err(format!(
+                "{} — le service de vision Infomaniak est momentanément indisponible ou le modèle sélectionné ne lit pas les images. Réessaie, ou vérifie qu'un modèle multimodal est choisi dans Réglages → IA.",
+                last_err
+            ));
+        }
+        return Err(last_err);
+    }
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
