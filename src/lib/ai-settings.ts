@@ -29,7 +29,9 @@ export function defaultAiSettings(provider: AiProvider = "ollama"): AiSettings {
     apiKey: "",
     infomaniakProductId: "",
     ollamaUrl: "http://localhost:11434",
-    model: provider === "infomaniak" ? "mixtral" : "llama3.1",
+    // Infomaniak model IDs are the full catalogue identifiers (see AI Tools in
+    // the Infomaniak manager). Default to a capable general instruct model.
+    model: provider === "infomaniak" ? "mistralai/Mistral-Small-4-119B-2603" : "qwen2.5:14b",
   }
 }
 

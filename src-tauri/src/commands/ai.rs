@@ -645,22 +645,12 @@ async fn call_infomaniak(
         "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
         config.infomaniak_product_id.trim()
     );
-    // OpenAI structured outputs (json_schema + strict:true) contrainent la
+    // OpenAI structured outputs (json_schema + strict:true) contraignent le
     // décodage côté serveur — le modèle ne PEUT pas émettre de tokens hors
-    // grammaire. C'est nettement plus solide qu'un json_object générique,
-    // qui laisse encore au modèle la liberté d'inventer la forme de l'objet.
-    // Si aucun schéma n'est fourni, on retombe sur json_object basique.
-    let response_format = match json_schema {
-        Some(schema) => json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "extraction",
-                "strict": true,
-                "schema": schema
-            }
-        }),
-        None => json!({"type": "json_object"}),
-    };
+    // grammaire. Quand aucun schéma n'est fourni (test de connexion,
+    // extraction de reçu), on n'impose AUCUN `response_format` : Infomaniak ne
+    // supporte plus l'ancien "json_object", et le prompt suffit à obtenir du
+    // JSON (nettoyé ensuite par strip_code_fences).
     let mut body = json!({
         "model": config.model,
         "messages": [
@@ -668,9 +658,18 @@ async fn call_infomaniak(
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.0,
-        "max_tokens": 8192,
-        "response_format": response_format
+        "max_tokens": 8192
     });
+    if let Some(schema) = json_schema {
+        body["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "extraction",
+                "strict": true,
+                "schema": schema
+            }
+        });
+    }
 
     let resp = client
         .post(&url)
@@ -689,25 +688,27 @@ async fn call_infomaniak(
             }
         })?;
 
-    // Si le modèle ne supporte pas json_schema (modèles plus anciens),
-    // Infomaniak renvoie un 400. On retombe alors automatiquement sur
-    // json_object qui est universellement supporté — c'est mieux que de
-    // jeter une erreur incompréhensible à l'utilisateur.
-    let resp = if !resp.status().is_success() && json_schema.is_some() {
-        let status = resp.status();
+    // Si le modèle ne supporte pas json_schema, Infomaniak renvoie un 400. On
+    // réessaie alors SANS `response_format` (le prompt demande déjà du JSON) —
+    // l'ancien "json_object" n'étant plus accepté par l'API.
+    let resp = if resp.status().as_u16() == 400 && json_schema.is_some() {
         let text = resp.text().await.unwrap_or_default();
-        if status.as_u16() == 400 && text.contains("json_schema") {
-            body["response_format"] = json!({"type": "json_object"});
-            client
-                .post(&url)
-                .bearer_auth(config.api_key.trim())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| format!("Requête Infomaniak (fallback json_object): {}", e))?
-        } else {
-            return Err(format!("Infomaniak {}: {}", status, text));
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("response_format");
         }
+        let retry = client
+            .post(&url)
+            .bearer_auth(config.api_key.trim())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Requête Infomaniak (repli sans response_format): {}", e))?;
+        // If the retry ALSO fails, the original 400 (which explains why) is the
+        // more useful message to surface.
+        if !retry.status().is_success() {
+            return Err(format!("Infomaniak 400: {}", text));
+        }
+        retry
     } else {
         resp
     };
