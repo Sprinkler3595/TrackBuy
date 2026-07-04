@@ -156,6 +156,76 @@ pub async fn ai_extract_due_date(
     Ok(as_opt_string(&value["due_date"]))
 }
 
+/// Vision variant: read the due date straight off a rendered invoice image
+/// (a base64 data URL). No OCR needed — a vision-capable model reads tables
+/// visually. Cloud (Infomaniak) only; the local Ollama path would need a
+/// separate vision model, so it's rejected with an actionable message.
+#[tauri::command]
+pub async fn ai_extract_due_date_image(
+    image_data_url: String,
+    config: AiConfig,
+) -> Result<Option<String>, String> {
+    match config.provider {
+        AiProvider::Infomaniak => {}
+        AiProvider::Ollama => {
+            return Err("La lecture par image nécessite Infomaniak (modèle vision).".into())
+        }
+    }
+    if config.api_key.trim().is_empty() {
+        return Err("Clé API Infomaniak manquante".into());
+    }
+    if config.infomaniak_product_id.trim().is_empty() {
+        return Err("Product ID Infomaniak manquant".into());
+    }
+
+    let url = format!(
+        "https://api.infomaniak.com/2/ai/{}/openai/v1/chat/completions",
+        config.infomaniak_product_id.trim()
+    );
+    let schema = due_date_schema();
+    let body = json!({
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": DUE_DATE_SYSTEM_PROMPT},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Lis cette facture (image) et renvoie la DATE D'ÉCHÉANCE de paiement. Dans un tableau, prends la colonne « Échéance » (pas la période ni la date d'émission). Format YYYY-MM-DD. Si absente, null."},
+                {"type": "image_url", "image_url": {"url": image_data_url}}
+            ]}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 256,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "due_date", "strict": true, "schema": schema}
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Client init: {}", e))?;
+    let resp = client
+        .post(&url)
+        .bearer_auth(config.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Requête Infomaniak (vision): {}", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Infomaniak {}: {}", status, text));
+    }
+    let json: Value = resp.json().await.map_err(|e| format!("JSON Infomaniak: {}", e))?;
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| format!("Réponse Infomaniak inattendue: {}", json))?;
+    let cleaned = strip_code_fences(content);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, content))?;
+    Ok(as_opt_string(&value["due_date"]))
+}
+
 const BANK_SYSTEM_PROMPT: &str = "Tu es un parseur de relevés bancaires suisses. Tu DOIS répondre par un objet JSON unique respectant EXACTEMENT le schéma demandé. La clé racine est TOUJOURS \"transactions\" (un tableau). N'invente AUCUN autre nom de clé. Pas de markdown, pas de prose autour. Préfère omettre une transaction plutôt que d'en inventer une.";
 
 const BANK_EXTRACTION_PROMPT: &str = r#"Tu reçois le contenu texte d'un relevé bancaire mensuel (UBS, PostFinance, Raiffeisen, Credit Suisse, banque cantonale…). Extrais CHAQUE ligne de transaction réelle PRÉSENTE DANS LE TEXTE.

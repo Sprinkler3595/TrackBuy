@@ -187,6 +187,49 @@ export async function extractTextFromFile(file: File): Promise<string> {
   return pdfText(await file.arrayBuffer())
 }
 
+/// Render the first page (PDF) or the image itself to a compact JPEG data URL,
+/// downscaled to ~1600px wide. Used to send the invoice to a vision model when
+/// there's no usable text. Returns null on failure. Kept small enough for
+/// sessionStorage and a single API call.
+export async function renderFirstPageJpeg(bytes: Uint8Array, isPdf: boolean): Promise<string | null> {
+  try {
+    const canvas = document.createElement("canvas")
+    if (isPdf) {
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice().buffer }).promise
+      const page = await pdf.getPage(1)
+      const base = page.getViewport({ scale: 1 })
+      const scale = Math.min(2.5, 1600 / base.width)
+      const viewport = page.getViewport({ scale })
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return null
+      await page.render({ canvasContext: ctx, canvas, viewport }).promise
+    } else {
+      const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
+      try {
+        const img = new Image()
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve()
+          img.onerror = () => reject(new Error("image"))
+          img.src = url
+        })
+        const scale = Math.min(1, 1600 / (img.naturalWidth || 1600))
+        canvas.width = Math.round(img.naturalWidth * scale)
+        canvas.height = Math.round(img.naturalHeight * scale)
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return null
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+    }
+    return canvas.toDataURL("image/jpeg", 0.72)
+  } catch {
+    return null
+  }
+}
+
 /// OCR fallback: for a photo or an image-only PDF (no text layer), render the
 /// source to images and run Tesseract over them. Returns "" if OCR isn't
 /// available. Heavier than the text layer, so callers use it only when the

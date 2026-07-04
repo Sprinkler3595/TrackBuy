@@ -76,8 +76,10 @@ export function QrBillReview() {
   // present, otherwise the user sets it (defaults to today).
   const [dueDate, setDueDate] = useState("")
   const [dueSource, setDueSource] = useState<"swico" | "pdf" | "ia" | "manual">("manual")
-  // Invoice text layer (kept from the scan) so the AI can find the due date.
+  // Invoice text layer + a rendered page image (kept from the scan) so the AI
+  // can find the due date — from text, or visually when there's no text.
   const [pdfText, setPdfText] = useState("")
+  const [pageImage, setPageImage] = useState("")
   const [aiBusy, setAiBusy] = useState(false)
 
   // "Create a new engagement" inline form.
@@ -106,6 +108,8 @@ export function QrBillReview() {
         setDueSource(swico ? "swico" : pdfHint ? "pdf" : "manual")
         setPdfText(sessionStorage.getItem("qrbill-text") ?? "")
         sessionStorage.removeItem("qrbill-text")
+        setPageImage(sessionStorage.getItem("qrbill-image") ?? "")
+        sessionStorage.removeItem("qrbill-image")
         Promise.all([api.getCreditors(), api.getEngagements({ status: "active" })])
           .then(([c, e]) => {
             setCreditors(c)
@@ -123,12 +127,15 @@ export function QrBillReview() {
 
   // When neither the Swico field nor the regex found a due date, and the AI is
   // configured, ask it automatically (the user just wants the date filled).
+  // Works from the text layer, or — for a scanned/photo invoice with no text —
+  // from the rendered page image via the vision model.
   useEffect(() => {
-    if (!decoded || dueSource !== "manual" || !pdfText.trim()) return
+    if (!decoded || dueSource !== "manual") return
+    if (!pdfText.trim() && !pageImage) return
     if (!getAiSettings().enabled) return
     void detectDueDateWithAi()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [decoded, pdfText])
+  }, [decoded, pdfText, pageImage])
 
   if (!decoded) return null
 
@@ -142,20 +149,25 @@ export function QrBillReview() {
     dueSource === "ia"    ? "Trouvée par l'IA sur la facture — à vérifier." :
                             "Non indiquée sur la QR-facture — à saisir."
 
-  /// Ask the configured AI to read the payment due date off the invoice text.
+  /// Ask the configured AI to read the payment due date off the invoice. Uses
+  /// the text layer when there is one; otherwise sends the rendered page image
+  /// to the vision model (the robust path for scanned/photo/tabular invoices,
+  /// where the date lives in a table the regex can't follow).
   async function detectDueDateWithAi() {
     const ai = getAiSettings()
     if (!ai.enabled) {
       toast("Activez l'IA dans Réglages → IA pour utiliser cette fonction.", "error")
       return
     }
-    if (!pdfText.trim()) {
-      toast("Aucun texte lisible sur ce document (photo/scan ?).", "error")
+    if (!pdfText.trim() && !pageImage) {
+      toast("Aucun document à analyser.", "error")
       return
     }
     setAiBusy(true)
     try {
-      const found = await api.aiExtractDueDate(pdfText, ai)
+      const found = pdfText.trim()
+        ? await api.aiExtractDueDate(pdfText, ai)
+        : await api.aiExtractDueDateFromImage(pageImage, ai)
       if (found) {
         setDueDate(found)
         setDueSource("ia")
@@ -349,7 +361,7 @@ export function QrBillReview() {
                   <p className="mt-1 text-xs text-muted-foreground">
                     {dueNote}
                   </p>
-                  {pdfText && (
+                  {(pdfText || pageImage) && (
                     <Button type="button" variant="outline" size="sm" className="mt-2 h-7 text-xs"
                       onClick={detectDueDateWithAi} disabled={aiBusy}>
                       {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
@@ -438,7 +450,7 @@ export function QrBillReview() {
                       <p className="text-xs text-muted-foreground">
                         {dueNote}
                       </p>
-                      {pdfText && (
+                      {(pdfText || pageImage) && (
                         <Button type="button" variant="outline" size="sm" className="mt-1 h-7 text-xs"
                           onClick={detectDueDateWithAi} disabled={aiBusy}>
                           {aiBusy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}

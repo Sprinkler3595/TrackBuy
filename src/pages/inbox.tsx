@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
-import { scanQrFromBytes, extractTextFromBytes, ocrSourceToText, findDueDateInText } from "@/lib/qr-scan"
+import { scanQrFromBytes, extractTextFromBytes, ocrSourceToText, findDueDateInText, renderFirstPageJpeg } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
 import { Camt053Import } from "@/components/features/camt053-import"
 
@@ -75,9 +75,19 @@ export function InboxPage() {
         // best effort
       }
       const dueHint = text ? findDueDateInText(text) : null
+      // Also keep a compact page image so the modal can ask a vision model for
+      // the due date when there's no usable text (photo / scanned PDF / table).
+      let image: string | null = null
+      try {
+        image = await renderFirstPageJpeg(bytes, isPdf)
+      } catch {
+        // best effort
+      }
       sessionStorage.setItem("qrbill-pending", JSON.stringify(decoded))
       if (text) sessionStorage.setItem("qrbill-text", text)
       else sessionStorage.removeItem("qrbill-text")
+      if (image) sessionStorage.setItem("qrbill-image", image)
+      else sessionStorage.removeItem("qrbill-image")
       if (dueHint) sessionStorage.setItem("qrbill-due-hint", dueHint)
       else sessionStorage.removeItem("qrbill-due-hint")
       window.dispatchEvent(new Event("qrbill-decoded"))

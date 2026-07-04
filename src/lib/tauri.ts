@@ -515,6 +515,11 @@ export const aiExtractReceipt = (ocrText: string, config: AiExtractionConfig) =>
 export const aiExtractDueDate = (ocrText: string, config: AiExtractionConfig) =>
   invoke<string | null>("ai_extract_due_date", { ocrText, config })
 
+/// Vision variant: reads the due date off a rendered invoice image (base64
+/// data URL), no OCR needed. Infomaniak (cloud vision) only. Returns ISO or null.
+export const aiExtractDueDateFromImage = (imageDataUrl: string, config: AiExtractionConfig) =>
+  invoke<string | null>("ai_extract_due_date_image", { imageDataUrl, config })
+
 export const aiTestConnection = (config: AiExtractionConfig) =>
   invoke<string>("ai_test_connection", { config })
 
