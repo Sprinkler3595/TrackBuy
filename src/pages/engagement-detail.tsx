@@ -252,8 +252,11 @@ export function EngagementDetailPage() {
       toast("Date de paiement requise", "error")
       return
     }
+    const presumed = payCharge.is_presumed
     setPaySaving(true)
     try {
+      // markChargePaid sets status=paid + paid_on + card AND clears is_presumed,
+      // so it doubles as the "confirm presumed debit" action.
       await api.markChargePaid(payCharge.id, payDate, payCardId || null)
       if (payInvoicePath) {
         let display = payInvoiceName
@@ -272,24 +275,14 @@ export function EngagementDetailPage() {
         } catch { /* keep original name */ }
         await api.addEngagementChargeAttachment(payCharge.id, payInvoicePath, display, "invoice")
       }
-      toast(payInvoicePath ? "Paiement validé, facture jointe" : "Paiement validé", "success")
+      const verb = presumed ? "Paiement confirmé" : "Paiement validé"
+      toast(payInvoicePath ? `${verb}, facture jointe` : verb, "success")
       setPayCharge(null)
       await load()
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
     } finally {
       setPaySaving(false)
-    }
-  }
-
-  // Confirme une charge présumée (auto_pay générée par le roll-forward).
-  const handleConfirmCharge = async (chargeId: string) => {
-    try {
-      await api.confirmEngagementCharge(chargeId)
-      toast("Charge confirmée", "success")
-      await load()
-    } catch (err) {
-      toast(`Erreur: ${err}`, "error")
     }
   }
 
@@ -650,7 +643,7 @@ export function EngagementDetailPage() {
                     )}
                   </Button>
                   {c.is_presumed && (
-                    <Button variant="ghost" size="icon" onClick={() => handleConfirmCharge(c.id)} title="Confirmer le débit présumé">
+                    <Button variant="ghost" size="icon" onClick={() => openPayModal(c)} title="Confirmer le débit présumé">
                       <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                     </Button>
                   )}
@@ -908,7 +901,7 @@ export function EngagementDetailPage() {
               <div className="flex items-center gap-3 min-w-0">
                 <div className="rounded-lg bg-green-500/10 p-2 text-green-600"><CheckCircle2 className="h-5 w-5" /></div>
                 <div className="min-w-0">
-                  <h2 className="text-lg font-semibold">Valider le paiement</h2>
+                  <h2 className="text-lg font-semibold">{payCharge.is_presumed ? "Confirmer le paiement" : "Valider le paiement"}</h2>
                   <p className="text-xs text-muted-foreground truncate">
                     Échéance du {formatDate(payCharge.due_date)} · {formatPrice(payCharge.amount, payCharge.currency)}
                   </p>
@@ -919,6 +912,14 @@ export function EngagementDetailPage() {
               </Button>
             </div>
             <div className="space-y-4 p-5">
+              {payCharge.is_presumed && (
+                <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-500">
+                  <History className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    Débit automatique (LSV/SEPA) présumé. Confirmez la date réelle du débit et joignez la facture si vous l'avez.
+                  </span>
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-sm font-medium">Date de paiement *</label>
                 <Input type="date" value={payDate} onChange={(ev) => setPayDate(ev.target.value)} />
@@ -961,7 +962,7 @@ export function EngagementDetailPage() {
               <Button variant="ghost" onClick={() => setPayCharge(null)} disabled={paySaving}>{t("common.cancel")}</Button>
               <Button onClick={handleConfirmPayment} disabled={paySaving || !payDate}>
                 {paySaving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-1 h-4 w-4" />}
-                Valider le paiement
+                {payCharge.is_presumed ? "Confirmer le paiement" : "Valider le paiement"}
               </Button>
             </div>
           </div>
