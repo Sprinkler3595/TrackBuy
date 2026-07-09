@@ -153,6 +153,7 @@ pub fn run() {
             commands::files::read_text_file,
             commands::files::read_binary_file_base64,
             commands::ai::ai_extract_receipt,
+            commands::ai::ai_extract_car_insurance,
             commands::ai::ai_extract_due_date,
             commands::ai::ai_extract_due_date_image,
             commands::ai::ai_extract_bank_statement,

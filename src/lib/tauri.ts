@@ -509,6 +509,43 @@ export interface ExtractedReceipt {
 export const aiExtractReceipt = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedReceipt>("ai_extract_receipt", { ocrText, config })
 
+/// Structured fields extracted from a Swiss car-insurance policy/offer/contract
+/// (text layer or OCR). Feeds the car-insurance assistant's auto-fill. Every
+/// field is optional — the model returns null for anything it can't find.
+export interface ExtractedCarInsurance {
+  name: string | null
+  insurer_name: string | null
+  policy_number: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_plate: string | null
+  vehicle_vin: string | null
+  vehicle_registration_number: string | null
+  vehicle_category: VehicleCategory | null
+  coverage: CarInsuranceCoverage | null
+  premium: number | null
+  billing_cycle: EngagementBillingCycle | null
+  franchise_casco: number | null
+  franchise_partial: number | null
+  young_driver_franchise: number | null
+  bonus_pct: number | null
+  contract_start_date: string | null
+  contract_end_date: string | null
+  next_due_date: string | null
+  notice_period_days: number | null
+  payment_method: EngagementPaymentMethod | null
+  /// Whitelisted extra-coverage slugs (mirror of CAR_INSURANCE_OPTIONS).
+  options: string[]
+  /// Per-coverage premium breakdown (rc, collision, partial, extras,
+  /// passengers, taxes). null when the policy doesn't itemise premiums.
+  premium_breakdown: Record<string, number> | null
+}
+
+/// Extract a Swiss car-insurance policy's fields from its text (PDF text layer
+/// or OCR) so the assistant can pre-fill every step. Uses a strict JSON schema.
+export const aiExtractCarInsurance = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedCarInsurance>("ai_extract_car_insurance", { ocrText, config })
+
 /// Focused, schema-constrained extraction of just the payment due date —
 /// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
 /// date or null.
