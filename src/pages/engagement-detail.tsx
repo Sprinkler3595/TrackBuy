@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers, X, Receipt, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
+import { harmonizedName, shortIdHint } from "@/lib/filename-template"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
@@ -44,6 +45,20 @@ export function EngagementDetailPage() {
   })
   const [showChargeForm, setShowChargeForm] = useState(false)
 
+  // Payment-validation modal: opened by the green "mark paid" button so the
+  // user can adjust the payment date, pick the account, and attach the paid
+  // invoice — all before the charge is actually marked paid.
+  const [payCharge, setPayCharge] = useState<api.EngagementCharge | null>(null)
+  const [payDate, setPayDate] = useState(today())
+  const [payCardId, setPayCardId] = useState("")
+  const [payInvoicePath, setPayInvoicePath] = useState<string | null>(null)
+  const [payInvoiceName, setPayInvoiceName] = useState("")
+  const [paySaving, setPaySaving] = useState(false)
+  // Number of attachments per charge id (drives the "invoice attached" badge).
+  const [chargeAttachmentCounts, setChargeAttachmentCounts] = useState<Record<string, number>>({})
+  // Per-charge attachments modal (view/manage a charge's invoices).
+  const [attachmentsCharge, setAttachmentsCharge] = useState<api.EngagementCharge | null>(null)
+
   // Revision form
   const [revForm, setRevForm] = useState({
     effective_date: today(), amount: "", change_reason: "", notes: "",
@@ -76,6 +91,19 @@ export function EngagementDetailPage() {
       setRevisions(rev)
       setChildren(kids)
       setCards(cs)
+      // Per-charge attachment counts (best-effort) so rows can show whether a
+      // paid invoice is on file. Local SQLite queries — cheap even for many
+      // charges; failures just leave the badge off.
+      void (async () => {
+        try {
+          const entries = await Promise.all(
+            ch.map(async (c) => [c.id, (await api.getEngagementChargeAttachments(c.id)).length] as const),
+          )
+          setChargeAttachmentCounts(Object.fromEntries(entries))
+        } catch {
+          setChargeAttachmentCounts({})
+        }
+      })()
       setChargeForm((f) => ({
         ...f,
         amount: e.current_amount?.toString() || "",
@@ -187,13 +215,70 @@ export function EngagementDetailPage() {
     }
   }
 
-  const handleMarkPaid = async (chargeId: string) => {
+  // Open the payment-validation modal, pre-filling the date (today), the
+  // account (the charge's card, else the engagement's default) and clearing any
+  // previously-picked invoice.
+  const openPayModal = (c: api.EngagementCharge) => {
+    setPayCharge(c)
+    setPayDate(c.paid_on || today())
+    setPayCardId(c.payment_card_id || e.payment_card_id || "")
+    setPayInvoicePath(null)
+    setPayInvoiceName("")
+  }
+
+  // Pick the paid invoice file (native dialog). We only keep the path + name;
+  // the file is encrypted + attached to the charge on confirmation.
+  const pickPayInvoice = async () => {
     try {
-      await api.markChargePaid(chargeId, today(), e.payment_card_id)
-      toast("Marquée payée", "success")
+      const { open } = await import("@tauri-apps/plugin-dialog")
+      const selected = await open({
+        multiple: false,
+        title: "Sélectionner la facture payée",
+      })
+      if (!selected || Array.isArray(selected)) return
+      setPayInvoicePath(selected)
+      setPayInvoiceName(selected.split("/").pop() || selected.split("\\").pop() || "facture")
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
+  }
+
+  // Confirm the payment: mark the charge paid at the chosen date/account, then
+  // (if provided) attach the invoice to that charge, typed "invoice" so it is
+  // identified as the paid invoice.
+  const handleConfirmPayment = async () => {
+    if (!payCharge) return
+    if (!payDate) {
+      toast("Date de paiement requise", "error")
+      return
+    }
+    setPaySaving(true)
+    try {
+      await api.markChargePaid(payCharge.id, payDate, payCardId || null)
+      if (payInvoicePath) {
+        let display = payInvoiceName
+        try {
+          display = await harmonizedName(
+            "invoice",
+            {
+              description: e.name,
+              date: payDate,
+              invoice_number: payCharge.invoice_number ?? undefined,
+              currency: e.currency,
+            },
+            payInvoiceName,
+            shortIdHint(),
+          )
+        } catch { /* keep original name */ }
+        await api.addEngagementChargeAttachment(payCharge.id, payInvoicePath, display, "invoice")
+      }
+      toast(payInvoicePath ? "Paiement validé, facture jointe" : "Paiement validé", "success")
+      setPayCharge(null)
       await load()
     } catch (err) {
       toast(`Erreur: ${err}`, "error")
+    } finally {
+      setPaySaving(false)
     }
   }
 
@@ -535,15 +620,35 @@ export function EngagementDetailPage() {
                     {c.reference_number && <span className="font-mono">{c.reference_number}</span>}
                     {c.invoice_number && <span>n° {c.invoice_number}</span>}
                     {c.card_name && <span>{c.card_name}</span>}
+                    {(chargeAttachmentCounts[c.id] ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-500">
+                        <Receipt className="h-3 w-3" />
+                        {c.status === "paid" ? "Facture payée jointe" : "Facture jointe"}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <p className="font-semibold shrink-0">{formatPrice(c.amount, c.currency)}</p>
                 <div className="flex gap-1 shrink-0">
                   {c.status !== "paid" && (
-                    <Button variant="ghost" size="icon" onClick={() => handleMarkPaid(c.id)} title={t("engagements.markPaid")}>
+                    <Button variant="ghost" size="icon" onClick={() => openPayModal(c)} title={t("engagements.markPaid")}>
                       <CheckCircle2 className="h-4 w-4 text-green-600" />
                     </Button>
                   )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setAttachmentsCharge(c)}
+                    title="Factures / pièces jointes de cette échéance"
+                    className="relative"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                    {(chargeAttachmentCounts[c.id] ?? 0) > 0 && (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-emerald-600 px-1 text-[9px] font-semibold text-white">
+                        {chargeAttachmentCounts[c.id]}
+                      </span>
+                    )}
+                  </Button>
                   {c.is_presumed && (
                     <Button variant="ghost" size="icon" onClick={() => handleConfirmCharge(c.id)} title="Confirmer le débit présumé">
                       <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -793,6 +898,106 @@ export function EngagementDetailPage() {
         onConfirm={handleDeleteRevision}
         onCancel={() => setDeleteRevisionTarget(null)}
       />
+
+      {/* Payment-validation modal: adjust date + account and attach the paid
+          invoice before marking the charge paid. */}
+      {payCharge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-card shadow-lg">
+            <div className="flex items-center justify-between gap-4 border-b p-5">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="rounded-lg bg-green-500/10 p-2 text-green-600"><CheckCircle2 className="h-5 w-5" /></div>
+                <div className="min-w-0">
+                  <h2 className="text-lg font-semibold">Valider le paiement</h2>
+                  <p className="text-xs text-muted-foreground truncate">
+                    Échéance du {formatDate(payCharge.due_date)} · {formatPrice(payCharge.amount, payCharge.currency)}
+                  </p>
+                </div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setPayCharge(null)} disabled={paySaving} aria-label="Fermer">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Date de paiement *</label>
+                <Input type="date" value={payDate} onChange={(ev) => setPayDate(ev.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{t("engagements.card")}</label>
+                <select
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={payCardId}
+                  onChange={(ev) => setPayCardId(ev.target.value)}
+                >
+                  <option value="">—</option>
+                  {cards.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Facture payée (optionnel)</label>
+                {payInvoicePath ? (
+                  <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Receipt className="h-4 w-4 shrink-0 text-emerald-600" />
+                      <span className="truncate">{payInvoiceName}</span>
+                    </span>
+                    <Button variant="ghost" size="icon" onClick={() => { setPayInvoicePath(null); setPayInvoiceName("") }} aria-label="Retirer">
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button type="button" variant="outline" onClick={pickPayInvoice} className="w-full">
+                    <Paperclip className="h-4 w-4" />
+                    Joindre la facture
+                  </Button>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Le fichier sera chiffré, rattaché à cette échéance et identifié comme facture payée.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t p-4">
+              <Button variant="ghost" onClick={() => setPayCharge(null)} disabled={paySaving}>{t("common.cancel")}</Button>
+              <Button onClick={handleConfirmPayment} disabled={paySaving || !payDate}>
+                {paySaving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-1 h-4 w-4" />}
+                Valider le paiement
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-charge attachments: view / add invoices tied to one échéance. */}
+      {attachmentsCharge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border bg-card shadow-lg">
+            <div className="flex items-center justify-between gap-4 border-b p-5">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold">Factures de l'échéance</h2>
+                <p className="text-xs text-muted-foreground truncate">
+                  {formatDate(attachmentsCharge.due_date)} · {formatPrice(attachmentsCharge.amount, attachmentsCharge.currency)}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => { setAttachmentsCharge(null); void load() }} aria-label="Fermer">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <AttachmentsPanel
+                engagementChargeId={attachmentsCharge.id}
+                itemDescription={e.name}
+                templateContext={{
+                  description: e.name,
+                  date: attachmentsCharge.paid_on || attachmentsCharge.due_date,
+                  invoice_number: attachmentsCharge.invoice_number ?? undefined,
+                  currency: e.currency,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
