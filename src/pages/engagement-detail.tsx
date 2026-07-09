@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers, X, Receipt, Loader2 } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers, X, Receipt, Loader2, Eye, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
+import { AttachmentViewer } from "@/components/features/attachment-viewer"
 import { harmonizedName, shortIdHint } from "@/lib/filename-template"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
@@ -56,8 +57,13 @@ export function EngagementDetailPage() {
   const [paySaving, setPaySaving] = useState(false)
   // Number of attachments per charge id (drives the "invoice attached" badge).
   const [chargeAttachmentCounts, setChargeAttachmentCounts] = useState<Record<string, number>>({})
+  // Flat list of every charge invoice (attachment + its charge), surfaced in a
+  // read-only "Factures des paiements" section of the attachments tab.
+  const [chargeInvoices, setChargeInvoices] = useState<{ att: api.Attachment; charge: api.EngagementCharge }[]>([])
   // Per-charge attachments modal (view/manage a charge's invoices).
   const [attachmentsCharge, setAttachmentsCharge] = useState<api.EngagementCharge | null>(null)
+  // Attachment shown in the full-screen viewer (from the aggregated section).
+  const [viewAttachment, setViewAttachment] = useState<api.Attachment | null>(null)
 
   // Revision form
   const [revForm, setRevForm] = useState({
@@ -91,17 +97,24 @@ export function EngagementDetailPage() {
       setRevisions(rev)
       setChildren(kids)
       setCards(cs)
-      // Per-charge attachment counts (best-effort) so rows can show whether a
-      // paid invoice is on file. Local SQLite queries — cheap even for many
-      // charges; failures just leave the badge off.
+      // Per-charge attachments (best-effort): drives both the "invoice attached"
+      // badge on each charge row and the aggregated "Factures des paiements"
+      // section in the attachments tab. Local SQLite queries — cheap even for
+      // many charges; failures just leave both empty.
       void (async () => {
         try {
-          const entries = await Promise.all(
-            ch.map(async (c) => [c.id, (await api.getEngagementChargeAttachments(c.id)).length] as const),
+          const perCharge = await Promise.all(
+            ch.map(async (c) => ({ charge: c, atts: await api.getEngagementChargeAttachments(c.id) })),
           )
-          setChargeAttachmentCounts(Object.fromEntries(entries))
+          setChargeAttachmentCounts(Object.fromEntries(perCharge.map((p) => [p.charge.id, p.atts.length])))
+          const flat = perCharge.flatMap((p) => p.atts.map((att) => ({ att, charge: p.charge })))
+          // Most recent payment first (paid date, else due date).
+          flat.sort((a, b) =>
+            (b.charge.paid_on ?? b.charge.due_date).localeCompare(a.charge.paid_on ?? a.charge.due_date))
+          setChargeInvoices(flat)
         } catch {
           setChargeAttachmentCounts({})
+          setChargeInvoices([])
         }
       })()
       setChargeForm((f) => ({
@@ -224,6 +237,21 @@ export function EngagementDetailPage() {
     setPayCardId(c.payment_card_id || e.payment_card_id || "")
     setPayInvoicePath(null)
     setPayInvoiceName("")
+  }
+
+  // Export a decrypted attachment to a user-chosen path (used by the aggregated
+  // "Factures des paiements" list + the full-screen viewer).
+  const handleExportAttachment = async (att: api.Attachment) => {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog")
+      const destination = await save({ defaultPath: att.display_name, title: "Exporter la facture" })
+      if (destination) {
+        await api.exportAttachment(att.id, destination)
+        toast(`"${att.display_name}" exporté`, "success")
+      }
+    } catch (err) {
+      toast(`Erreur: ${err}`, "error")
+    }
   }
 
   // Pick the paid invoice file (native dialog). We only keep the path + name;
@@ -713,16 +741,88 @@ export function EngagementDetailPage() {
       )}
 
       {tab === "attachments" && (
-        <AttachmentsPanel
-          engagementId={e.id}
-          itemDescription={e.name}
-          templateContext={{
-            merchant: e.creditor_name ?? undefined,
-            description: e.name,
-            invoice_number: e.contract_reference ?? undefined,
-            date: today(),
-          }}
-        />
+        <div className="space-y-6">
+          <AttachmentsPanel
+            engagementId={e.id}
+            itemDescription={e.name}
+            templateContext={{
+              merchant: e.creditor_name ?? undefined,
+              description: e.name,
+              invoice_number: e.contract_reference ?? undefined,
+              date: today(),
+            }}
+          />
+
+          {/* Aggregated, read-only view of the invoices attached to each payment
+              (échéance), so they're easy to find here too. Management (add /
+              delete) stays on the échéance itself. */}
+          {chargeInvoices.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Receipt className="h-4 w-4" />
+                    Factures des paiements
+                  </CardTitle>
+                  <Badge variant="secondary">{chargeInvoices.length}</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {chargeInvoices.map(({ att, charge }) => (
+                  <div
+                    key={att.id}
+                    className="flex items-center gap-3 rounded-lg border p-3 hover:bg-muted/50 transition-colors"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setViewAttachment(att)}
+                      className="flex flex-1 items-center gap-3 min-w-0 text-left"
+                      title="Aperçu"
+                    >
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                        <Receipt className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate hover:text-primary transition-colors">{att.display_name}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                          <span>{formatPrice(charge.amount, charge.currency)}</span>
+                          <span>&middot;</span>
+                          <span>
+                            {charge.paid_on
+                              ? `payé le ${formatDate(charge.paid_on)}`
+                              : `échéance du ${formatDate(charge.due_date)}`}
+                          </span>
+                          {charge.status === "paid" && (
+                            <Badge variant="success" className="text-[10px] px-1.5 py-0">Payée</Badge>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button variant="ghost" size="icon" onClick={() => setViewAttachment(att)} title="Aperçu">
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleExportAttachment(att)} title="Exporter">
+                        <Download className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setAttachmentsCharge(charge)}
+                        title="Gérer les pièces jointes de cette échéance"
+                      >
+                        <Paperclip className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground pt-1">
+                  Ces factures sont rattachées aux échéances (onglet « {t("engagements.charges")} »). Ajout / suppression depuis l'échéance concernée.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
 
       {tab === "children" && (() => {
@@ -999,6 +1099,14 @@ export function EngagementDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Full-screen preview for a payment invoice opened from the aggregated
+          "Factures des paiements" section. */}
+      <AttachmentViewer
+        attachment={viewAttachment}
+        onClose={() => setViewAttachment(null)}
+        onExport={handleExportAttachment}
+      />
     </div>
   )
 }
