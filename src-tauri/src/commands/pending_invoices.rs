@@ -298,7 +298,7 @@ pub fn delete_pending_invoice(state: State<'_, AppState>, id: String) -> Result<
 
 /// Decrypts the stored file and returns it as a base64 data URL, suitable for
 /// re-injecting into the scan page (preview + OCR pipeline) without writing
-/// the plaintext to disk. Capped at 10 MB to avoid blowing up the JS heap.
+/// the plaintext to disk. Capped at 50 MB to avoid blowing up the JS heap.
 #[tauri::command]
 pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let vault_dir_guard = state
@@ -332,8 +332,8 @@ pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Resul
     let key_bytes: &[u8; 32] = key;
 
     let data = storage::read_attachment(safe_source.to_str().unwrap_or(""), key_bytes)?;
-    if data.len() > 10 * 1024 * 1024 {
-        return Err("Pending invoice too large for inline display (max 10 MB)".to_string());
+    if data.len() > 50 * 1024 * 1024 {
+        return Err("Pending invoice too large for inline display (max 50 MB)".to_string());
     }
 
     Ok(format!(

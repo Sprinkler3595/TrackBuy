@@ -589,8 +589,9 @@ pub fn export_attachment(
 }
 
 /// Decrypt an attachment and return it as a base64 data URL suitable for
-/// inline rendering (e.g. `<img src="...">`). Capped at 10 MB decrypted to
-/// avoid blowing up the JS heap on accidental huge files.
+/// inline rendering (e.g. `<img src="...">`). Capped at 50 MB decrypted to
+/// avoid blowing up the JS heap on accidental huge files — enough for
+/// multi-page contracts/policies; larger files fall back to "Exporter".
 #[tauri::command]
 pub fn get_attachment_data(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let vault_dir_guard = state
@@ -622,8 +623,8 @@ pub fn get_attachment_data(state: State<'_, AppState>, id: String) -> Result<Str
     let key_bytes: &[u8; 32] = key;
 
     let data = storage::read_attachment(safe_source.to_str().unwrap_or(""), key_bytes)?;
-    if data.len() > 10 * 1024 * 1024 {
-        return Err("Attachment too large for inline display (max 10 MB)".to_string());
+    if data.len() > 50 * 1024 * 1024 {
+        return Err("Attachment too large for inline display (max 50 MB)".to_string());
     }
 
     Ok(format!(
