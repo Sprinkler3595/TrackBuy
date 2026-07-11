@@ -235,6 +235,7 @@ export type TranslationKeys = {
 
   // Engagements (recurring real-world charges)
   "nav.engagements": string
+  "nav.vehicles": string
   "nav.creditors": string
   "engagements.title": string
   "engagements.subtitle": string
@@ -704,6 +705,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.renewal": "Renouvellement",
 
     "nav.engagements": "Engagements",
+    "nav.vehicles": "Véhicules",
     "nav.creditors": "Créanciers",
     "engagements.title": "Engagements",
     "engagements.subtitle": "Charges récurrentes : assurances, loyer, fluides, télécom, fiscalité",
@@ -1165,6 +1167,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.renewal": "Renewal",
 
     "nav.engagements": "Engagements",
+    "nav.vehicles": "Vehicles",
     "nav.creditors": "Creditors",
     "engagements.title": "Engagements",
     "engagements.subtitle": "Recurring real-world charges: insurance, rent, utilities, telecom, taxes",

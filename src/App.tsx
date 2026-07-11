@@ -14,6 +14,8 @@ import { CardsPage } from "@/pages/cards"
 import { VaultsPage } from "@/pages/vaults"
 import { EngagementsPage } from "@/pages/engagements"
 import { EngagementDetailPage } from "@/pages/engagement-detail"
+import { VehiclesPage } from "@/pages/vehicles"
+import { VehicleDetailPage } from "@/pages/vehicle-detail"
 import { CreditorsPage } from "@/pages/creditors"
 import { IncomesPage } from "@/pages/incomes"
 import { IncomeDetailPage } from "@/pages/income-detail"
@@ -202,6 +204,8 @@ function AppContent() {
           <Route path="/tickets" element={<ErrorBoundary><TicketsPage /></ErrorBoundary>} />
           <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
           <Route path="/engagements/:id" element={<ErrorBoundary><EngagementDetailPage /></ErrorBoundary>} />
+          <Route path="/vehicules" element={<ErrorBoundary><VehiclesPage /></ErrorBoundary>} />
+          <Route path="/vehicules/:id" element={<ErrorBoundary><VehicleDetailPage /></ErrorBoundary>} />
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
           <Route path="/incomes/:id" element={<ErrorBoundary><IncomeDetailPage /></ErrorBoundary>} />
           <Route path="/reimbursements" element={<ErrorBoundary><ReimbursementsPage /></ErrorBoundary>} />

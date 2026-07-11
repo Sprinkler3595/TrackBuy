@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 25;
+pub const CURRENT_SCHEMA_VERSION: i64 = 26;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -105,6 +105,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 25 {
         migrate_v25(conn)?;
+    }
+    if current_version < 26 {
+        migrate_v26(conn)?;
     }
 
     Ok(())
@@ -1521,6 +1524,57 @@ fn migrate_v25(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (25);
         "
     ).map_err(|e| format!("Migration v25 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Vehicle hub (v26): a dedicated `vehicles` entity that groups everything about
+/// one car — its leasing, insurance and tax engagements, plus (from v27) an
+/// expense ledger. Engagements gain a nullable `vehicle_id` so leasing /
+/// insurance_car / vehicle-tax positions can be attached to a vehicle.
+///
+/// The generic `vehicle_*` columns already on `engagements` (make/model/plate…)
+/// stay: they describe the insured/leased vehicle on that specific contract,
+/// while the `vehicles` row is the canonical, shared identity.
+fn migrate_v26(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE vehicles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            make TEXT,
+            model TEXT,
+            plate TEXT,
+            vin TEXT,
+            registration_number TEXT,
+            category TEXT,                 -- passenger_car | motorcycle | light_commercial | motorhome | other
+            energy_type TEXT,              -- electric | gasoline | diesel | hybrid | phev | other
+            first_registration TEXT,
+            canton TEXT,                   -- for the (manually entered) vehicle tax
+            color TEXT,
+            power_kw REAL,
+            displacement_cc INTEGER,
+            weight_kg INTEGER,
+            battery_kwh REAL,              -- usable battery capacity (EV/PHEV)
+            purchase_date TEXT,
+            purchase_price REAL,
+            odometer_km INTEGER,           -- last known odometer reading
+            status TEXT NOT NULL DEFAULT 'active',  -- active | sold | scrapped
+            sold_on TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_vehicles_status ON vehicles(status);
+        CREATE INDEX idx_vehicles_plate ON vehicles(plate);
+
+        ALTER TABLE engagements ADD COLUMN vehicle_id TEXT
+            REFERENCES vehicles(id) ON DELETE SET NULL;
+        CREATE INDEX idx_engagements_vehicle ON engagements(vehicle_id);
+
+        INSERT INTO schema_version (version) VALUES (26);
+        "
+    ).map_err(|e| format!("Migration v26 failed: {}", e))?;
 
     Ok(())
 }

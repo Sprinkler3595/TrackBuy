@@ -914,6 +914,90 @@ export const addEngagementRevisionAttachment = (
   })
 
 // ============================================================================
+// Vehicles (the "espace véhicule" hub: groups leasing / insurance / tax /
+// expenses for one car)
+// ============================================================================
+
+export type VehicleEnergyType =
+  | "electric" | "gasoline" | "diesel" | "hybrid" | "phev" | "other"
+
+export type VehicleStatus = "active" | "sold" | "scrapped"
+
+export interface Vehicle {
+  id: string
+  name: string
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  registration_number: string | null
+  category: VehicleCategory | null
+  energy_type: VehicleEnergyType | null
+  first_registration: string | null
+  canton: string | null
+  color: string | null
+  power_kw: number | null
+  displacement_cc: number | null
+  weight_kg: number | null
+  battery_kwh: number | null
+  purchase_date: string | null
+  purchase_price: number | null
+  odometer_km: number | null
+  status: VehicleStatus
+  sold_on: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/// Lightweight view of an engagement attached (or attachable) to a vehicle.
+export interface VehicleEngagementSummary {
+  id: string
+  name: string
+  engagement_type: EngagementType
+  current_amount: number | null
+  currency: string
+  billing_cycle: EngagementBillingCycle
+  status: EngagementStatus
+  next_due_date: string | null
+  contract_end_date: string | null
+  vehicle_plate: string | null
+  vehicle_id: string | null
+}
+
+export const getVehicles = () => invoke<Vehicle[]>("get_vehicles")
+export const getVehicle = (id: string) => invoke<Vehicle>("get_vehicle", { id })
+export const createVehicle = (vehicle: {
+  name: string
+  make?: string | null
+  model?: string | null
+  plate?: string | null
+  vin?: string | null
+  registration_number?: string | null
+  category?: VehicleCategory | null
+  energy_type?: VehicleEnergyType | null
+  first_registration?: string | null
+  canton?: string | null
+  color?: string | null
+  power_kw?: number | null
+  displacement_cc?: number | null
+  weight_kg?: number | null
+  battery_kwh?: number | null
+  purchase_date?: string | null
+  purchase_price?: number | null
+  odometer_km?: number | null
+  notes?: string | null
+}) => invoke<Vehicle>("create_vehicle", { vehicle })
+export const updateVehicle = (vehicle: Vehicle) => invoke<void>("update_vehicle", { vehicle })
+export const deleteVehicle = (id: string) => invoke<void>("delete_vehicle", { id })
+export const getVehicleEngagements = (vehicleId: string) =>
+  invoke<VehicleEngagementSummary[]>("get_vehicle_engagements", { vehicleId })
+export const getLinkableVehicleEngagements = () =>
+  invoke<VehicleEngagementSummary[]>("get_linkable_vehicle_engagements")
+export const setEngagementVehicle = (engagementId: string, vehicleId: string | null) =>
+  invoke<void>("set_engagement_vehicle", { engagementId, vehicleId })
+
+// ============================================================================
 // Incomes (salaries, bonuses, allowances, dividends, …)
 // ============================================================================
 

@@ -178,6 +178,14 @@ pub fn run() {
             commands::classify::create_merchant_rule,
             commands::classify::update_merchant_rule,
             commands::classify::delete_merchant_rule,
+            commands::vehicles::get_vehicles,
+            commands::vehicles::get_vehicle,
+            commands::vehicles::create_vehicle,
+            commands::vehicles::update_vehicle,
+            commands::vehicles::delete_vehicle,
+            commands::vehicles::get_vehicle_engagements,
+            commands::vehicles::get_linkable_vehicle_engagements,
+            commands::vehicles::set_engagement_vehicle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TrackBuy");
