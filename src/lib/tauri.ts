@@ -109,6 +109,7 @@ export interface Attachment {
   engagement_id: string | null
   engagement_charge_id: string | null
   engagement_revision_id: string | null
+  vehicle_expense_id: string | null
   income_id: string | null
   income_receipt_id: string | null
   reimbursement_id: string | null
@@ -996,6 +997,83 @@ export const getLinkableVehicleEngagements = () =>
   invoke<VehicleEngagementSummary[]>("get_linkable_vehicle_engagements")
 export const setEngagementVehicle = (engagementId: string, vehicleId: string | null) =>
   invoke<void>("set_engagement_vehicle", { engagementId, vehicleId })
+
+// --- Vehicle expense ledger (charging, fuel, tires, maintenance…) ---
+
+export type VehicleExpenseCategory =
+  | "charging" | "fuel" | "tires" | "maintenance" | "repair" | "cleaning"
+  | "accessories" | "inspection" | "vignette" | "parking" | "fine" | "toll" | "tax" | "other"
+
+export interface VehicleExpense {
+  id: string
+  vehicle_id: string
+  expense_date: string
+  category: VehicleExpenseCategory
+  description: string | null
+  amount: number
+  currency: string
+  odometer_km: number | null
+  quantity: number | null
+  unit: string | null
+  unit_price: number | null
+  location: string | null
+  merchant: string | null
+  payment_card_id: string | null
+  next_due_km: number | null
+  next_due_date: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface VehicleExpenseCategoryTotal {
+  category: VehicleExpenseCategory
+  total: number
+  count: number
+}
+
+export interface VehicleExpenseSummary {
+  total: number
+  total_year: number
+  count: number
+  by_category: VehicleExpenseCategoryTotal[]
+}
+
+export const getVehicleExpenses = (vehicleId: string) =>
+  invoke<VehicleExpense[]>("get_vehicle_expenses", { vehicleId })
+export const createVehicleExpense = (expense: {
+  vehicle_id: string
+  expense_date: string
+  category: VehicleExpenseCategory
+  amount: number
+  currency?: string | null
+  description?: string | null
+  odometer_km?: number | null
+  quantity?: number | null
+  unit?: string | null
+  unit_price?: number | null
+  location?: string | null
+  merchant?: string | null
+  payment_card_id?: string | null
+  next_due_km?: number | null
+  next_due_date?: string | null
+  notes?: string | null
+}) => invoke<VehicleExpense>("create_vehicle_expense", { expense })
+export const updateVehicleExpense = (expense: VehicleExpense) =>
+  invoke<void>("update_vehicle_expense", { expense })
+export const deleteVehicleExpense = (id: string) =>
+  invoke<void>("delete_vehicle_expense", { id })
+export const getVehicleExpenseSummary = (vehicleId: string) =>
+  invoke<VehicleExpenseSummary>("get_vehicle_expense_summary", { vehicleId })
+export const getVehicleExpenseAttachments = (expenseId: string) =>
+  invoke<Attachment[]>("get_vehicle_expense_attachments", { expenseId })
+export const addVehicleExpenseAttachment = (
+  expenseId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string,
+) => invoke<Attachment>("add_vehicle_expense_attachment", { expenseId, sourcePath, displayName, attachmentType })
 
 // ============================================================================
 // Incomes (salaries, bonuses, allowances, dividends, …)

@@ -325,3 +325,253 @@ pub fn set_engagement_vehicle(
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ===========================================================================
+// Vehicle expense ledger (charging, fuel, tires, maintenance, repairs…)
+// ===========================================================================
+
+/// One expense tied to a vehicle. Mirrors the `vehicle_expenses` table (+ a
+/// joined `card_name` for display).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VehicleExpense {
+    pub id: String,
+    pub vehicle_id: String,
+    pub expense_date: String,
+    pub category: String,
+    pub description: Option<String>,
+    pub amount: f64,
+    pub currency: String,
+    pub odometer_km: Option<i64>,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub unit_price: Option<f64>,
+    pub location: Option<String>,
+    pub merchant: Option<String>,
+    pub payment_card_id: Option<String>,
+    pub next_due_km: Option<i64>,
+    pub next_due_date: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub card_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateVehicleExpenseRequest {
+    pub vehicle_id: String,
+    pub expense_date: String,
+    pub category: String,
+    pub amount: f64,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub odometer_km: Option<i64>,
+    #[serde(default)]
+    pub quantity: Option<f64>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub unit_price: Option<f64>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub merchant: Option<String>,
+    #[serde(default)]
+    pub payment_card_id: Option<String>,
+    #[serde(default)]
+    pub next_due_km: Option<i64>,
+    #[serde(default)]
+    pub next_due_date: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Per-category total for the expense summary.
+#[derive(Debug, Serialize)]
+pub struct VehicleExpenseCategoryTotal {
+    pub category: String,
+    pub total: f64,
+    pub count: i64,
+}
+
+/// Aggregate figures for a vehicle's expenses, shown on the fiche.
+#[derive(Debug, Serialize)]
+pub struct VehicleExpenseSummary {
+    pub total: f64,
+    pub total_year: f64,
+    pub count: i64,
+    pub by_category: Vec<VehicleExpenseCategoryTotal>,
+}
+
+const EXPENSE_SELECT_COLUMNS: &str = "ve.id, ve.vehicle_id, ve.expense_date, ve.category,
+    ve.description, ve.amount, ve.currency, ve.odometer_km, ve.quantity, ve.unit, ve.unit_price,
+    ve.location, ve.merchant, ve.payment_card_id, ve.next_due_km, ve.next_due_date, ve.notes,
+    ve.created_at, ve.updated_at, pc.name";
+
+fn row_to_expense(row: &rusqlite::Row<'_>) -> rusqlite::Result<VehicleExpense> {
+    Ok(VehicleExpense {
+        id: row.get(0)?,
+        vehicle_id: row.get(1)?,
+        expense_date: row.get(2)?,
+        category: row.get(3)?,
+        description: row.get(4)?,
+        amount: row.get(5)?,
+        currency: row.get(6)?,
+        odometer_km: row.get(7)?,
+        quantity: row.get(8)?,
+        unit: row.get(9)?,
+        unit_price: row.get(10)?,
+        location: row.get(11)?,
+        merchant: row.get(12)?,
+        payment_card_id: row.get(13)?,
+        next_due_km: row.get(14)?,
+        next_due_date: row.get(15)?,
+        notes: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+        card_name: row.get(19)?,
+    })
+}
+
+#[tauri::command]
+pub fn get_vehicle_expenses(
+    state: State<'_, AppState>,
+    vehicle_id: String,
+) -> Result<Vec<VehicleExpense>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let sql = format!(
+        "SELECT {} FROM vehicle_expenses ve
+         LEFT JOIN payment_cards pc ON ve.payment_card_id = pc.id
+         WHERE ve.vehicle_id = ?1
+         ORDER BY ve.expense_date DESC, ve.created_at DESC",
+        EXPENSE_SELECT_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([&vehicle_id], row_to_expense)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn create_vehicle_expense(
+    state: State<'_, AppState>,
+    expense: CreateVehicleExpenseRequest,
+) -> Result<VehicleExpense, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let id = Uuid::new_v4().to_string();
+    let currency = expense.currency.unwrap_or_else(|| "CHF".to_string());
+    conn.execute(
+        "INSERT INTO vehicle_expenses (id, vehicle_id, expense_date, category, description, amount,
+         currency, odometer_km, quantity, unit, unit_price, location, merchant, payment_card_id,
+         next_due_km, next_due_date, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        rusqlite::params![
+            id, expense.vehicle_id, expense.expense_date, expense.category, expense.description,
+            expense.amount, currency, expense.odometer_km, expense.quantity, expense.unit,
+            expense.unit_price, expense.location, expense.merchant, expense.payment_card_id,
+            expense.next_due_km, expense.next_due_date, expense.notes
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let sql = format!(
+        "SELECT {} FROM vehicle_expenses ve
+         LEFT JOIN payment_cards pc ON ve.payment_card_id = pc.id WHERE ve.id = ?1",
+        EXPENSE_SELECT_COLUMNS
+    );
+    conn.query_row(&sql, [&id], row_to_expense)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_vehicle_expense(state: State<'_, AppState>, expense: VehicleExpense) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute(
+        "UPDATE vehicle_expenses SET expense_date = ?2, category = ?3, description = ?4, amount = ?5,
+         currency = ?6, odometer_km = ?7, quantity = ?8, unit = ?9, unit_price = ?10, location = ?11,
+         merchant = ?12, payment_card_id = ?13, next_due_km = ?14, next_due_date = ?15, notes = ?16,
+         updated_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![
+            expense.id, expense.expense_date, expense.category, expense.description, expense.amount,
+            expense.currency, expense.odometer_km, expense.quantity, expense.unit, expense.unit_price,
+            expense.location, expense.merchant, expense.payment_card_id, expense.next_due_km,
+            expense.next_due_date, expense.notes
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_vehicle_expense(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    // Receipts attached to the expense cascade-delete via the FK.
+    conn.execute("DELETE FROM vehicle_expenses WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Aggregate totals for a vehicle's expenses (all-time, current year, and per
+/// category), for the fiche's overview.
+#[tauri::command]
+pub fn get_vehicle_expense_summary(
+    state: State<'_, AppState>,
+    vehicle_id: String,
+) -> Result<VehicleExpenseSummary, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let (total, count): (f64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(amount), 0), COUNT(*) FROM vehicle_expenses WHERE vehicle_id = ?1",
+            [&vehicle_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let total_year: f64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(amount), 0) FROM vehicle_expenses
+             WHERE vehicle_id = ?1 AND substr(expense_date, 1, 4) = strftime('%Y', 'now')",
+            [&vehicle_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT category, COALESCE(SUM(amount), 0), COUNT(*) FROM vehicle_expenses
+             WHERE vehicle_id = ?1 GROUP BY category ORDER BY SUM(amount) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let by_category = stmt
+        .query_map([&vehicle_id], |r| {
+            Ok(VehicleExpenseCategoryTotal {
+                category: r.get(0)?,
+                total: r.get(1)?,
+                count: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(VehicleExpenseSummary { total, total_year, count, by_category })
+}

@@ -451,7 +451,7 @@ pub(crate) fn promote_pending_invoice(
         "SELECT id, item_id, order_id, engagement_id, engagement_charge_id,
                 engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
                 original_name, display_name, mime_type, file_path,
-                size_bytes, attachment_type, created_at
+                size_bytes, attachment_type, created_at, vehicle_expense_id
          FROM attachments WHERE id = ?1",
         [&new_id],
         |row| Ok(Attachment {
@@ -471,6 +471,7 @@ pub(crate) fn promote_pending_invoice(
             size_bytes: row.get(13)?,
             attachment_type: row.get(14)?,
             created_at: row.get(15)?,
+            vehicle_expense_id: row.get(16)?,
         }),
     ).map_err(|e| e.to_string())
 }

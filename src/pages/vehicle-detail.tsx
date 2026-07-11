@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Car, Edit, Trash2, FileText, Link2, Unlink, Plus, ShieldCheck, Wallet } from "lucide-react"
+import { ArrowLeft, Car, Edit, Trash2, FileText, Link2, Unlink, Plus, ShieldCheck, Wallet, Receipt } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -11,9 +11,10 @@ import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { formatPrice, formatDate } from "@/lib/utils"
 import { energyLabel, categoryLabel } from "@/lib/vehicle"
 import { EnergyIcon } from "@/pages/vehicles"
+import { VehicleExpenses } from "@/components/features/vehicle-expenses"
 import * as api from "@/lib/tauri"
 
-type Tab = "overview" | "contracts"
+type Tab = "overview" | "contracts" | "expenses"
 
 export function VehicleDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -112,9 +113,15 @@ export function VehicleDetailPage() {
     ) : null
   )
 
+  // Charging by default for electric/hybrid, fuel otherwise — the most common
+  // first expense for each drivetrain.
+  const defaultExpenseCategory: api.VehicleExpenseCategory =
+    v.energy_type === "electric" || v.energy_type === "phev" || v.energy_type === "hybrid" ? "charging" : "fuel"
+
   const tabs: { key: Tab; label: string; icon: typeof Car }[] = [
     { key: "overview", label: fr ? "Aperçu" : "Overview", icon: Car },
     { key: "contracts", label: fr ? `Contrats (${engagements.length})` : `Contracts (${engagements.length})`, icon: FileText },
+    { key: "expenses", label: fr ? "Dépenses" : "Expenses", icon: Receipt },
   ]
 
   return (
@@ -198,12 +205,16 @@ export function VehicleDetailPage() {
               <Wallet className="h-5 w-5 shrink-0" />
               <span>
                 {fr
-                  ? "Bientôt : carnet de dépenses (pneus, recharge kWh, entretien…), taxe automobile et documents du véhicule."
-                  : "Coming soon: expense ledger (tires, kWh charging, maintenance…), vehicle tax and documents."}
+                  ? "Suivez toutes vos dépenses (recharge kWh, carburant, pneus, entretien…) dans l'onglet Dépenses. Bientôt : taxe automobile et documents du véhicule."
+                  : "Track every expense (kWh charging, fuel, tires, maintenance…) in the Expenses tab. Coming soon: vehicle tax and documents."}
               </span>
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {tab === "expenses" && (
+        <VehicleExpenses vehicleId={v.id} defaultCategory={defaultExpenseCategory} />
       )}
 
       {tab === "contracts" && (

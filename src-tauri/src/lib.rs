@@ -186,6 +186,13 @@ pub fn run() {
             commands::vehicles::get_vehicle_engagements,
             commands::vehicles::get_linkable_vehicle_engagements,
             commands::vehicles::set_engagement_vehicle,
+            commands::vehicles::get_vehicle_expenses,
+            commands::vehicles::create_vehicle_expense,
+            commands::vehicles::update_vehicle_expense,
+            commands::vehicles::delete_vehicle_expense,
+            commands::vehicles::get_vehicle_expense_summary,
+            commands::attachments::add_vehicle_expense_attachment,
+            commands::attachments::get_vehicle_expense_attachments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TrackBuy");
