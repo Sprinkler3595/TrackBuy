@@ -28,7 +28,7 @@ import * as api from "@/lib/tauri"
 const CATEGORY_GROUPS: Record<string, api.EngagementType[]> = {
   insurance: ["insurance_health", "insurance_household", "insurance_car", "insurance_life", "insurance_legal", "insurance_other"],
   housing:   ["rent", "parking", "mortgage"],
-  vehicle:   ["leasing", "fuel"],
+  vehicle:   ["leasing", "fuel", "vehicle_tax"],
   utilities: ["electricity", "gas", "water", "heating"],
   telecom:   ["phone", "internet", "tv_radio"],
   taxes:     ["tax_federal", "tax_cantonal", "tax_communal", "tax_other", "fine", "fee"],
@@ -40,7 +40,7 @@ const ALL_TYPES: api.EngagementType[] = [
   "insurance_health", "insurance_household", "insurance_car", "insurance_life",
   "insurance_legal", "insurance_other",
   "rent", "parking", "leasing", "mortgage",
-  "electricity", "gas", "water", "fuel", "heating",
+  "electricity", "gas", "water", "fuel", "vehicle_tax", "heating",
   "phone", "internet", "tv_radio",
   "tax_federal", "tax_cantonal", "tax_communal", "tax_other",
   "fine", "fee", "membership", "other",

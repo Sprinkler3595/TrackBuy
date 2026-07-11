@@ -600,7 +600,7 @@ export type EngagementType =
   | "insurance_health" | "insurance_household" | "insurance_car"
   | "insurance_life" | "insurance_legal" | "insurance_other"
   | "rent" | "parking" | "leasing" | "mortgage"
-  | "electricity" | "gas" | "water" | "fuel" | "heating"
+  | "electricity" | "gas" | "water" | "fuel" | "vehicle_tax" | "heating"
   | "phone" | "internet" | "tv_radio"
   | "tax_federal" | "tax_cantonal" | "tax_communal" | "tax_other"
   | "fine" | "fee" | "membership" | "other"
