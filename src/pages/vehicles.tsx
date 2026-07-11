@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { I18nContext } from "@/lib/i18n"
+import { AiScanPanel } from "@/components/features/ai-scan-panel"
+import { getAiSettings } from "@/lib/ai-settings"
 import { VEHICLE_CATEGORIES as CATEGORIES, VEHICLE_ENERGY_TYPES as ENERGY_TYPES, CANTONS, energyLabel, isElectric } from "@/lib/vehicle"
 import * as api from "@/lib/tauri"
 
@@ -102,6 +104,28 @@ export function VehiclesPage() {
     window.history.replaceState({}, "")
   }, [location.state, vehicles])
 
+  // Pre-fill the form from a scanned registration document (permis de
+  // circulation), read by the AI. Returns a summary of the filled fields.
+  const applyVehicleExtraction = (x: api.ExtractedVehicle): string => {
+    const filled: string[] = []
+    const patch: Partial<FormState> = {}
+    const composed = x.name || ([x.make, x.model].filter(Boolean).join(" ") + (x.plate ? ` ${x.plate}` : "")).trim()
+    if (composed) { patch.name = composed; filled.push(fr ? "désignation" : "label") }
+    if (x.make) { patch.make = x.make; filled.push(fr ? "marque" : "make") }
+    if (x.model) { patch.model = x.model; filled.push(fr ? "modèle" : "model") }
+    if (x.plate) { patch.plate = x.plate; filled.push(fr ? "plaque" : "plate") }
+    if (x.vin) { patch.vin = x.vin; filled.push("VIN") }
+    if (x.registration_number) { patch.registration_number = x.registration_number; filled.push(fr ? "matricule" : "reg. no.") }
+    if (x.category) { patch.category = x.category; filled.push(fr ? "genre" : "category") }
+    if (x.energy_type) { patch.energy_type = x.energy_type; filled.push(fr ? "motorisation" : "energy") }
+    if (x.first_registration) { patch.first_registration = x.first_registration; filled.push(fr ? "1re immat." : "first reg.") }
+    if (x.power_kw != null) { patch.power_kw = String(x.power_kw); filled.push(fr ? "puissance" : "power") }
+    if (x.color) { patch.color = x.color; filled.push(fr ? "couleur" : "color") }
+    if (x.canton) { patch.canton = x.canton; filled.push(fr ? "canton" : "canton") }
+    setForm((f) => ({ ...f, ...patch }))
+    return filled.join(" · ")
+  }
+
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
     if (!form.name.trim()) return
@@ -195,6 +219,16 @@ export function VehiclesPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="sm:col-span-2 lg:col-span-3">
+                <AiScanPanel
+                  fr={fr}
+                  title={fr ? "Remplir depuis le permis de circulation (scan + IA)" : "Fill from the registration document (scan + AI)"}
+                  subtitle={fr
+                    ? "Scannez la carte grise / permis de circulation : l'IA remplit l'identité du véhicule."
+                    : "Scan the registration document: the AI fills the vehicle identity."}
+                  onExtract={async (text) => applyVehicleExtraction(await api.aiExtractVehicle(text, getAiSettings()))}
+                />
+              </div>
               <div className="space-y-2 sm:col-span-2 lg:col-span-3">
                 <label className="text-sm font-medium">{fr ? "Désignation" : "Label"} *</label>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required autoFocus placeholder={fr ? "Ex : VW Golf VD 123456" : "e.g. VW Golf VD 123456"} />

@@ -547,6 +547,55 @@ export interface ExtractedCarInsurance {
 export const aiExtractCarInsurance = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedCarInsurance>("ai_extract_car_insurance", { ocrText, config })
 
+/// Fields extracted from a Swiss car-leasing contract/offer (text or OCR).
+export interface ExtractedLeasing {
+  name: string | null
+  leasing_company: string | null
+  contract_reference: string | null
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  first_registration: string | null
+  monthly_payment: number | null
+  vehicle_price: number | null
+  down_payment: number | null
+  discount: number | null
+  residual_value: number | null
+  interest_rate_pct: number | null
+  duration_months: number | null
+  annual_mileage_km: number | null
+  excess_km_cost: number | null
+  contract_start_date: string | null
+  payment_method: EngagementPaymentMethod | null
+  currency: string | null
+}
+
+export const aiExtractLeasing = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedLeasing>("ai_extract_leasing", { ocrText, config })
+
+/// Vehicle identity extracted from a Swiss registration document (permis de
+/// circulation / Fahrzeugausweis).
+export interface ExtractedVehicle {
+  name: string | null
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  registration_number: string | null
+  category: VehicleCategory | null
+  energy_type: VehicleEnergyType | null
+  first_registration: string | null
+  power_kw: number | null
+  displacement_cc: number | null
+  weight_kg: number | null
+  color: string | null
+  canton: string | null
+}
+
+export const aiExtractVehicle = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedVehicle>("ai_extract_vehicle", { ocrText, config })
+
 /// Focused, schema-constrained extraction of just the payment due date —
 /// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
 /// date or null.

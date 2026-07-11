@@ -461,6 +461,263 @@ fn parse_car_insurance(v: &Value) -> ExtractedCarInsurance {
     }
 }
 
+// ===========================================================================
+// Extraction d'un contrat de leasing véhicule (Suisse)
+// ===========================================================================
+
+const LEASING_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les contrats de leasing automobile suisses (AMAG Leasing, MultiLease, BANK-now, Cembra, ALD/Ayvens, Post Finance…). Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : si un champ est introuvable ou ambigu, mets null.";
+
+const LEASING_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un CONTRAT / une OFFRE de LEASING de véhicule en Suisse. Extrais les champs structurés.
+
+CONTEXTE — Un leasing auto suisse comporte l'identité du véhicule et des conditions financières : mensualité, prix du véhicule, acompte (1er loyer majoré), valeur résiduelle, taux d'intérêt effectif (TAEG), durée en mois, kilométrage annuel inclus et coût du km supplémentaire.
+
+RÈGLES :
+1. `name` = désignation courte et lisible (ex : « Leasing VW Golf », « Leasing Tesla Model 3 »). Sinon null.
+2. `leasing_company` = nom de la société de leasing (ex : « AMAG Leasing », « Cembra », « BANK-now »).
+3. `contract_reference` = numéro de contrat / de leasing.
+4. VÉHICULE : `make` (marque), `model` (modèle), `plate` (plaque, ex « VD 123456 »), `vin` (n° de châssis, 17 caractères), `first_registration` (1re mise en circulation, YYYY-MM-DD).
+5. `monthly_payment` = mensualité de leasing en CHF (le loyer périodique). Nombre.
+6. `vehicle_price` = prix d'achat / valeur du véhicule (CHF).
+7. `down_payment` = acompte / paiement initial / 1er loyer majoré / caution (CHF).
+8. `discount` = remise / rabais / prime accordée (CHF), le cas échéant.
+9. `residual_value` = valeur résiduelle en fin de contrat (CHF).
+10. `interest_rate_pct` = taux d'intérêt annuel effectif (TAEG), en pourcentage (ex : 4.5).
+11. `duration_months` = durée du contrat en mois (ex : 48).
+12. `annual_mileage_km` = kilométrage annuel inclus (ex : 15000).
+13. `excess_km_cost` = coût par km supplémentaire (CHF, ex : 0.25).
+14. `contract_start_date` = date de début du contrat (YYYY-MM-DD). Les dates suisses sont JJ.MM.AAAA.
+15. `payment_method` ∈ {"direct_debit","standing_order","qr_bill"} : prélèvement (LSV/SEPA), ordre permanent, QR-facture. null si non indiqué.
+16. `currency` = "CHF" par défaut sur un contrat suisse.
+
+FORMAT (JSON strict, sans markdown — null pour tout champ absent) :
+{
+  "name": string|null,
+  "leasing_company": string|null,
+  "contract_reference": string|null,
+  "make": string|null,
+  "model": string|null,
+  "plate": string|null,
+  "vin": string|null,
+  "first_registration": "YYYY-MM-DD"|null,
+  "monthly_payment": number|null,
+  "vehicle_price": number|null,
+  "down_payment": number|null,
+  "discount": number|null,
+  "residual_value": number|null,
+  "interest_rate_pct": number|null,
+  "duration_months": number|null,
+  "annual_mileage_km": number|null,
+  "excess_km_cost": number|null,
+  "contract_start_date": "YYYY-MM-DD"|null,
+  "payment_method": "direct_debit"|"standing_order"|"qr_bill"|null,
+  "currency": "CHF"|"EUR"|null
+}
+
+TEXTE DU CONTRAT (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedLeasing {
+    pub name: Option<String>,
+    pub leasing_company: Option<String>,
+    pub contract_reference: Option<String>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub plate: Option<String>,
+    pub vin: Option<String>,
+    pub first_registration: Option<String>,
+    pub monthly_payment: Option<f64>,
+    pub vehicle_price: Option<f64>,
+    pub down_payment: Option<f64>,
+    pub discount: Option<f64>,
+    pub residual_value: Option<f64>,
+    pub interest_rate_pct: Option<f64>,
+    pub duration_months: Option<i64>,
+    pub annual_mileage_km: Option<i64>,
+    pub excess_km_cost: Option<f64>,
+    pub contract_start_date: Option<String>,
+    pub payment_method: Option<String>,
+    pub currency: Option<String>,
+}
+
+fn leasing_schema() -> Value {
+    let s = || json!({"type": ["string", "null"]});
+    let n = || json!({"type": ["number", "null"]});
+    json!({
+        "type": "object",
+        "properties": {
+            "name": s(), "leasing_company": s(), "contract_reference": s(),
+            "make": s(), "model": s(), "plate": s(), "vin": s(), "first_registration": s(),
+            "monthly_payment": n(), "vehicle_price": n(), "down_payment": n(), "discount": n(),
+            "residual_value": n(), "interest_rate_pct": n(), "duration_months": n(),
+            "annual_mileage_km": n(), "excess_km_cost": n(), "contract_start_date": s(),
+            "payment_method": {"type": ["string", "null"], "enum": ["direct_debit", "standing_order", "qr_bill", null]},
+            "currency": s()
+        },
+        "required": [
+            "name", "leasing_company", "contract_reference", "make", "model", "plate", "vin",
+            "first_registration", "monthly_payment", "vehicle_price", "down_payment", "discount",
+            "residual_value", "interest_rate_pct", "duration_months", "annual_mileage_km",
+            "excess_km_cost", "contract_start_date", "payment_method", "currency"
+        ],
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_leasing(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedLeasing, String> {
+    let prompt = LEASING_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = leasing_schema();
+    let (raw, usage) =
+        call_provider(&config, LEASING_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let v: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(ExtractedLeasing {
+        name: as_opt_string(&v["name"]),
+        leasing_company: as_opt_string(&v["leasing_company"]),
+        contract_reference: as_opt_string(&v["contract_reference"]),
+        make: as_opt_string(&v["make"]),
+        model: as_opt_string(&v["model"]),
+        plate: as_opt_string(&v["plate"]),
+        vin: as_opt_string(&v["vin"]),
+        first_registration: as_opt_string(&v["first_registration"]),
+        monthly_payment: v["monthly_payment"].as_f64(),
+        vehicle_price: v["vehicle_price"].as_f64(),
+        down_payment: v["down_payment"].as_f64(),
+        discount: v["discount"].as_f64(),
+        residual_value: v["residual_value"].as_f64(),
+        interest_rate_pct: v["interest_rate_pct"].as_f64(),
+        duration_months: as_opt_i64(&v["duration_months"]),
+        annual_mileage_km: as_opt_i64(&v["annual_mileage_km"]),
+        excess_km_cost: v["excess_km_cost"].as_f64(),
+        contract_start_date: as_opt_string(&v["contract_start_date"]),
+        payment_method: as_opt_string(&v["payment_method"]),
+        currency: as_opt_string(&v["currency"]),
+    })
+}
+
+// ===========================================================================
+// Extraction d'un permis de circulation / carte grise (Suisse)
+// ===========================================================================
+
+const VEHICLE_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les permis de circulation suisses (Fahrzeugausweis / licenza di circolazione). Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : si un champ est introuvable ou ambigu, mets null.";
+
+const VEHICLE_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un PERMIS DE CIRCULATION suisse (carte grise / Fahrzeugausweis) ou un document d'immatriculation de véhicule. Extrais l'identité du véhicule.
+
+RÈGLES :
+1. `name` = désignation lisible (ex : « VW Golf VD 123456 »). Sinon null.
+2. `make` = marque (position 21 « Marque »). `model` = modèle / type (« Type », « Modèle »).
+3. `plate` = plaque d'immatriculation (ex : « VD 123456 »). Le code à 2 lettres au début est le CANTON.
+4. `vin` = n° de châssis / VIN (17 caractères, position 23 « N° de châssis »).
+5. `registration_number` = n° de matricule / d'homologation (« Type approval », « N° de matricule », stfa).
+6. `category` ∈ {"passenger_car","motorcycle","light_commercial","motorhome","other"} : voiture de tourisme, motocycle, utilitaire léger, camping-car, autre. Déduis du « Genre » du véhicule.
+7. `energy_type` ∈ {"electric","gasoline","diesel","hybrid","phev","other"} : d'après le carburant (« Carburant / Treibstoff ») — « électrique » ⇒ electric, « essence/benzin » ⇒ gasoline, « diesel » ⇒ diesel, « hybride » ⇒ hybrid, « hybride rechargeable / plug-in » ⇒ phev.
+8. `first_registration` = 1re mise en circulation (« Mise en circulation », YYYY-MM-DD ; dates suisses JJ.MM.AAAA).
+9. `power_kw` = puissance en kW (position « Puissance / Leistung », en kW — pas en ch).
+10. `displacement_cc` = cylindrée en cm³ (position « Cylindrée / Hubraum »). Pour un électrique, null.
+11. `weight_kg` = poids à vide en kg (« Poids à vide / Leergewicht »).
+12. `color` = couleur du véhicule.
+13. `canton` = code cantonal à 2 lettres déduit de la plaque (VD, GE, VS, FR, ZH, BE…). null si illisible.
+
+FORMAT (JSON strict, sans markdown — null pour tout champ absent) :
+{
+  "name": string|null,
+  "make": string|null,
+  "model": string|null,
+  "plate": string|null,
+  "vin": string|null,
+  "registration_number": string|null,
+  "category": "passenger_car"|"motorcycle"|"light_commercial"|"motorhome"|"other"|null,
+  "energy_type": "electric"|"gasoline"|"diesel"|"hybrid"|"phev"|"other"|null,
+  "first_registration": "YYYY-MM-DD"|null,
+  "power_kw": number|null,
+  "displacement_cc": number|null,
+  "weight_kg": number|null,
+  "color": string|null,
+  "canton": string|null
+}
+
+TEXTE DU PERMIS (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedVehicle {
+    pub name: Option<String>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub plate: Option<String>,
+    pub vin: Option<String>,
+    pub registration_number: Option<String>,
+    pub category: Option<String>,
+    pub energy_type: Option<String>,
+    pub first_registration: Option<String>,
+    pub power_kw: Option<f64>,
+    pub displacement_cc: Option<i64>,
+    pub weight_kg: Option<i64>,
+    pub color: Option<String>,
+    pub canton: Option<String>,
+}
+
+fn vehicle_schema() -> Value {
+    let s = || json!({"type": ["string", "null"]});
+    let n = || json!({"type": ["number", "null"]});
+    json!({
+        "type": "object",
+        "properties": {
+            "name": s(), "make": s(), "model": s(), "plate": s(), "vin": s(),
+            "registration_number": s(),
+            "category": {"type": ["string", "null"], "enum": ["passenger_car", "motorcycle", "light_commercial", "motorhome", "other", null]},
+            "energy_type": {"type": ["string", "null"], "enum": ["electric", "gasoline", "diesel", "hybrid", "phev", "other", null]},
+            "first_registration": s(), "power_kw": n(), "displacement_cc": n(), "weight_kg": n(),
+            "color": s(), "canton": s()
+        },
+        "required": [
+            "name", "make", "model", "plate", "vin", "registration_number", "category",
+            "energy_type", "first_registration", "power_kw", "displacement_cc", "weight_kg",
+            "color", "canton"
+        ],
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_vehicle(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedVehicle, String> {
+    let prompt = VEHICLE_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = vehicle_schema();
+    let (raw, usage) =
+        call_provider(&config, VEHICLE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let v: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(ExtractedVehicle {
+        name: as_opt_string(&v["name"]),
+        make: as_opt_string(&v["make"]),
+        model: as_opt_string(&v["model"]),
+        plate: as_opt_string(&v["plate"]),
+        vin: as_opt_string(&v["vin"]),
+        registration_number: as_opt_string(&v["registration_number"]),
+        category: as_opt_string(&v["category"]),
+        energy_type: as_opt_string(&v["energy_type"]),
+        first_registration: as_opt_string(&v["first_registration"]),
+        power_kw: v["power_kw"].as_f64(),
+        displacement_cc: as_opt_i64(&v["displacement_cc"]),
+        weight_kg: as_opt_i64(&v["weight_kg"]),
+        color: as_opt_string(&v["color"]),
+        canton: as_opt_string(&v["canton"]),
+    })
+}
+
 // Focused, schema-constrained "find the payment due date" extraction. Kept
 // separate from the full receipt extraction because it's a single narrow task:
 // a small local model (e.g. Ministral 8B via Ollama) is far more reliable when

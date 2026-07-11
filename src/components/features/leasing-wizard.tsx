@@ -5,7 +5,9 @@ import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
+import { AiScanPanel } from "@/components/features/ai-scan-panel"
 import { InlineCreateSelect } from "@/components/ui/inline-create-select"
+import { getAiSettings } from "@/lib/ai-settings"
 import * as api from "@/lib/tauri"
 
 /// Guided, step-by-step creation of a Swiss car-leasing position.
@@ -140,6 +142,40 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
   const discNum = parseFloat(discount)
   const netDownPayment = !Number.isNaN(dpNum) && !Number.isNaN(discNum) ? dpNum - discNum : null
 
+  /// Pre-fill the wizard from a leasing contract read by the AI. Values stay
+  /// editable. Returns a short summary of the filled fields for the scan panel.
+  async function applyLeasingExtraction(x: api.ExtractedLeasing): Promise<string> {
+    const filled: string[] = []
+    if (x.name) { setName(x.name); filled.push(fr ? "désignation" : "label") }
+    if (x.make) { setMake(x.make); filled.push(fr ? "marque" : "make") }
+    if (x.model) { setModel(x.model); filled.push(fr ? "modèle" : "model") }
+    if (x.plate) { setPlate(x.plate); filled.push(fr ? "plaque" : "plate") }
+    if (x.vin) { setVin(x.vin); filled.push("VIN") }
+    if (x.first_registration) { setFirstReg(x.first_registration); filled.push(fr ? "1re immat." : "first reg.") }
+    if (x.contract_reference) { setContractRef(x.contract_reference); filled.push(fr ? "réf. contrat" : "ref") }
+    if (x.monthly_payment != null) { setMonthly(String(x.monthly_payment)); filled.push(fr ? "mensualité" : "monthly") }
+    if (x.contract_start_date) { setStartDate(x.contract_start_date); filled.push(fr ? "début" : "start") }
+    if (x.duration_months != null) { setDuration(String(x.duration_months)); filled.push(fr ? "durée" : "duration") }
+    if (x.vehicle_price != null) { setVehiclePrice(String(x.vehicle_price)); filled.push(fr ? "prix" : "price") }
+    if (x.down_payment != null) { setDownPayment(String(x.down_payment)); filled.push(fr ? "acompte" : "down payment") }
+    if (x.discount != null) { setDiscount(String(x.discount)); filled.push(fr ? "remise" : "discount") }
+    if (x.residual_value != null) { setResidual(String(x.residual_value)); filled.push(fr ? "valeur résiduelle" : "residual") }
+    if (x.interest_rate_pct != null) { setRate(String(x.interest_rate_pct)); filled.push(fr ? "taux" : "rate") }
+    if (x.annual_mileage_km != null) { setAnnualKm(String(x.annual_mileage_km)); filled.push("km/an") }
+    if (x.excess_km_cost != null) { setExcessKm(String(x.excess_km_cost)); filled.push(fr ? "km suppl." : "excess km") }
+    if (x.payment_method) { setPayMethod(x.payment_method); filled.push(fr ? "paiement" : "payment") }
+    if (x.leasing_company) {
+      const needle = x.leasing_company.trim().toLowerCase()
+      const existing = creditorList.find((c) => c.name.trim().toLowerCase() === needle)
+      if (existing) { setCreditorId(existing.id); filled.push(fr ? "société" : "company") }
+      else {
+        const c = await createLeasingCompany(x.leasing_company.trim())
+        if (c) { setCreditorId(c.id); filled.push(fr ? "société (créée)" : "company (created)") }
+      }
+    }
+    return filled.join(" · ")
+  }
+
   async function createPosition() {
     setSaving(true)
     try {
@@ -266,6 +302,17 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
         <div className="flex-1 overflow-y-auto p-6">
           {step === 1 && (
             <div className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <AiScanPanel
+                  fr={fr}
+                  title={fr ? "Remplissage automatique (scan + IA)" : "Auto-fill (scan + AI)"}
+                  subtitle={fr
+                    ? "Scannez le contrat de leasing (PDF ou photo) : l'IA remplit véhicule et conditions."
+                    : "Scan the leasing contract (PDF or photo): the AI fills vehicle and terms."}
+                  disabled={saving}
+                  onExtract={async (text) => applyLeasingExtraction(await api.aiExtractLeasing(text, getAiSettings()))}
+                />
+              </div>
               <div className="space-y-2 sm:col-span-2">
                 <label className="text-sm font-medium">{fr ? "Désignation" : "Label"} *</label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus
