@@ -82,11 +82,20 @@ interface CarInsuranceWizardProps {
   creditors: api.Creditor[]
   cards: api.PaymentCard[]
   /// Existing engagements, used to optionally link the policy to a leasing.
-  engagements: api.Engagement[]
+  engagements?: api.Engagement[]
   onClose: () => void
+  /// When launched from the leasing assistant: pre-link the policy to this
+  /// (just-created) leasing as a child engagement.
+  presetParentId?: string
+  /// Pre-fill the insured vehicle's identity (from the leasing).
+  presetVehicle?: { make?: string | null; model?: string | null; plate?: string | null; vin?: string | null }
+  /// Pre-fill the policy label.
+  presetName?: string
+  /// Fired once the insurance engagement is created (before the documents step).
+  onCreated?: () => void
 }
 
-export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: CarInsuranceWizardProps) {
+export function CarInsuranceWizard({ creditors, cards, engagements, onClose, presetParentId, presetVehicle, presetName, onCreated }: CarInsuranceWizardProps) {
   const { locale } = useContext(I18nContext)
   const fr = locale === "fr"
   const { toast } = useToast()
@@ -121,16 +130,16 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   }
 
   // Step 1 — insured vehicle + policy identity.
-  const [name, setName] = useState(fr ? "Assurance voiture" : "Car insurance")
-  const [make, setMake] = useState("")
-  const [model, setModel] = useState("")
-  const [plate, setPlate] = useState("")
-  const [vin, setVin] = useState("")
+  const [name, setName] = useState(presetName ?? (fr ? "Assurance voiture" : "Car insurance"))
+  const [make, setMake] = useState(presetVehicle?.make ?? "")
+  const [model, setModel] = useState(presetVehicle?.model ?? "")
+  const [plate, setPlate] = useState(presetVehicle?.plate ?? "")
+  const [vin, setVin] = useState(presetVehicle?.vin ?? "")
   const [policyNo, setPolicyNo] = useState("")
-  const [parentId, setParentId] = useState("")
+  const [parentId, setParentId] = useState(presetParentId ?? "")
   const [vehicleCategory, setVehicleCategory] = useState<api.VehicleCategory>("passenger_car")
   const [regNumber, setRegNumber] = useState("")
-  const [isLeasing, setIsLeasing] = useState(false)
+  const [isLeasing, setIsLeasing] = useState(!!presetParentId)
 
   // Step 2 — coverage + financials.
   const [insurerId, setInsurerId] = useState("")
@@ -166,7 +175,7 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
   const [scanned, setScanned] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const leasings = engagements.filter((e) => e.engagement_type === "leasing")
+  const leasings = (engagements ?? []).filter((e) => e.engagement_type === "leasing")
 
   /// Pre-fill every field the AI could read off the contract. Values stay
   /// editable — the assistant is a head start, not a lock-in. Only sets a field
@@ -323,6 +332,7 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
       setCreatedId(eng.id)
       setCreatedName(eng.name)
       setStep(4)
+      onCreated?.()
       toast(fr ? "Assurance créée. Ajoutez la police." : "Insurance created. Add the policy.", "success")
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
@@ -449,24 +459,31 @@ export function CarInsuranceWizard({ creditors, cards, engagements, onClose }: C
                 <Input value={policyNo} onChange={(e) => setPolicyNo(e.target.value)} />
               </div>
 
-              <div className="space-y-2 sm:col-span-2">
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <input type="checkbox" checked={isLeasing} onChange={(e) => toggleLeasing(e.target.checked)} />
-                  {fr ? "Véhicule en leasing" : "Vehicle is leased"}
-                </label>
-                {isLeasing && (
-                  leasings.length > 0 ? (
-                    <select className={fieldCls} value={parentId} onChange={(e) => setParentId(e.target.value)}>
-                      <option value="">{fr ? "— Ne pas rattacher —" : "— Don't link —"}</option>
-                      {leasings.map((l) => <option key={l.id} value={l.id}>{fr ? "Rattacher à : " : "Link to: "}{l.name}</option>)}
-                    </select>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      {fr ? "Aucun leasing enregistré à rattacher." : "No leasing on record to link to."}
-                    </p>
-                  )
-                )}
-              </div>
+              {presetParentId ? (
+                <div className="sm:col-span-2 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">
+                  <Car className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{fr ? "Assurance rattachée au leasing en cours (sous-engagement)." : "Insurance linked to the current leasing (sub-engagement)."}</span>
+                </div>
+              ) : (
+                <div className="space-y-2 sm:col-span-2">
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" checked={isLeasing} onChange={(e) => toggleLeasing(e.target.checked)} />
+                    {fr ? "Véhicule en leasing" : "Vehicle is leased"}
+                  </label>
+                  {isLeasing && (
+                    leasings.length > 0 ? (
+                      <select className={fieldCls} value={parentId} onChange={(e) => setParentId(e.target.value)}>
+                        <option value="">{fr ? "— Ne pas rattacher —" : "— Don't link —"}</option>
+                        {leasings.map((l) => <option key={l.id} value={l.id}>{fr ? "Rattacher à : " : "Link to: "}{l.name}</option>)}
+                      </select>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {fr ? "Aucun leasing enregistré à rattacher." : "No leasing on record to link to."}
+                      </p>
+                    )
+                  )}
+                </div>
+              )}
             </div>
           )}
 
