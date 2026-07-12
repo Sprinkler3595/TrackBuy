@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -34,6 +34,7 @@ interface AttachmentsPanelProps {
 
 const ATTACHMENT_TYPES = [
   { slug: "invoice", label: "Ticket / Facture", Icon: Receipt },
+  { slug: "payment_confirmation", label: "Confirmation de paiement", Icon: CheckCircle2 },
   { slug: "warranty", label: "Garantie", Icon: Shield },
   { slug: "purchase_order", label: "Bon de commande", Icon: ClipboardList },
   { slug: "contract", label: "Contrat / police", Icon: ScrollText },
@@ -72,7 +73,7 @@ const ATTACHMENT_GROUPS = [
 
 function groupOf(slug: string): "contract" | "invoice" | "other" {
   if (slug === "contract") return "contract"
-  if (slug === "invoice" || slug === "qrbill") return "invoice"
+  if (slug === "invoice" || slug === "qrbill" || slug === "payment_confirmation") return "invoice"
   return "other"
 }
 
