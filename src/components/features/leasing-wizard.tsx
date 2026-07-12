@@ -176,6 +176,29 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
     return filled.join(" · ")
   }
 
+  /// Pre-fill the (step 3) casco insurance sub-form from a scanned insurance
+  /// policy, reusing the car-insurance AI extraction. Auto-enables the "create
+  /// insurance" toggle. Returns a summary of the filled fields.
+  async function applyInsuranceExtraction(x: api.ExtractedCarInsurance): Promise<string> {
+    const filled: string[] = []
+    if (!addInsurance) setAddInsurance(true)
+    if (x.premium != null) { setInsurancePremium(String(x.premium)); filled.push(fr ? "prime" : "premium") }
+    const supportedCycles: api.EngagementBillingCycle[] = ["yearly", "semiannual", "quarterly", "monthly"]
+    if (x.billing_cycle && supportedCycles.includes(x.billing_cycle)) {
+      setInsuranceCycle(x.billing_cycle); filled.push(fr ? "périodicité" : "frequency")
+    }
+    if (x.insurer_name) {
+      const needle = x.insurer_name.trim().toLowerCase()
+      const existing = creditorList.find((c) => c.name.trim().toLowerCase() === needle)
+      if (existing) { setInsurerId(existing.id); filled.push(fr ? "assureur" : "insurer") }
+      else {
+        const c = await createInsurer(x.insurer_name.trim())
+        if (c) { setInsurerId(c.id); filled.push(fr ? "assureur (créé)" : "insurer (created)") }
+      }
+    }
+    return filled.join(" · ")
+  }
+
   async function createPosition() {
     setSaving(true)
     try {
@@ -432,6 +455,16 @@ export function LeasingWizard({ creditors, cards, onClose }: LeasingWizardProps)
                     : "Full comprehensive insurance (casco) is mandatory for the whole leasing term. We create it and link it to the leasing."}
                 </span>
               </div>
+
+              <AiScanPanel
+                fr={fr}
+                title={fr ? "Remplir depuis le contrat d'assurance (scan + IA)" : "Fill from the insurance policy (scan + AI)"}
+                subtitle={fr
+                  ? "Scannez la police d'assurance (PDF ou photo) : l'IA remplit prime, périodicité et assureur."
+                  : "Scan the insurance policy (PDF or photo): the AI fills premium, frequency and insurer."}
+                disabled={saving}
+                onExtract={async (text) => applyInsuranceExtraction(await api.aiExtractCarInsurance(text, getAiSettings()))}
+              />
 
               <label className="flex items-center gap-3 rounded-lg border p-3 hover:bg-accent/40">
                 <input type="checkbox" checked={addInsurance} onChange={(e) => setAddInsurance(e.target.checked)} />
