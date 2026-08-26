@@ -12,6 +12,7 @@ import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
+import { IncomeWizard } from "@/components/features/income-wizard"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
@@ -67,6 +68,8 @@ export function IncomesPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
   const [statusFilter, setStatusFilter] = useState<"all" | api.IncomeStatus>("active")
+  // Creation goes through the guided assistant; the form below only edits.
+  const [showWizard, setShowWizard] = useState(false)
   const [search, setSearch] = useState("")
   const [amountsVisible, setAmountsVisible] = useAmountsVisible()
   const { toast } = useToast()
@@ -110,9 +113,10 @@ export function IncomesPage() {
     setShowForm(true)
   }
 
+  // Edit-only: new incomes come from the guided assistant.
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
-    if (!form.name.trim()) return
+    if (!editing || !form.name.trim()) return
     const amount = form.current_amount ? parseFloat(form.current_amount) : null
     if (form.current_amount && (Number.isNaN(amount as number) || (amount as number) < 0)) {
       toast("Montant invalide", "error")
@@ -120,40 +124,22 @@ export function IncomesPage() {
     }
     const interval = Math.max(1, parseInt(form.cycle_interval) || 1)
     try {
-      if (editing) {
-        await api.updateIncome({
-          ...editing,
-          name: form.name.trim(),
-          income_type: form.income_type,
-          source_name: form.source_name || null,
-          payment_card_id: form.payment_card_id || null,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_expected_date: form.next_expected_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          status: form.status,
-          started_on: form.started_on || null,
-          notes: form.notes || null,
-        })
-        toast(t("incomes.updated"), "success")
-      } else {
-        await api.createIncome({
-          name: form.name.trim(),
-          income_type: form.income_type,
-          source_name: form.source_name || null,
-          payment_card_id: form.payment_card_id || null,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_expected_date: form.next_expected_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          status: form.status,
-          started_on: form.started_on || null,
-          notes: form.notes || null,
-        })
-        toast(t("incomes.created"), "success")
-      }
+      await api.updateIncome({
+        ...editing,
+        name: form.name.trim(),
+        income_type: form.income_type,
+        source_name: form.source_name || null,
+        payment_card_id: form.payment_card_id || null,
+        billing_cycle: form.billing_cycle,
+        cycle_interval: interval,
+        next_expected_date: form.next_expected_date || null,
+        current_amount: amount,
+        currency: form.currency,
+        status: form.status,
+        started_on: form.started_on || null,
+        notes: form.notes || null,
+      })
+      toast(t("incomes.updated"), "success")
       resetForm()
       await load()
     } catch (e) {
@@ -250,7 +236,7 @@ export function IncomesPage() {
             <Download className="h-4 w-4" />
             Exporter CSV
           </Button>
-          <Button onClick={() => { resetForm(); setShowForm(true) }}>
+          <Button onClick={() => setShowWizard(true)}>
             <Plus className="h-4 w-4" />{t("incomes.new")}
           </Button>
         </div>
@@ -283,7 +269,7 @@ export function IncomesPage() {
       {showForm && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">{editing ? t("incomes.edit") : t("incomes.new")}</CardTitle>
+            <CardTitle className="text-lg">{t("incomes.edit")}</CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -392,7 +378,7 @@ export function IncomesPage() {
               </div>
 
               <div className="flex gap-2 sm:col-span-2 lg:col-span-3">
-                <Button type="submit">{editing ? t("common.save") : t("common.add")}</Button>
+                <Button type="submit">{t("common.save")}</Button>
                 <Button type="button" variant="outline" onClick={resetForm}>{t("common.cancel")}</Button>
               </div>
             </form>
@@ -461,6 +447,14 @@ export function IncomesPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {showWizard && (
+        <IncomeWizard
+          incomes={incomes}
+          cards={cards}
+          onClose={() => { setShowWizard(false); load() }}
+        />
+      )}
     </div>
   )
 }
