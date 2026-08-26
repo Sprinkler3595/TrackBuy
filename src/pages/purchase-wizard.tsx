@@ -670,13 +670,13 @@ export function PurchaseWizardPage() {
       <ConfirmDialog
         open={confirmQuit}
         title="Quitter sans créer ?"
-        message="Les articles saisis seront perdus. Vous pouvez aussi revenir plus tard — la facture est conservée tant que vous ne la quittez pas explicitement."
+        message="Les articles saisis seront perdus et le document devra être scanné à nouveau."
         confirmLabel="Quitter"
         cancelLabel="Continuer la saisie"
         variant="destructive"
         onConfirm={() => {
           sessionStorage.removeItem(PENDING_RECEIPT_KEY)
-          navigate("/scan")
+          navigate("/items")
         }}
         onCancel={() => setConfirmQuit(false)}
       />

@@ -594,9 +594,16 @@ export function ItemsPage() {
       <div className="space-y-2">
         {items.length === 0 ? (
           <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <ShoppingBag className="h-12 w-12 mb-4 opacity-20" />
-              <p>Aucun achat trouvé</p>
+            <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center text-muted-foreground">
+              <ShoppingBag className="h-12 w-12 opacity-20" />
+              <p>
+                Aucun achat trouvé. Un achat part toujours de son document :
+                offre, bon de commande, facture ou ticket de caisse.
+              </p>
+              <Button onClick={() => setShowScanDialog(true)}>
+                <Plus className="h-4 w-4" />
+                Scanner un document
+              </Button>
             </CardContent>
           </Card>
         ) : (
