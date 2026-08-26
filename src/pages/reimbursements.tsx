@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
+import { ReimbursementWizard } from "@/components/features/reimbursement-wizard"
 import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { downloadExport } from "@/lib/export"
@@ -72,6 +73,8 @@ export function ReimbursementsPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
   const [tab, setTab] = useState<TabKey>("pending")
+  // Creation goes through the guided assistant; the form below only edits.
+  const [showWizard, setShowWizard] = useState(false)
   const [search, setSearch] = useState("")
   const [settleTarget, setSettleTarget] = useState<api.PendingReimbursement | null>(null)
   const [settleForm, setSettleForm] = useState({ received_on: today(), received_amount: "" })
@@ -118,47 +121,31 @@ export function ReimbursementsPage() {
     setShowForm(true)
   }
 
+  // Edit-only: new entries come from the guided assistant.
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
-    if (!form.label.trim()) return
+    if (!editing || !form.label.trim()) return
     const expected = form.expected_amount ? parseFloat(form.expected_amount) : null
     if (form.expected_amount && (Number.isNaN(expected as number) || (expected as number) < 0)) {
       toast("Montant invalide", "error")
       return
     }
     try {
-      if (editing) {
-        await api.updatePendingReimbursement({
-          ...editing,
-          label: form.label.trim(),
-          reimbursement_type: form.reimbursement_type,
-          expected_amount: expected,
-          currency: form.currency,
-          debtor_name: form.debtor_name || null,
-          debtor_creditor_id: form.debtor_creditor_id || null,
-          item_id: form.item_id || null,
-          source_description: form.source_description || null,
-          requested_on: form.requested_on || null,
-          expected_by: form.expected_by || null,
-          notes: form.notes || null,
-        })
-        toast(t("reimbursements.updated"), "success")
-      } else {
-        await api.createPendingReimbursement({
-          label: form.label.trim(),
-          reimbursement_type: form.reimbursement_type,
-          expected_amount: expected,
-          currency: form.currency,
-          debtor_name: form.debtor_name || null,
-          debtor_creditor_id: form.debtor_creditor_id || null,
-          item_id: form.item_id || null,
-          source_description: form.source_description || null,
-          requested_on: form.requested_on || null,
-          expected_by: form.expected_by || null,
-          notes: form.notes || null,
-        })
-        toast(t("reimbursements.created"), "success")
-      }
+      await api.updatePendingReimbursement({
+        ...editing,
+        label: form.label.trim(),
+        reimbursement_type: form.reimbursement_type,
+        expected_amount: expected,
+        currency: form.currency,
+        debtor_name: form.debtor_name || null,
+        debtor_creditor_id: form.debtor_creditor_id || null,
+        item_id: form.item_id || null,
+        source_description: form.source_description || null,
+        requested_on: form.requested_on || null,
+        expected_by: form.expected_by || null,
+        notes: form.notes || null,
+      })
+      toast(t("reimbursements.updated"), "success")
       resetForm()
       await load()
     } catch (e) {
@@ -588,6 +575,10 @@ export function ReimbursementsPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {showWizard && (
+        <ReimbursementWizard onClose={() => { setShowWizard(false); load() }} />
+      )}
     </div>
   )
 }
