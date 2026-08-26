@@ -18,6 +18,7 @@ import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { QuickCreateDialog, type QuickCreateEntity } from "@/components/features/quick-create-dialog"
 import { invalidateThumbnail } from "@/components/features/item-thumbnail"
+import type { PickedFileValue } from "@/components/features/doc-slot"
 import { findMerchantByName } from "@/lib/fuzzy-match"
 import * as api from "@/lib/tauri"
 
@@ -39,8 +40,10 @@ import {
 } from "@/lib/filename-template"
 
 /**
- * Scan-review wizard. Walks the user through a freshly OCR'd receipt one item
- * at a time, with kind-aware fields, then creates everything in one batch.
+ * Purchase assistant. A purchase can only be created from a document (offer,
+ * order, invoice or till receipt): the scan dialog reads it, this wizard walks
+ * the user through the header and then each line, one at a time, with
+ * kind-aware fields, and creates everything in one batch.
  *
  * Step layout:
  *   0           → HeaderStep (shared invoice fields)
@@ -68,6 +71,21 @@ const blankShared = (): SharedState => ({
   discounts: [],
 })
 
+/// Which shared document slot a scanned document belongs to. An offer and an
+/// order both describe the purchase BEFORE it is billed, so they share the
+/// "bon de commande" slot; an invoice and a till receipt both evidence the
+/// purchase itself and go to the "facture" slot.
+function docSlotFor(
+  kind: api.DocumentKind,
+  file: PickedFileValue,
+): Pick<SharedState, "invoiceFile" | "purchaseOrderFile"> {
+  const asOrder = kind === "offer" || kind === "purchase_order"
+  return {
+    invoiceFile: asOrder ? null : file,
+    purchaseOrderFile: asOrder ? file : null,
+  }
+}
+
 export function PurchaseWizardPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -84,8 +102,10 @@ export function PurchaseWizardPage() {
   const [originalAttach, setOriginalAttach] = useState<{ path: string; name: string } | null>(null)
   // Set when this wizard was launched from a pending invoice — the row is
   // dropped from the queue once createItem(s) succeed.
-  const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null)
-  const [pendingInvoiceName, setPendingInvoiceName] = useState<string | null>(null)
+  // Confirmed nature of the scanned document. Decides the attachment type it
+  // is filed under; the purchase itself is created the same way in all cases.
+  const [docKind, setDocKind] = useState<api.DocumentKind>("invoice")
+  const [docKindDetected, setDocKindDetected] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
   const [quickCreate, setQuickCreate] = useState<QuickCreateEntity | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -112,9 +132,10 @@ export function PurchaseWizardPage() {
     try {
       const raw = sessionStorage.getItem(PENDING_RECEIPT_KEY)
       if (!raw) {
-        // No queue → nothing to review. Send the user back to the scan page.
-        toast("Aucune facture à vérifier. Lance d'abord un scan.", "error")
-        navigate("/scan")
+        // Nothing scanned → nothing to review. Back to the purchases list,
+        // where the assistant is started from.
+        toast("Aucun document à vérifier. Scannez d'abord une facture ou une offre.", "error")
+        navigate("/items")
         return
       }
       const payload = JSON.parse(raw) as PendingReceipt
@@ -132,9 +153,14 @@ export function PurchaseWizardPage() {
         merchantHint: payload.shared.merchantHint || "",
         merchant_id: matched?.id || "",
         discounts: payload.shared.discounts || [],
-        invoiceFile: payload.attachFile && payload.attachName
-          ? { path: payload.attachFile, name: payload.attachName }
-          : null,
+        // The scanned document lands in the slot matching its kind: an offer
+        // or an order is not a "facture" and shouldn't be filed as one.
+        ...docSlotFor(
+          payload.document_kind ?? "invoice",
+          payload.attachFile && payload.attachName
+            ? { path: payload.attachFile, name: payload.attachName }
+            : null,
+        ),
       })
       setDrafts(payload.drafts)
       setOriginalAttach(
@@ -142,12 +168,12 @@ export function PurchaseWizardPage() {
           ? { path: payload.attachFile, name: payload.attachName }
           : null,
       )
-      setPendingInvoiceId(payload.pending_invoice_id ?? null)
-      setPendingInvoiceName(payload.pending_invoice_name ?? null)
+      setDocKind(payload.document_kind ?? "invoice")
+      setDocKindDetected(payload.document_kind != null)
     } catch (err) {
-      console.error("Failed to hydrate scan-review:", err)
+      console.error("Failed to hydrate the purchase assistant:", err)
       toast("Données du scan invalides.", "error")
-      navigate("/scan")
+      navigate("/items")
     } finally {
       setHydrated(true)
     }
@@ -169,21 +195,37 @@ export function PurchaseWizardPage() {
           discounts: shared.discounts,
         },
         drafts,
+        document_kind: docKind,
         attachFile: originalAttach?.path ?? "",
         attachName: originalAttach?.name ?? "",
-        pending_invoice_id: pendingInvoiceId ?? undefined,
-        pending_invoice_name: pendingInvoiceName ?? undefined,
       }
       sessionStorage.setItem(PENDING_RECEIPT_KEY, JSON.stringify(payload))
     } catch {
       /* quota or serialization error — silently ignore, persistence is best-effort */
     }
-  }, [hydrated, shared, drafts, originalAttach, pendingInvoiceId, pendingInvoiceName])
+  }, [hydrated, shared, drafts, originalAttach, docKind])
 
   // ------------------ Patches helpers ------------------
   const patchShared = useCallback((p: Partial<SharedState>) => {
     setShared((prev) => ({ ...prev, ...p }))
   }, [])
+
+  // Reclassifying the document moves the SCANNED file to the matching slot.
+  // A file the user picked by hand is never moved or overwritten — they know
+  // better than the classifier what they attached.
+  const changeDocKind = useCallback((next: api.DocumentKind) => {
+    setDocKind(next)
+    const scanned = originalAttach
+    if (!scanned) return
+    setShared((prev) => {
+      const holds = (f: PickedFileValue) => !!f && f.path === scanned.path
+      if (!holds(prev.invoiceFile) && !holds(prev.purchaseOrderFile)) return prev
+      const target = next === "offer" || next === "purchase_order" ? "purchaseOrderFile" : "invoiceFile"
+      const other = target === "invoiceFile" ? "purchaseOrderFile" : "invoiceFile"
+      if (prev[target] && !holds(prev[target])) return prev
+      return { ...prev, [target]: scanned, [other]: holds(prev[other]) ? null : prev[other] }
+    })
+  }, [originalAttach])
 
   const patchDraft = useCallback((idx: number, p: Partial<ItemDraft>) => {
     setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, ...p } : d)))
@@ -389,24 +431,11 @@ export function PurchaseWizardPage() {
     // the per-item product_reference / description disambiguate the file).
     const sharedCtx = drafts.length > 0 ? ctxFor(drafts[0]) : ctxFor(emptyDraft(shared.currency))
 
-    // Three distinct invoice attach paths, in priority order:
-    //   (a) User manually picked a file (shared.invoiceFile set) → use it via
-    //       the regular addAttachment flow. If a pending was also queued, the
-    //       user explicitly overrode it — drop the pending row.
-    //   (b) Resumed pending invoice with no manual override → promote the
-    //       encrypted file via attach_pending_invoice_to_item (no decrypt /
-    //       reencrypt). The command also drops the pending row atomically.
-    //   (c) No invoice → nothing to do.
     // share_with_order=true is only valid when the items were linked to an
     // order above (requires >= 2 items). For single-item scans the invoice
     // attaches directly to the lone item; otherwise the backend rejects with
     // "Cet article ne fait pas partie d'un achat groupé".
     const shareInvoice = createdIds.length >= 2
-    let pendingPromoted = false
-    // Tracks whether the attach-pending-invoice call was attempted but threw.
-    // If true we MUST keep the pending row + .enc on disk so the user can
-    // retry — otherwise the only copy of the receipt is destroyed.
-    let pendingAttachFailed = false
     if (createdIds.length > 0 && shared.invoiceFile) {
       try {
         const invoiceName = await harmonize("invoice", sharedCtx, shared.invoiceFile.name)
@@ -419,22 +448,6 @@ export function PurchaseWizardPage() {
         )
       } catch (err) {
         failures.push(`Facture: ${err}`)
-      }
-    } else if (createdIds.length > 0 && pendingInvoiceId) {
-      try {
-        const fallbackName = pendingInvoiceName ?? "facture.pdf"
-        const invoiceName = await harmonize("invoice", sharedCtx, fallbackName)
-        await api.attachPendingInvoiceToItem(
-          pendingInvoiceId,
-          createdIds[0],
-          "invoice",
-          invoiceName,
-          shareInvoice,
-        )
-        pendingPromoted = true
-      } catch (err) {
-        failures.push(`Facture (en attente): ${err}`)
-        pendingAttachFailed = true
       }
     }
     if (createdIds.length > 0 && shared.purchaseOrderFile) {
@@ -449,24 +462,6 @@ export function PurchaseWizardPage() {
         )
       } catch (err) {
         failures.push(`Bon de commande: ${err}`)
-      }
-    }
-
-    // Drop the pending invoice only when it was safely replaced by a fresh
-    // shared.invoiceFile (user chose another file) AND items were created.
-    // If attachPendingInvoiceToItem threw, the row + .enc must stay so the
-    // user can retry — otherwise we'd destroy the only copy of the receipt.
-    // When pendingPromoted=true the backend already deleted the row.
-    if (
-      pendingInvoiceId &&
-      !pendingPromoted &&
-      !pendingAttachFailed &&
-      createdIds.length > 0
-    ) {
-      try {
-        await api.deletePendingInvoice(pendingInvoiceId)
-      } catch (err) {
-        console.warn("Failed to delete pending invoice:", err)
       }
     }
 
@@ -506,10 +501,11 @@ export function PurchaseWizardPage() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
-            Vérifier la facture
+            Vérifier le document
           </h2>
           <p className="text-sm text-muted-foreground">
-            Passe sur chaque article, ajuste les détails, puis crée le tout en un clic.
+            Confirme la nature du document et l'en-tête, passe sur chaque
+            article, puis crée le tout en un clic.
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setConfirmQuit(true)}>
@@ -519,7 +515,7 @@ export function PurchaseWizardPage() {
 
       {/* Stepper bar */}
       <div className="flex items-center gap-1 overflow-x-auto pb-1">
-        <StepDot active={currentStep === 0} done={currentStep > 0} label="Facture" onClick={() => setCurrentStep(0)} />
+        <StepDot active={currentStep === 0} done={currentStep > 0} label="Document" onClick={() => setCurrentStep(0)} />
         {drafts.map((d, i) => (
           <StepDot
             key={i}
@@ -542,13 +538,13 @@ export function PurchaseWizardPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">
-            {isHeader && "Informations facture"}
+            {isHeader && "Le document et son en-tête"}
             {currentDraft && `Article ${currentItemIdx + 1} sur ${drafts.length}`}
             {isRecap && "Récapitulatif"}
           </CardTitle>
           {isHeader && (
             <CardDescription>
-              Marchand, lieu, date et fichiers s'appliquent à tous les articles de cette facture.
+              Marchand, lieu, date et fichiers s'appliquent à tous les articles de ce document.
             </CardDescription>
           )}
         </CardHeader>
@@ -561,7 +557,9 @@ export function PurchaseWizardPage() {
               locations={locations}
               cards={cards}
               onQuickCreate={setQuickCreate}
-              pendingInvoiceName={pendingInvoiceName}
+              docKind={docKind}
+              onDocKindChange={changeDocKind}
+              docKindDetected={docKindDetected}
             />
           )}
 
