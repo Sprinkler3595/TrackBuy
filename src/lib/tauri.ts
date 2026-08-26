@@ -1008,6 +1008,7 @@ export interface VehicleEngagementSummary {
   current_amount: number | null
   currency: string
   billing_cycle: EngagementBillingCycle
+  cycle_interval: number
   status: EngagementStatus
   next_due_date: string | null
   contract_end_date: string | null

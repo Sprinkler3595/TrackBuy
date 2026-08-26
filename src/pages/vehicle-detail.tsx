@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Car, Edit, Trash2, FileText, Link2, Unlink, Plus, ShieldCheck, Wallet, Receipt } from "lucide-react"
+import { ArrowLeft, Car, Edit, Trash2, FileText, Link2, Unlink, Plus, ShieldCheck, Receipt } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -9,9 +9,10 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { formatPrice, formatDate } from "@/lib/utils"
-import { energyLabel, categoryLabel } from "@/lib/vehicle"
+import { energyLabel } from "@/lib/vehicle"
 import { EnergyIcon } from "@/pages/vehicles"
 import { VehicleExpenses } from "@/components/features/vehicle-expenses"
+import { VehicleOverview } from "@/components/features/vehicle-overview"
 import * as api from "@/lib/tauri"
 
 type Tab = "overview" | "contracts" | "expenses"
@@ -104,15 +105,6 @@ export function VehicleDetailPage() {
   // simple: we just total the current amounts of active linked engagements).
   const activeContracts = engagements.filter((e) => e.status === "active")
 
-  const detail = (label: string, value: React.ReactNode) => (
-    value ? (
-      <div className="space-y-0.5">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
-        <div className="text-sm font-medium">{value}</div>
-      </div>
-    ) : null
-  )
-
   // Charging by default for electric/hybrid, fuel otherwise — the most common
   // first expense for each drivetrain.
   const defaultExpenseCategory: api.VehicleExpenseCategory =
@@ -170,51 +162,10 @@ export function VehicleDetailPage() {
         ))}
       </div>
 
-      {tab === "overview" && (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-base">{fr ? "Identité" : "Identity"}</CardTitle></CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {detail(fr ? "Marque" : "Make", v.make)}
-              {detail(fr ? "Modèle" : "Model", v.model)}
-              {detail(fr ? "Genre" : "Category", categoryLabel(v.category, fr))}
-              {detail(fr ? "Motorisation" : "Energy", v.energy_type ? energyLabel(v.energy_type, fr) : null)}
-              {detail(fr ? "Plaque" : "Plate", v.plate)}
-              {detail(fr ? "Canton" : "Canton", v.canton)}
-              {detail("VIN", v.vin)}
-              {detail(fr ? "N° matricule" : "Registration no.", v.registration_number)}
-              {detail(fr ? "1re mise en circulation" : "First registration", v.first_registration ? formatDate(v.first_registration) : null)}
-              {detail(fr ? "Puissance" : "Power", v.power_kw ? `${v.power_kw} kW` : null)}
-              {detail(fr ? "Batterie" : "Battery", v.battery_kwh ? `${v.battery_kwh} kWh` : null)}
-              {detail(fr ? "Couleur" : "Color", v.color)}
-              {detail(fr ? "Km actuel" : "Odometer", v.odometer_km != null ? `${v.odometer_km.toLocaleString("fr-CH")} km` : null)}
-              {detail(fr ? "Date d'achat" : "Purchase date", v.purchase_date ? formatDate(v.purchase_date) : null)}
-              {detail(fr ? "Prix d'achat" : "Purchase price", v.purchase_price != null ? formatPrice(v.purchase_price) : null)}
-            </CardContent>
-          </Card>
-
-          {v.notes && (
-            <Card>
-              <CardHeader className="pb-3"><CardTitle className="text-base">{fr ? "Notes" : "Notes"}</CardTitle></CardHeader>
-              <CardContent><p className="whitespace-pre-wrap text-sm">{v.notes}</p></CardContent>
-            </Card>
-          )}
-
-          <Card className="border-dashed">
-            <CardContent className="flex items-center gap-3 py-4 text-sm text-muted-foreground">
-              <Wallet className="h-5 w-5 shrink-0" />
-              <span>
-                {fr
-                  ? "Suivez toutes vos dépenses (recharge kWh, carburant, pneus, entretien…) dans l'onglet Dépenses. Bientôt : taxe automobile et documents du véhicule."
-                  : "Track every expense (kWh charging, fuel, tires, maintenance…) in the Expenses tab. Coming soon: vehicle tax and documents."}
-              </span>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      {tab === "overview" && <VehicleOverview vehicle={v} engagements={engagements} />}
 
       {tab === "expenses" && (
-        <VehicleExpenses vehicleId={v.id} defaultCategory={defaultExpenseCategory} />
+        <VehicleExpenses vehicleId={v.id} defaultCategory={defaultExpenseCategory} onChanged={load} />
       )}
 
       {tab === "contracts" && (
