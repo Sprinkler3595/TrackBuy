@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, Layers, X } from "lucide-react"
+import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -126,8 +126,9 @@ export function EngagementsPage() {
   const [category, setCategory] = useState<CategoryGroup>("all")
   const [search, setSearch] = useState("")
   const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
-  // Creation entry point: a chooser routes to a guided assistant (housing for
-  // now) or falls back to the generic form for the other types.
+  // Creation happens only through a guided assistant — the chooser lists the
+  // three domains the app actually supports. The full form below is reachable
+  // from the pencil button only, to fix an existing position.
   const [showChooser, setShowChooser] = useState(false)
   const [showRentWizard, setShowRentWizard] = useState(false)
   const [showLeasingWizard, setShowLeasingWizard] = useState(false)
@@ -213,9 +214,11 @@ export function EngagementsPage() {
     setShowForm(true)
   }
 
+  // Edit-only: new engagements come from the guided assistants (rent, leasing,
+  // car insurance), never from this form.
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
-    if (!form.name.trim()) return
+    if (!editing || !form.name.trim()) return
     const amount = form.current_amount ? parseFloat(form.current_amount) : null
     if (form.current_amount && (Number.isNaN(amount as number) || (amount as number) < 0)) {
       toast("Montant invalide", "error")
@@ -230,56 +233,30 @@ export function EngagementsPage() {
       parking_kind: isParking ? (form.parking_kind || null) : null,
     }
     try {
-      if (editing) {
-        await api.updateEngagement({
-          ...editing,
-          name: form.name.trim(),
-          engagement_type: form.engagement_type,
-          parent_engagement_id: form.parent_engagement_id || null,
-          creditor_id: form.creditor_id || null,
-          payment_card_id: form.payment_card_id || null,
-          contract_reference: form.contract_reference || null,
-          contract_start_date: form.contract_start_date || null,
-          contract_end_date: form.contract_end_date || null,
-          notice_period_days: notice,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_due_date: form.next_due_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          payment_method: form.payment_method || null,
-          auto_pay: form.auto_pay,
-          status: form.status,
-          notes: form.notes || null,
-          clauses_json: form.clauses_json,
-          ...parkingFields,
-        })
-        toast(t("engagements.updated"), "success")
-      } else {
-        await api.createEngagement({
-          name: form.name.trim(),
-          engagement_type: form.engagement_type,
-          parent_engagement_id: form.parent_engagement_id || null,
-          creditor_id: form.creditor_id || null,
-          payment_card_id: form.payment_card_id || null,
-          contract_reference: form.contract_reference || null,
-          contract_start_date: form.contract_start_date || null,
-          contract_end_date: form.contract_end_date || null,
-          notice_period_days: notice,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_due_date: form.next_due_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          payment_method: form.payment_method || null,
-          auto_pay: form.auto_pay,
-          status: form.status,
-          notes: form.notes || null,
-          clauses_json: form.clauses_json,
-          ...parkingFields,
-        })
-        toast(t("engagements.created"), "success")
-      }
+      await api.updateEngagement({
+        ...editing,
+        name: form.name.trim(),
+        engagement_type: form.engagement_type,
+        parent_engagement_id: form.parent_engagement_id || null,
+        creditor_id: form.creditor_id || null,
+        payment_card_id: form.payment_card_id || null,
+        contract_reference: form.contract_reference || null,
+        contract_start_date: form.contract_start_date || null,
+        contract_end_date: form.contract_end_date || null,
+        notice_period_days: notice,
+        billing_cycle: form.billing_cycle,
+        cycle_interval: interval,
+        next_due_date: form.next_due_date || null,
+        current_amount: amount,
+        currency: form.currency,
+        payment_method: form.payment_method || null,
+        auto_pay: form.auto_pay,
+        status: form.status,
+        notes: form.notes || null,
+        clauses_json: form.clauses_json,
+        ...parkingFields,
+      })
+      toast(t("engagements.updated"), "success")
       resetForm()
       await load()
     } catch (e) {
@@ -467,7 +444,7 @@ export function EngagementsPage() {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        {(["all", "insurance", "housing", "vehicle", "utilities", "telecom", "taxes", "other"] as const).map((k) => (
+        {(["all", "housing", "vehicle", "insurance"] as const).map((k) => (
           <Button
             key={k}
             variant={category === k ? "default" : "outline"}
@@ -491,7 +468,7 @@ export function EngagementsPage() {
       {showForm && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">{editing ? t("engagements.edit") : t("engagements.new")}</CardTitle>
+            <CardTitle className="text-lg">{t("engagements.edit")}</CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -698,7 +675,7 @@ export function EngagementsPage() {
               </div>
 
               <div className="flex gap-2 sm:col-span-2 lg:col-span-3">
-                <Button type="submit">{editing ? t("common.save") : t("common.add")}</Button>
+                <Button type="submit">{t("common.save")}</Button>
                 <Button type="button" variant="outline" onClick={resetForm}>{t("common.cancel")}</Button>
               </div>
             </form>
@@ -812,18 +789,6 @@ export function EngagementsPage() {
                   <span className="block text-sm font-medium">{locale === "fr" ? "Assurance véhicule" : "Vehicle insurance"}</span>
                   <span className="block text-xs text-muted-foreground">
                     {locale === "fr" ? "Assistant guidé : RC/casco, franchises, options" : "Guided assistant: liability/casco, deductibles, options"}
-                  </span>
-                </span>
-              </button>
-              <button
-                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
-                onClick={() => { setShowChooser(false); resetForm(); setShowForm(true) }}
-              >
-                <span className="rounded-lg bg-muted p-2 text-muted-foreground"><Layers className="h-5 w-5" /></span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium">{locale === "fr" ? "Autre engagement" : "Other engagement"}</span>
-                  <span className="block text-xs text-muted-foreground">
-                    {locale === "fr" ? "Formulaire complet (assurance, télécom, impôts…)" : "Full form (insurance, telecom, taxes…)"}
                   </span>
                 </span>
               </button>
