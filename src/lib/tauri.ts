@@ -109,6 +109,7 @@ export interface Attachment {
   engagement_id: string | null
   engagement_charge_id: string | null
   engagement_revision_id: string | null
+  vehicle_expense_id: string | null
   income_id: string | null
   income_receipt_id: string | null
   reimbursement_id: string | null
@@ -509,6 +510,92 @@ export interface ExtractedReceipt {
 export const aiExtractReceipt = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedReceipt>("ai_extract_receipt", { ocrText, config })
 
+/// Structured fields extracted from a Swiss car-insurance policy/offer/contract
+/// (text layer or OCR). Feeds the car-insurance assistant's auto-fill. Every
+/// field is optional — the model returns null for anything it can't find.
+export interface ExtractedCarInsurance {
+  name: string | null
+  insurer_name: string | null
+  policy_number: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_plate: string | null
+  vehicle_vin: string | null
+  vehicle_registration_number: string | null
+  vehicle_category: VehicleCategory | null
+  coverage: CarInsuranceCoverage | null
+  premium: number | null
+  billing_cycle: EngagementBillingCycle | null
+  franchise_casco: number | null
+  franchise_partial: number | null
+  young_driver_franchise: number | null
+  bonus_pct: number | null
+  contract_start_date: string | null
+  contract_end_date: string | null
+  next_due_date: string | null
+  notice_period_days: number | null
+  payment_method: EngagementPaymentMethod | null
+  /// Whitelisted extra-coverage slugs (mirror of CAR_INSURANCE_OPTIONS).
+  options: string[]
+  /// Per-coverage premium breakdown (rc, collision, partial, extras,
+  /// passengers, taxes). null when the policy doesn't itemise premiums.
+  premium_breakdown: Record<string, number> | null
+}
+
+/// Extract a Swiss car-insurance policy's fields from its text (PDF text layer
+/// or OCR) so the assistant can pre-fill every step. Uses a strict JSON schema.
+export const aiExtractCarInsurance = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedCarInsurance>("ai_extract_car_insurance", { ocrText, config })
+
+/// Fields extracted from a Swiss car-leasing contract/offer (text or OCR).
+export interface ExtractedLeasing {
+  name: string | null
+  leasing_company: string | null
+  contract_reference: string | null
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  first_registration: string | null
+  monthly_payment: number | null
+  vehicle_price: number | null
+  down_payment: number | null
+  discount: number | null
+  residual_value: number | null
+  interest_rate_pct: number | null
+  duration_months: number | null
+  annual_mileage_km: number | null
+  excess_km_cost: number | null
+  contract_start_date: string | null
+  payment_method: EngagementPaymentMethod | null
+  currency: string | null
+}
+
+export const aiExtractLeasing = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedLeasing>("ai_extract_leasing", { ocrText, config })
+
+/// Vehicle identity extracted from a Swiss registration document (permis de
+/// circulation / Fahrzeugausweis).
+export interface ExtractedVehicle {
+  name: string | null
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  registration_number: string | null
+  category: VehicleCategory | null
+  energy_type: VehicleEnergyType | null
+  first_registration: string | null
+  power_kw: number | null
+  displacement_cc: number | null
+  weight_kg: number | null
+  color: string | null
+  canton: string | null
+}
+
+export const aiExtractVehicle = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedVehicle>("ai_extract_vehicle", { ocrText, config })
+
 /// Focused, schema-constrained extraction of just the payment due date —
 /// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
 /// date or null.
@@ -562,7 +649,7 @@ export type EngagementType =
   | "insurance_health" | "insurance_household" | "insurance_car"
   | "insurance_life" | "insurance_legal" | "insurance_other"
   | "rent" | "parking" | "leasing" | "mortgage"
-  | "electricity" | "gas" | "water" | "fuel" | "heating"
+  | "electricity" | "gas" | "water" | "fuel" | "vehicle_tax" | "heating"
   | "phone" | "internet" | "tv_radio"
   | "tax_federal" | "tax_cantonal" | "tax_communal" | "tax_other"
   | "fine" | "fee" | "membership" | "other"
@@ -875,6 +962,167 @@ export const addEngagementRevisionAttachment = (
     displayName,
     attachmentType,
   })
+
+// ============================================================================
+// Vehicles (the "espace véhicule" hub: groups leasing / insurance / tax /
+// expenses for one car)
+// ============================================================================
+
+export type VehicleEnergyType =
+  | "electric" | "gasoline" | "diesel" | "hybrid" | "phev" | "other"
+
+export type VehicleStatus = "active" | "sold" | "scrapped"
+
+export interface Vehicle {
+  id: string
+  name: string
+  make: string | null
+  model: string | null
+  plate: string | null
+  vin: string | null
+  registration_number: string | null
+  category: VehicleCategory | null
+  energy_type: VehicleEnergyType | null
+  first_registration: string | null
+  canton: string | null
+  color: string | null
+  power_kw: number | null
+  displacement_cc: number | null
+  weight_kg: number | null
+  battery_kwh: number | null
+  purchase_date: string | null
+  purchase_price: number | null
+  odometer_km: number | null
+  status: VehicleStatus
+  sold_on: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/// Lightweight view of an engagement attached (or attachable) to a vehicle.
+export interface VehicleEngagementSummary {
+  id: string
+  name: string
+  engagement_type: EngagementType
+  current_amount: number | null
+  currency: string
+  billing_cycle: EngagementBillingCycle
+  status: EngagementStatus
+  next_due_date: string | null
+  contract_end_date: string | null
+  vehicle_plate: string | null
+  vehicle_id: string | null
+}
+
+export const getVehicles = () => invoke<Vehicle[]>("get_vehicles")
+export const getVehicle = (id: string) => invoke<Vehicle>("get_vehicle", { id })
+export const createVehicle = (vehicle: {
+  name: string
+  make?: string | null
+  model?: string | null
+  plate?: string | null
+  vin?: string | null
+  registration_number?: string | null
+  category?: VehicleCategory | null
+  energy_type?: VehicleEnergyType | null
+  first_registration?: string | null
+  canton?: string | null
+  color?: string | null
+  power_kw?: number | null
+  displacement_cc?: number | null
+  weight_kg?: number | null
+  battery_kwh?: number | null
+  purchase_date?: string | null
+  purchase_price?: number | null
+  odometer_km?: number | null
+  notes?: string | null
+}) => invoke<Vehicle>("create_vehicle", { vehicle })
+export const updateVehicle = (vehicle: Vehicle) => invoke<void>("update_vehicle", { vehicle })
+export const deleteVehicle = (id: string) => invoke<void>("delete_vehicle", { id })
+export const getVehicleEngagements = (vehicleId: string) =>
+  invoke<VehicleEngagementSummary[]>("get_vehicle_engagements", { vehicleId })
+export const getLinkableVehicleEngagements = () =>
+  invoke<VehicleEngagementSummary[]>("get_linkable_vehicle_engagements")
+export const setEngagementVehicle = (engagementId: string, vehicleId: string | null) =>
+  invoke<void>("set_engagement_vehicle", { engagementId, vehicleId })
+
+// --- Vehicle expense ledger (charging, fuel, tires, maintenance…) ---
+
+export type VehicleExpenseCategory =
+  | "charging" | "fuel" | "tires" | "maintenance" | "repair" | "cleaning"
+  | "accessories" | "inspection" | "vignette" | "parking" | "fine" | "toll" | "tax" | "other"
+
+export interface VehicleExpense {
+  id: string
+  vehicle_id: string
+  expense_date: string
+  category: VehicleExpenseCategory
+  description: string | null
+  amount: number
+  currency: string
+  odometer_km: number | null
+  quantity: number | null
+  unit: string | null
+  unit_price: number | null
+  location: string | null
+  merchant: string | null
+  payment_card_id: string | null
+  next_due_km: number | null
+  next_due_date: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+  card_name?: string | null
+}
+
+export interface VehicleExpenseCategoryTotal {
+  category: VehicleExpenseCategory
+  total: number
+  count: number
+}
+
+export interface VehicleExpenseSummary {
+  total: number
+  total_year: number
+  count: number
+  by_category: VehicleExpenseCategoryTotal[]
+}
+
+export const getVehicleExpenses = (vehicleId: string) =>
+  invoke<VehicleExpense[]>("get_vehicle_expenses", { vehicleId })
+export const createVehicleExpense = (expense: {
+  vehicle_id: string
+  expense_date: string
+  category: VehicleExpenseCategory
+  amount: number
+  currency?: string | null
+  description?: string | null
+  odometer_km?: number | null
+  quantity?: number | null
+  unit?: string | null
+  unit_price?: number | null
+  location?: string | null
+  merchant?: string | null
+  payment_card_id?: string | null
+  next_due_km?: number | null
+  next_due_date?: string | null
+  notes?: string | null
+}) => invoke<VehicleExpense>("create_vehicle_expense", { expense })
+export const updateVehicleExpense = (expense: VehicleExpense) =>
+  invoke<void>("update_vehicle_expense", { expense })
+export const deleteVehicleExpense = (id: string) =>
+  invoke<void>("delete_vehicle_expense", { id })
+export const getVehicleExpenseSummary = (vehicleId: string) =>
+  invoke<VehicleExpenseSummary>("get_vehicle_expense_summary", { vehicleId })
+export const getVehicleExpenseAttachments = (expenseId: string) =>
+  invoke<Attachment[]>("get_vehicle_expense_attachments", { expenseId })
+export const addVehicleExpenseAttachment = (
+  expenseId: string,
+  sourcePath: string,
+  displayName?: string,
+  attachmentType?: string,
+) => invoke<Attachment>("add_vehicle_expense_attachment", { expenseId, sourcePath, displayName, attachmentType })
 
 // ============================================================================
 // Incomes (salaries, bonuses, allowances, dividends, …)

@@ -22,4 +22,5 @@ pub mod reminders;
 pub mod swiss_seed;
 pub mod taxes;
 pub mod this_month;
+pub mod vehicles;
 pub mod warranties;

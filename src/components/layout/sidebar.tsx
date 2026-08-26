@@ -17,6 +17,7 @@ import {
   Undo2,
   ScanLine,
   LineChart,
+  Car,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -35,6 +36,7 @@ const navSections: NavSection[] = [
       { to: "/ce-mois", icon: Home, labelKey: "nav.thisMonth" },
       { to: "/inbox", icon: Inbox, labelKey: "nav.inbox" },
       { to: "/engagements", icon: FileText, labelKey: "nav.engagements" },
+      { to: "/vehicules", icon: Car, labelKey: "nav.vehicles" },
       { to: "/banque", icon: Landmark, labelKey: "nav.bank" },
       { to: "/impots", icon: Receipt, labelKey: "nav.taxes" },
     ],

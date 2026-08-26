@@ -118,9 +118,18 @@ export function AttachmentViewer({ attachment, onClose, onExport }: AttachmentVi
               <div className="h-8 w-8 animate-spin rounded-full border-4 border-white/30 border-t-white" />
             </div>
           ) : error ? (
-            <div className="rounded-lg bg-white/5 p-6 text-center text-white/80 space-y-2">
+            <div className="rounded-lg bg-white/5 p-6 text-center text-white/80 space-y-3">
               <FileWarning className="h-8 w-8 mx-auto opacity-70" />
-              <p>Impossible d'ouvrir : {error}</p>
+              <p>Aperçu impossible : {error}</p>
+              <p className="text-sm text-white/60">
+                {/^.*too large.*$/i.test(error)
+                  ? "Le fichier est trop volumineux pour l'aperçu intégré. Exportez-le pour l'ouvrir dans votre lecteur habituel."
+                  : "Exportez le fichier pour l'ouvrir dans votre lecteur habituel."}
+              </p>
+              <Button onClick={() => onExport(attachment)}>
+                <Download className="h-4 w-4" />
+                Exporter
+              </Button>
             </div>
           ) : isImage && dataUrl ? (
             <img

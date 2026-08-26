@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus } from "lucide-react"
+import { Paperclip, Trash2, Download, Upload, FileText, Image, File, Receipt, Shield, ClipboardList, ImageIcon, Layers, Eye, Banknote, HandCoins, Wallet, ScrollText, Plus, CheckCircle2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -23,6 +23,7 @@ interface AttachmentsPanelProps {
   engagementChargeId?: string
   incomeId?: string
   reimbursementId?: string
+  vehicleExpenseId?: string
   itemDescription: string
   orderId?: string | null
   /// Optional richer context (merchant, purchase_date, invoice_number…) used
@@ -33,6 +34,7 @@ interface AttachmentsPanelProps {
 
 const ATTACHMENT_TYPES = [
   { slug: "invoice", label: "Ticket / Facture", Icon: Receipt },
+  { slug: "payment_confirmation", label: "Confirmation de paiement", Icon: CheckCircle2 },
   { slug: "warranty", label: "Garantie", Icon: Shield },
   { slug: "purchase_order", label: "Bon de commande", Icon: ClipboardList },
   { slug: "contract", label: "Contrat / police", Icon: ScrollText },
@@ -71,7 +73,7 @@ const ATTACHMENT_GROUPS = [
 
 function groupOf(slug: string): "contract" | "invoice" | "other" {
   if (slug === "contract") return "contract"
-  if (slug === "invoice" || slug === "qrbill") return "invoice"
+  if (slug === "invoice" || slug === "qrbill" || slug === "payment_confirmation") return "invoice"
   return "other"
 }
 
@@ -142,7 +144,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, reimbursementId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, reimbursementId, vehicleExpenseId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -162,6 +164,8 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
         setAttachments(await api.getIncomeAttachments(incomeId))
       } else if (reimbursementId) {
         setAttachments(await api.getReimbursementAttachments(reimbursementId))
+      } else if (vehicleExpenseId) {
+        setAttachments(await api.getVehicleExpenseAttachments(vehicleExpenseId))
       } else if (itemId) {
         setAttachments(await api.getAttachments(itemId))
       }
@@ -172,7 +176,7 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
     }
   }
 
-  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, reimbursementId])
+  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, reimbursementId, vehicleExpenseId])
 
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -235,6 +239,8 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
           await api.addIncomeAttachment(incomeId, filePath, harmonized, typeSlug)
         } else if (reimbursementId) {
           await api.addReimbursementAttachment(reimbursementId, filePath, harmonized, typeSlug)
+        } else if (vehicleExpenseId) {
+          await api.addVehicleExpenseAttachment(vehicleExpenseId, filePath, harmonized, typeSlug)
         } else if (itemId) {
           await api.addAttachment(itemId, filePath, harmonized, typeSlug, shareWithOrder)
         }

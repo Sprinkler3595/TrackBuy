@@ -15,7 +15,8 @@ use crate::util::path::{validate_read_source, validate_write_target};
 const ATTACHMENT_SELECT_COLUMNS: &str =
     "id, item_id, order_id, engagement_id, engagement_charge_id, engagement_revision_id,
      income_id, income_receipt_id, reimbursement_id,
-     original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at";
+     original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at,
+     vehicle_expense_id";
 
 /// Polymorphic target for `insert_polymorphic_attachment` — every CHECK-allowed
 /// parent on the attachments table maps to one variant. Add a new variant when
@@ -30,6 +31,7 @@ enum AttachmentTarget<'a> {
     Income(&'a str),
     IncomeReceipt(&'a str),
     Reimbursement(&'a str),
+    VehicleExpense(&'a str),
 }
 
 #[tauri::command]
@@ -76,6 +78,7 @@ fn row_to_attachment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Attachment> {
         size_bytes: row.get(13)?,
         attachment_type: row.get(14)?,
         created_at: row.get(15)?,
+        vehicle_expense_id: row.get(16)?,
     })
 }
 
@@ -124,28 +127,29 @@ fn insert_polymorphic_attachment(
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
 
-    let (item_id, order_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id): (
+    let (item_id, order_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id, veh_exp_id): (
         Option<&str>, Option<&str>, Option<&str>,
-        Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&str>,
+        Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&str>, Option<&str>,
     ) = match target {
-        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None),
-        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None),
-        AttachmentTarget::Engagement(id) => (None, None, Some(id), None, None, None, None, None),
-        AttachmentTarget::EngagementCharge(id) => (None, None, None, Some(id), None, None, None, None),
-        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, Some(id), None, None, None),
-        AttachmentTarget::Income(id) => (None, None, None, None, None, Some(id), None, None),
-        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, Some(id), None),
-        AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, Some(id)),
+        AttachmentTarget::Item(id) => (Some(id), None, None, None, None, None, None, None, None),
+        AttachmentTarget::Order(id) => (None, Some(id), None, None, None, None, None, None, None),
+        AttachmentTarget::Engagement(id) => (None, None, Some(id), None, None, None, None, None, None),
+        AttachmentTarget::EngagementCharge(id) => (None, None, None, Some(id), None, None, None, None, None),
+        AttachmentTarget::EngagementRevision(id) => (None, None, None, None, Some(id), None, None, None, None),
+        AttachmentTarget::Income(id) => (None, None, None, None, None, Some(id), None, None, None),
+        AttachmentTarget::IncomeReceipt(id) => (None, None, None, None, None, None, Some(id), None, None),
+        AttachmentTarget::Reimbursement(id) => (None, None, None, None, None, None, None, Some(id), None),
+        AttachmentTarget::VehicleExpense(id) => (None, None, None, None, None, None, None, None, Some(id)),
     };
 
     if let Err(e) = conn.execute(
         "INSERT INTO attachments (id, item_id, order_id, engagement_id,
          engagement_charge_id, engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
-         original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+         vehicle_expense_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         rusqlite::params![
             id, item_id, order_id, eng_id, charge_id, rev_id, income_id, receipt_id, reimb_id,
-            original_name, display, mime_type, file_path, size_bytes, att_type
+            veh_exp_id, original_name, display, mime_type, file_path, size_bytes, att_type
         ],
     ) {
         let _ = storage::delete_attachment_file(&abs_file_path.to_string_lossy());
@@ -257,6 +261,44 @@ pub fn add_engagement_revision_attachment(
         display_name,
         attachment_type,
     )
+}
+
+#[tauri::command]
+pub fn add_vehicle_expense_attachment(
+    state: State<'_, AppState>,
+    expense_id: String,
+    source_path: String,
+    display_name: Option<String>,
+    attachment_type: Option<String>,
+) -> Result<Attachment, String> {
+    insert_polymorphic_attachment(
+        &state,
+        AttachmentTarget::VehicleExpense(&expense_id),
+        &source_path,
+        display_name,
+        attachment_type,
+    )
+}
+
+#[tauri::command]
+pub fn get_vehicle_expense_attachments(
+    state: State<'_, AppState>,
+    expense_id: String,
+) -> Result<Vec<Attachment>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let sql = format!(
+        "SELECT {} FROM attachments WHERE vehicle_expense_id = ?1 ORDER BY created_at",
+        ATTACHMENT_SELECT_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let attachments = stmt
+        .query_map([&expense_id], row_to_attachment)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(attachments)
 }
 
 #[tauri::command]
@@ -589,8 +631,9 @@ pub fn export_attachment(
 }
 
 /// Decrypt an attachment and return it as a base64 data URL suitable for
-/// inline rendering (e.g. `<img src="...">`). Capped at 10 MB decrypted to
-/// avoid blowing up the JS heap on accidental huge files.
+/// inline rendering (e.g. `<img src="...">`). Capped at 50 MB decrypted to
+/// avoid blowing up the JS heap on accidental huge files — enough for
+/// multi-page contracts/policies; larger files fall back to "Exporter".
 #[tauri::command]
 pub fn get_attachment_data(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let vault_dir_guard = state
@@ -622,8 +665,8 @@ pub fn get_attachment_data(state: State<'_, AppState>, id: String) -> Result<Str
     let key_bytes: &[u8; 32] = key;
 
     let data = storage::read_attachment(safe_source.to_str().unwrap_or(""), key_bytes)?;
-    if data.len() > 10 * 1024 * 1024 {
-        return Err("Attachment too large for inline display (max 10 MB)".to_string());
+    if data.len() > 50 * 1024 * 1024 {
+        return Err("Attachment too large for inline display (max 50 MB)".to_string());
     }
 
     Ok(format!(

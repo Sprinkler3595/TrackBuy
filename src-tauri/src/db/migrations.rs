@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 25;
+pub const CURRENT_SCHEMA_VERSION: i64 = 27;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -105,6 +105,12 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 25 {
         migrate_v25(conn)?;
+    }
+    if current_version < 26 {
+        migrate_v26(conn)?;
+    }
+    if current_version < 27 {
+        migrate_v27(conn)?;
     }
 
     Ok(())
@@ -1521,6 +1527,162 @@ fn migrate_v25(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (25);
         "
     ).map_err(|e| format!("Migration v25 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Vehicle hub (v26): a dedicated `vehicles` entity that groups everything about
+/// one car — its leasing, insurance and tax engagements, plus (from v27) an
+/// expense ledger. Engagements gain a nullable `vehicle_id` so leasing /
+/// insurance_car / vehicle-tax positions can be attached to a vehicle.
+///
+/// The generic `vehicle_*` columns already on `engagements` (make/model/plate…)
+/// stay: they describe the insured/leased vehicle on that specific contract,
+/// while the `vehicles` row is the canonical, shared identity.
+fn migrate_v26(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE vehicles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            make TEXT,
+            model TEXT,
+            plate TEXT,
+            vin TEXT,
+            registration_number TEXT,
+            category TEXT,                 -- passenger_car | motorcycle | light_commercial | motorhome | other
+            energy_type TEXT,              -- electric | gasoline | diesel | hybrid | phev | other
+            first_registration TEXT,
+            canton TEXT,                   -- for the (manually entered) vehicle tax
+            color TEXT,
+            power_kw REAL,
+            displacement_cc INTEGER,
+            weight_kg INTEGER,
+            battery_kwh REAL,              -- usable battery capacity (EV/PHEV)
+            purchase_date TEXT,
+            purchase_price REAL,
+            odometer_km INTEGER,           -- last known odometer reading
+            status TEXT NOT NULL DEFAULT 'active',  -- active | sold | scrapped
+            sold_on TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX idx_vehicles_status ON vehicles(status);
+        CREATE INDEX idx_vehicles_plate ON vehicles(plate);
+
+        ALTER TABLE engagements ADD COLUMN vehicle_id TEXT
+            REFERENCES vehicles(id) ON DELETE SET NULL;
+        CREATE INDEX idx_engagements_vehicle ON engagements(vehicle_id);
+
+        INSERT INTO schema_version (version) VALUES (26);
+        "
+    ).map_err(|e| format!("Migration v26 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Vehicle expense ledger (v27): every cost tied to a vehicle — charging (kWh),
+/// fuel (litres), tires, maintenance, repairs, cleaning, inspection, vignette,
+/// parking, fines, toll, misc — with optional quantity/unit price, odometer
+/// reading, location and a "next due" reminder (km or date, e.g. next tire
+/// change / service). Receipts attach via the new `attachments.vehicle_expense_id`
+/// parent, so the `attachments` table is rebuilt once more (SQLite can't ALTER
+/// a CHECK constraint in place — same `attachments_new` swap as v3/v5/v9/v11).
+fn migrate_v27(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE vehicle_expenses (
+            id TEXT PRIMARY KEY,
+            vehicle_id TEXT NOT NULL,
+            expense_date TEXT NOT NULL,
+            category TEXT NOT NULL,        -- charging | fuel | tires | maintenance | repair | cleaning | accessories | inspection | vignette | parking | fine | toll | tax | other
+            description TEXT,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'CHF',
+            odometer_km INTEGER,
+            quantity REAL,                 -- kWh (charging) or litres (fuel)
+            unit TEXT,                     -- 'kWh' | 'l'
+            unit_price REAL,               -- price per kWh / litre
+            location TEXT,                 -- station / charge point / garage
+            merchant TEXT,
+            payment_card_id TEXT,
+            next_due_km INTEGER,           -- e.g. next service / tire change at km
+            next_due_date TEXT,            -- e.g. next inspection date
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE,
+            FOREIGN KEY (payment_card_id) REFERENCES payment_cards(id)
+        );
+        CREATE INDEX idx_vehicle_expenses_vehicle ON vehicle_expenses(vehicle_id);
+        CREATE INDEX idx_vehicle_expenses_date ON vehicle_expenses(expense_date);
+        CREATE INDEX idx_vehicle_expenses_category ON vehicle_expenses(category);
+
+        -- Widen attachments: add vehicle_expense_id (receipts on an expense).
+        -- Mirrors the current (v18) shape — no subscription_id — plus the new FK.
+        CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            item_id TEXT,
+            order_id TEXT,
+            engagement_id TEXT,
+            engagement_charge_id TEXT,
+            engagement_revision_id TEXT,
+            income_id TEXT,
+            income_receipt_id TEXT,
+            reimbursement_id TEXT,
+            vehicle_expense_id TEXT,
+            original_name TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'other',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (item_id IS NOT NULL OR order_id IS NOT NULL
+                   OR engagement_id IS NOT NULL OR engagement_charge_id IS NOT NULL
+                   OR engagement_revision_id IS NOT NULL
+                   OR income_id IS NOT NULL OR income_receipt_id IS NOT NULL
+                   OR reimbursement_id IS NOT NULL OR vehicle_expense_id IS NOT NULL),
+            FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_charge_id) REFERENCES engagement_charges(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_revision_id) REFERENCES engagement_revisions(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE,
+            FOREIGN KEY (income_receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE,
+            FOREIGN KEY (reimbursement_id) REFERENCES pending_reimbursements(id) ON DELETE CASCADE,
+            FOREIGN KEY (vehicle_expense_id) REFERENCES vehicle_expenses(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO attachments_new
+            (id, item_id, order_id, engagement_id,
+             engagement_charge_id, engagement_revision_id,
+             income_id, income_receipt_id, reimbursement_id, vehicle_expense_id,
+             original_name, display_name, mime_type, file_path, size_bytes,
+             attachment_type, created_at)
+        SELECT id, item_id, order_id, engagement_id,
+               engagement_charge_id, engagement_revision_id,
+               income_id, income_receipt_id, reimbursement_id, NULL,
+               original_name, display_name, mime_type, file_path, size_bytes,
+               attachment_type, created_at
+        FROM attachments;
+
+        DROP TABLE attachments;
+        ALTER TABLE attachments_new RENAME TO attachments;
+
+        CREATE INDEX idx_attachments_item ON attachments(item_id);
+        CREATE INDEX idx_attachments_order ON attachments(order_id);
+        CREATE INDEX idx_attachments_engagement ON attachments(engagement_id);
+        CREATE INDEX idx_attachments_charge ON attachments(engagement_charge_id);
+        CREATE INDEX idx_attachments_revision ON attachments(engagement_revision_id);
+        CREATE INDEX idx_attachments_income ON attachments(income_id);
+        CREATE INDEX idx_attachments_income_receipt ON attachments(income_receipt_id);
+        CREATE INDEX idx_attachments_reimbursement ON attachments(reimbursement_id);
+        CREATE INDEX idx_attachments_vehicle_expense ON attachments(vehicle_expense_id);
+
+        INSERT INTO schema_version (version) VALUES (27);
+        "
+    ).map_err(|e| format!("Migration v27 failed: {}", e))?;
 
     Ok(())
 }

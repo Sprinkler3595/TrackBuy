@@ -235,6 +235,7 @@ export type TranslationKeys = {
 
   // Engagements (recurring real-world charges)
   "nav.engagements": string
+  "nav.vehicles": string
   "nav.creditors": string
   "engagements.title": string
   "engagements.subtitle": string
@@ -321,6 +322,7 @@ export type TranslationKeys = {
   "engagements.type.gas": string
   "engagements.type.water": string
   "engagements.type.fuel": string
+  "engagements.type.vehicle_tax": string
   "engagements.type.heating": string
   "engagements.type.phone": string
   "engagements.type.internet": string
@@ -704,6 +706,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.renewal": "Renouvellement",
 
     "nav.engagements": "Engagements",
+    "nav.vehicles": "Véhicules",
     "nav.creditors": "Créanciers",
     "engagements.title": "Engagements",
     "engagements.subtitle": "Charges récurrentes : assurances, loyer, fluides, télécom, fiscalité",
@@ -789,6 +792,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "engagements.type.gas": "Gaz",
     "engagements.type.water": "Eau",
     "engagements.type.fuel": "Carburant / recharge",
+    "engagements.type.vehicle_tax": "Taxe automobile",
     "engagements.type.heating": "Chauffage",
     "engagements.type.phone": "Téléphone",
     "engagements.type.internet": "Internet",
@@ -1165,6 +1169,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "reminders.renewal": "Renewal",
 
     "nav.engagements": "Engagements",
+    "nav.vehicles": "Vehicles",
     "nav.creditors": "Creditors",
     "engagements.title": "Engagements",
     "engagements.subtitle": "Recurring real-world charges: insurance, rent, utilities, telecom, taxes",
@@ -1250,6 +1255,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "engagements.type.gas": "Gas",
     "engagements.type.water": "Water",
     "engagements.type.fuel": "Fuel / charging",
+    "engagements.type.vehicle_tax": "Vehicle tax",
     "engagements.type.heating": "Heating",
     "engagements.type.phone": "Phone",
     "engagements.type.internet": "Internet",

@@ -298,7 +298,7 @@ pub fn delete_pending_invoice(state: State<'_, AppState>, id: String) -> Result<
 
 /// Decrypts the stored file and returns it as a base64 data URL, suitable for
 /// re-injecting into the scan page (preview + OCR pipeline) without writing
-/// the plaintext to disk. Capped at 10 MB to avoid blowing up the JS heap.
+/// the plaintext to disk. Capped at 50 MB to avoid blowing up the JS heap.
 #[tauri::command]
 pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let vault_dir_guard = state
@@ -332,8 +332,8 @@ pub fn get_pending_invoice_data(state: State<'_, AppState>, id: String) -> Resul
     let key_bytes: &[u8; 32] = key;
 
     let data = storage::read_attachment(safe_source.to_str().unwrap_or(""), key_bytes)?;
-    if data.len() > 10 * 1024 * 1024 {
-        return Err("Pending invoice too large for inline display (max 10 MB)".to_string());
+    if data.len() > 50 * 1024 * 1024 {
+        return Err("Pending invoice too large for inline display (max 50 MB)".to_string());
     }
 
     Ok(format!(
@@ -451,7 +451,7 @@ pub(crate) fn promote_pending_invoice(
         "SELECT id, item_id, order_id, engagement_id, engagement_charge_id,
                 engagement_revision_id, income_id, income_receipt_id, reimbursement_id,
                 original_name, display_name, mime_type, file_path,
-                size_bytes, attachment_type, created_at
+                size_bytes, attachment_type, created_at, vehicle_expense_id
          FROM attachments WHERE id = ?1",
         [&new_id],
         |row| Ok(Attachment {
@@ -471,6 +471,7 @@ pub(crate) fn promote_pending_invoice(
             size_bytes: row.get(13)?,
             attachment_type: row.get(14)?,
             created_at: row.get(15)?,
+            vehicle_expense_id: row.get(16)?,
         }),
     ).map_err(|e| e.to_string())
 }

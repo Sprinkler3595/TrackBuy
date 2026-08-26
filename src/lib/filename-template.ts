@@ -15,6 +15,7 @@ import * as api from "@/lib/tauri"
  *  the `attachment_type` strings used by the backend. */
 export type AttachmentTypeKey =
   | "invoice"
+  | "payment_confirmation"
   | "purchase_order"
   | "photo"
   | "ticket_code"
@@ -30,6 +31,7 @@ export type AttachmentTypeKey =
 
 export const ATTACHMENT_TYPE_KEYS: AttachmentTypeKey[] = [
   "invoice",
+  "payment_confirmation",
   "purchase_order",
   "photo",
   "ticket_code",
@@ -46,6 +48,7 @@ export const ATTACHMENT_TYPE_KEYS: AttachmentTypeKey[] = [
 
 export const ATTACHMENT_TYPE_LABELS: Record<AttachmentTypeKey, string> = {
   invoice:        "Facture",
+  payment_confirmation: "Confirmation de paiement",
   purchase_order: "Bon de commande",
   photo:          "Photo",
   ticket_code:    "Code billet",
@@ -64,6 +67,7 @@ export const ATTACHMENT_TYPE_LABELS: Record<AttachmentTypeKey, string> = {
  *  missing for that type. Tweak here to evolve defaults across releases. */
 export const DEFAULT_TEMPLATES: Record<AttachmentTypeKey, string> = {
   invoice:        "{date|YYYY-MM-DD}_{merchant|slug}_facture_{invoice_number|or:'sans-num'}.{ext}",
+  payment_confirmation: "{date|YYYY-MM-DD}_{merchant|slug}_confirmation-paiement.{ext}",
   purchase_order: "{date|YYYY-MM-DD}_{merchant|slug}_bon-commande.{ext}",
   photo:          "{date|YYYY-MM-DD}_{description|slug|truncate:40}_photo.{ext}",
   ticket_code:    "{event_datetime|YYYY-MM-DD}_{event_location|slug|or:'evenement'}_billet.{ext}",

@@ -108,6 +108,7 @@ pub struct Attachment {
     pub income_id: Option<String>,
     pub income_receipt_id: Option<String>,
     pub reimbursement_id: Option<String>,
+    pub vehicle_expense_id: Option<String>,
     pub original_name: String,
     pub display_name: String,
     pub mime_type: String,
