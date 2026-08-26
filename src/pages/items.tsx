@@ -1,13 +1,12 @@
 import { useEffect, useState, useCallback } from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { Plus, Search, Trash2, Edit, Filter, Download, Upload, ChevronDown, ShoppingBag, ChevronRight, Layers, X, FileText, Camera, ClipboardList, Paperclip, Landmark } from "lucide-react"
+import { Plus, Search, Trash2, Edit, Filter, Download, ChevronDown, ShoppingBag, ChevronRight, Layers, X, FileText, Camera, ClipboardList, Paperclip, Landmark } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
-import { CsvImport } from "@/components/features/csv-import"
 import { ItemThumbnail, invalidateThumbnail } from "@/components/features/item-thumbnail"
 import { QuickCreateDialog, type QuickCreateEntity } from "@/components/features/quick-create-dialog"
 import { DocSlot } from "@/components/features/doc-slot"
@@ -80,7 +79,6 @@ export function ItemsPage() {
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showExportMenu, setShowExportMenu] = useState(false)
-  const [showImport, setShowImport] = useState(false)
   const [pendingAttachment, setPendingAttachment] = useState<{ path: string; name: string } | null>(null)
   const [pendingWarranty, setPendingWarranty] = useState<{ months: number } | null>(null)
   const [showDetails, setShowDetails] = useState(false)
@@ -617,10 +615,6 @@ export function ItemsPage() {
               </div>
             )}
           </div>
-          <Button variant="outline" onClick={() => setShowImport(true)}>
-            <Upload className="h-4 w-4" />
-            Importer
-          </Button>
           <Button variant="outline" onClick={() => setShowInventory(true)}>
             <ClipboardList className="h-4 w-4" />
             Inventaire assurance
@@ -653,14 +647,6 @@ export function ItemsPage() {
             </Button>
           </div>
         </div>
-      )}
-
-      {/* CSV Import */}
-      {showImport && (
-        <CsvImport
-          onComplete={() => { setShowImport(false); loadItems() }}
-          onCancel={() => setShowImport(false)}
-        />
       )}
 
       {/* Filters */}

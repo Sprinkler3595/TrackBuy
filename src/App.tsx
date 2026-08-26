@@ -8,32 +8,20 @@ import { ItemsPage } from "@/pages/items"
 import { ItemDetailPage } from "@/pages/item-detail"
 import { TicketsPage } from "@/pages/tickets"
 import { WarrantiesPage } from "@/pages/warranties"
-import { MerchantsPage } from "@/pages/merchants"
-import { LocationsPage } from "@/pages/locations"
-import { CardsPage } from "@/pages/cards"
 import { VaultsPage } from "@/pages/vaults"
 import { EngagementsPage } from "@/pages/engagements"
 import { EngagementDetailPage } from "@/pages/engagement-detail"
 import { VehiclesPage } from "@/pages/vehicles"
 import { VehicleDetailPage } from "@/pages/vehicle-detail"
-import { CreditorsPage } from "@/pages/creditors"
 import { IncomesPage } from "@/pages/incomes"
 import { IncomeDetailPage } from "@/pages/income-detail"
 import { ReimbursementsPage } from "@/pages/reimbursements"
-import { FinancesPage } from "@/pages/finances"
-import { BankStatementsPage } from "@/pages/bank-statements"
-import { BankStatementReviewPage } from "@/pages/bank-statement-review"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
-import { HouseholdSettings } from "@/pages/settings-household"
-import { MerchantRulesSettings } from "@/pages/settings-merchant-rules"
-import { ScanPage } from "@/pages/scan"
-import { ScanReviewPage } from "@/pages/scan-review"
+import { PurchaseWizardPage } from "@/pages/purchase-wizard"
 import { CeMoisPage } from "@/pages/ce-mois"
 import { InboxPage } from "@/pages/inbox"
-import { TaxesPage } from "@/pages/taxes"
-import { BanquePage } from "@/pages/banque"
 import { useWarrantyNotifications } from "@/hooks/use-notifications"
 import { useEngagementNotifications } from "@/hooks/use-engagement-notifications"
 import { useCancellationNotifications } from "@/hooks/use-cancellation-notifications"
@@ -192,14 +180,9 @@ function AppContent() {
         <Route element={<AppLayout onLock={handleLock} vaultName={vaultName} />}>
           <Route path="/ce-mois" element={<ErrorBoundary><CeMoisPage /></ErrorBoundary>} />
           <Route path="/inbox" element={<ErrorBoundary><InboxPage /></ErrorBoundary>} />
-          <Route path="/impots" element={<ErrorBoundary><TaxesPage /></ErrorBoundary>} />
-          <Route path="/banque" element={<ErrorBoundary><BanquePage /></ErrorBoundary>} />
-          <Route path="/bank-statements/:id/review" element={<ErrorBoundary><BankStatementReviewPage /></ErrorBoundary>} />
-          {/* Dashboard fusionné dans Finances (3.2) — redirection pour les liens existants. */}
-          <Route path="/dashboard" element={<Navigate to="/finances" replace />} />
-          <Route path="/scan" element={<ErrorBoundary><ScanPage /></ErrorBoundary>} />
-          <Route path="/scan-review" element={<ErrorBoundary><ScanReviewPage /></ErrorBoundary>} />
           <Route path="/items" element={<ErrorBoundary><ItemsPage /></ErrorBoundary>} />
+          {/* Assistant de création d'un achat (scan du document → lignes → création). */}
+          <Route path="/items/nouveau" element={<ErrorBoundary><PurchaseWizardPage /></ErrorBoundary>} />
           <Route path="/items/:id" element={<ErrorBoundary><ItemDetailPage /></ErrorBoundary>} />
           <Route path="/tickets" element={<ErrorBoundary><TicketsPage /></ErrorBoundary>} />
           <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
@@ -209,23 +192,12 @@ function AppContent() {
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
           <Route path="/incomes/:id" element={<ErrorBoundary><IncomeDetailPage /></ErrorBoundary>} />
           <Route path="/reimbursements" element={<ErrorBoundary><ReimbursementsPage /></ErrorBoundary>} />
-          <Route path="/finances" element={<ErrorBoundary><FinancesPage /></ErrorBoundary>} />
-          <Route path="/bank-statements" element={<ErrorBoundary><BankStatementsPage /></ErrorBoundary>} />
           <Route path="/warranties" element={<ErrorBoundary><WarrantiesPage /></ErrorBoundary>} />
           <Route path="/settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>}>
             <Route index element={<ErrorBoundary><GeneralSettings /></ErrorBoundary>} />
-            <Route path="menage" element={<ErrorBoundary><HouseholdSettings /></ErrorBoundary>} />
-            <Route path="marchands" element={<ErrorBoundary><MerchantsPage /></ErrorBoundary>} />
-            <Route path="creanciers" element={<ErrorBoundary><CreditorsPage /></ErrorBoundary>} />
-            <Route path="lieux" element={<ErrorBoundary><LocationsPage /></ErrorBoundary>} />
-            <Route path="cartes" element={<ErrorBoundary><CardsPage /></ErrorBoundary>} />
             <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
-            <Route path="regles-marchand" element={<ErrorBoundary><MerchantRulesSettings /></ErrorBoundary>} />
           </Route>
-          <Route path="/merchants" element={<Navigate to="/settings/marchands" replace />} />
-          <Route path="/locations" element={<Navigate to="/settings/lieux" replace />} />
-          <Route path="/cards" element={<Navigate to="/settings/cartes" replace />} />
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
           <Route path="*" element={<Navigate to="/ce-mois" replace />} />
         </Route>

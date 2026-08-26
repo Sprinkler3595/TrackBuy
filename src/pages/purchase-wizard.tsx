@@ -68,7 +68,7 @@ const blankShared = (): SharedState => ({
   discounts: [],
 })
 
-export function ScanReviewPage() {
+export function PurchaseWizardPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
 
