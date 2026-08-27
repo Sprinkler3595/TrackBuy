@@ -683,55 +683,161 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
     let mut stmt = conn
         .prepare(
             "SELECT r.received_on, i.name, i.income_type, r.period_label,
-                    r.amount, r.currency, r.gross_amount, r.social_charges_amount,
-                    r.pension_amount, r.tax_at_source_amount, r.other_deductions_amount,
-                    r.bonus_amount, r.notes
+                    r.period_start, r.period_end,
+                    COALESCE(r.fiscal_year, CAST(substr(r.received_on, 1, 4) AS INTEGER)),
+                    r.amount, r.currency, r.gross_amount,
+                    r.base_salary_amount, r.thirteenth_amount, r.overtime_amount,
+                    r.overtime_hours, r.holiday_pay_amount, r.bonus_amount,
+                    r.benefits_in_kind_amount, r.company_car_private_amount,
+                    r.family_allowance_amount, r.other_gross_amount,
+                    r.social_charges_amount, r.ac_amount, r.ac_solidarity_amount,
+                    r.pension_amount, r.laa_nonoccupational_amount, r.ijm_amount,
+                    r.tax_at_source_amount, r.other_deductions_amount,
+                    r.expense_reimbursement_amount, r.expense_lump_sum_amount,
+                    r.notes
              FROM income_receipts r
              JOIN incomes i ON r.income_id = i.id
              ORDER BY r.received_on DESC",
         )
         .map_err(|e| e.to_string())?;
 
+    // Les colonnes suivent l'ordre d'un bulletin : identité, période, brut
+    // décomposé, retenues détaillées, frais remboursés.
     let mut csv = String::from(
-        "Reçu le,Revenu,Type,Période,Net,Devise,Brut,AVS/AI,2e pilier,Impôt source,\
-         Autres retenues,Bonus,Notes\n",
+        "Reçu le,Revenu,Type,Période,Début période,Fin période,Année fiscale,\
+         Net,Devise,Brut,Salaire de base,13e salaire,Heures sup.,Heures sup. (h),\
+         Indemnité vacances,Bonus,Prestations en nature,Part privée véhicule,\
+         Allocations familiales,Autre brut,AVS/AI/APG,AC,Solidarité AC,2e pilier,\
+         LAA AANP,IJM,Impôt source,Autres retenues,Frais effectifs,Frais forfaitaires,\
+         Notes\n",
     );
 
     let rows = stmt
         .query_map([], |row| {
-            Ok((
+            // 30 colonnes : au-delà de 12, les tuples Rust deviennent
+            // illisibles, donc on formate la ligne directement ici.
+            let text = |i: usize| -> rusqlite::Result<String> {
+                Ok(row.get::<_, Option<String>>(i)?.unwrap_or_default())
+            };
+            let num = |i: usize| -> rusqlite::Result<String> {
+                Ok(row
+                    .get::<_, Option<f64>>(i)?
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_default())
+            };
+            Ok(format!(
+                "{},{},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},\
+                 {},{},{},{},{},{},{},{},{},{},{}\n",
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                escape_csv(&row.get::<_, String>(1)?),
                 row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, Option<f64>>(6)?,
-                row.get::<_, Option<f64>>(7)?,
-                row.get::<_, Option<f64>>(8)?,
-                row.get::<_, Option<f64>>(9)?,
-                row.get::<_, Option<f64>>(10)?,
-                row.get::<_, Option<f64>>(11)?,
-                row.get::<_, Option<String>>(12)?,
+                escape_csv(&text(3)?),
+                text(4)?,
+                text(5)?,
+                row.get::<_, Option<i64>>(6)?.map(|y| y.to_string()).unwrap_or_default(),
+                row.get::<_, f64>(7)?,
+                row.get::<_, String>(8)?,
+                num(9)?,
+                num(10)?,
+                num(11)?,
+                num(12)?,
+                num(13)?,
+                num(14)?,
+                num(15)?,
+                num(16)?,
+                num(17)?,
+                num(18)?,
+                num(19)?,
+                num(20)?,
+                num(21)?,
+                num(22)?,
+                num(23)?,
+                num(24)?,
+                num(25)?,
+                num(26)?,
+                num(27)?,
+                num(28)?,
+                num(29)?,
+                escape_csv(&text(30)?),
             ))
         })
         .map_err(|e| e.to_string())?;
 
-    let fmt_opt = |v: Option<f64>| v.map(|x| format!("{:.2}", x)).unwrap_or_default();
+    for row in rows {
+        csv.push_str(&row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(csv)
+}
+
+/// Certificats de salaire, une ligne par employeur et par année, colonne par
+/// rubrique. C'est le document que l'administration fiscale reçoit : pouvoir
+/// l'exporter tel quel évite de recopier les chiffres à la main dans la
+/// déclaration.
+#[tauri::command]
+pub fn export_salary_certificates_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.fiscal_year, i.name, e.employer_name,
+                    c.r1_salary, c.r2_1_benefits_in_kind, c.r2_2_company_car,
+                    c.r2_3_other_benefits, c.r3_irregular, c.r4_capital_shares,
+                    c.r5_board_fees, c.r6_other_benefits, c.r7_other_payments,
+                    c.r8_gross_total, c.r9_social_contributions,
+                    c.r10_1_lpp_ordinary, c.r10_2_lpp_buyback, c.r11_net_salary,
+                    c.r12_tax_at_source, c.r13_1_effective_expenses,
+                    c.r13_2_lump_sum_expenses, c.r14_other_disclosures,
+                    c.box_f_employer_transport, c.box_g_free_meals,
+                    c.origin, c.r15_remarks
+             FROM annual_salary_certificates c
+             JOIN incomes i ON i.id = c.income_id
+             LEFT JOIN employment_contracts e ON e.income_id = c.income_id
+             ORDER BY c.fiscal_year DESC, i.name",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut csv = String::from(
+        "Année,Revenu,Employeur,1 Salaire brut,2.1 Prestations en nature,\
+         2.2 Part privée véhicule,2.3 Autres accessoires,3 Non périodiques,\
+         4 Participations,5 Indemnités administration,6 Autres prestations,\
+         7 Prestations en capital,8 Salaire brut total,9 AVS/AI/APG/AC/AANP,\
+         10.1 LPP ordinaire,10.2 LPP rachats,11 Salaire net,12 Impôt source,\
+         13.1 Frais effectifs,13.2 Frais forfaitaires,14 Autres,Case F,Case G,\
+         Origine,15 Observations\n",
+    );
+
+    let rows = stmt
+        .query_map([], |row| {
+            let num = |i: usize| -> rusqlite::Result<String> {
+                Ok(row
+                    .get::<_, Option<f64>>(i)?
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_default())
+            };
+            let yes_no = |i: usize| -> rusqlite::Result<&'static str> {
+                Ok(if row.get::<_, i64>(i)? != 0 { "oui" } else { "non" })
+            };
+            Ok(format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},\
+                 {},{},{},{}\n",
+                row.get::<_, i64>(0)?,
+                escape_csv(&row.get::<_, String>(1)?),
+                escape_csv(&row.get::<_, Option<String>>(2)?.unwrap_or_default()),
+                num(3)?, num(4)?, num(5)?, num(6)?, num(7)?, num(8)?, num(9)?,
+                num(10)?, num(11)?, num(12)?, num(13)?, num(14)?, num(15)?,
+                num(16)?, num(17)?, num(18)?, num(19)?, num(20)?,
+                yes_no(21)?, yes_no(22)?,
+                row.get::<_, String>(23)?,
+                escape_csv(&row.get::<_, Option<String>>(24)?.unwrap_or_default()),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     for row in rows {
-        let (received_on, name, typ, period, amount, currency, gross, social, pension,
-             tax_source, other, bonus, notes) = row.map_err(|e| e.to_string())?;
-        csv.push_str(&format!(
-            "{},{},{},{},{:.2},{},{},{},{},{},{},{},{}\n",
-            received_on,
-            escape_csv(&name), typ,
-            escape_csv(&period.unwrap_or_default()),
-            amount, currency,
-            fmt_opt(gross), fmt_opt(social), fmt_opt(pension),
-            fmt_opt(tax_source), fmt_opt(other), fmt_opt(bonus),
-            escape_csv(&notes.unwrap_or_default()),
-        ));
+        csv.push_str(&row.map_err(|e| e.to_string())?);
     }
 
     Ok(csv)

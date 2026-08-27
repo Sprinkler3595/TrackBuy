@@ -21,7 +21,7 @@
 pub mod checks;
 pub mod params;
 
-pub use checks::{check_payslip, Finding, Severity};
+pub use checks::{check_payslip, Finding};
 pub use params::{known_years, params_for_year, PayrollParams};
 
 use serde::{Deserialize, Serialize};

@@ -37,7 +37,7 @@ fn row_to_income(row: &rusqlite::Row<'_>) -> rusqlite::Result<Income> {
 
 /// Colonnes d'un versement, dans l'ordre attendu par `row_to_receipt`.
 /// Regroupées comme sur un bulletin : identité, brut, retenues, frais.
-const RECEIPT_SELECT_COLUMNS: &str = "id, income_id, received_on, amount, currency,
+pub(crate) const RECEIPT_SELECT_COLUMNS: &str = "id, income_id, received_on, amount, currency,
      period_label, period_start, period_end, fiscal_year,
      gross_amount, base_salary_amount, thirteenth_amount, overtime_amount,
      overtime_hours, holiday_pay_amount, bonus_amount, benefits_in_kind_amount,
@@ -48,7 +48,7 @@ const RECEIPT_SELECT_COLUMNS: &str = "id, income_id, received_on, amount, curren
      expense_reimbursement_amount, expense_lump_sum_amount,
      notes, created_at";
 
-fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeReceipt> {
+pub(crate) fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeReceipt> {
     Ok(IncomeReceipt {
         id: row.get(0)?,
         income_id: row.get(1)?,

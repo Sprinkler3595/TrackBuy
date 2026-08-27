@@ -74,6 +74,9 @@ pub struct PayrollParams {
     pub meals_subsidized_day: f64,
     /// Plafond des frais de déplacement domicile-travail pour l'IFD.
     pub commute_cap_ifd: f64,
+    /// Tarif kilométrique admis pour le véhicule privé, quand les transports
+    /// publics ne sont pas exigibles. Reste soumis au plafond ci-dessus.
+    pub commute_private_car_per_km: f64,
 
     // --- Part privée d'un véhicule d'entreprise (directive AFC dès 2022) ---
     /// En % du prix d'achat HT, PAR MOIS. Couvre aussi le trajet domicile-travail.
@@ -127,6 +130,7 @@ const YEARS: &[PayrollParams] = &[
         meals_full_day: 15.0,
         meals_subsidized_day: 7.5,
         commute_cap_ifd: 3_200.0,
+        commute_private_car_per_km: 0.7,
         private_car_monthly_pct: 0.9,
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
@@ -161,6 +165,7 @@ const YEARS: &[PayrollParams] = &[
         meals_full_day: 15.0,
         meals_subsidized_day: 7.5,
         commute_cap_ifd: 3_200.0,
+        commute_private_car_per_km: 0.7,
         private_car_monthly_pct: 0.9,
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
@@ -195,6 +200,7 @@ const YEARS: &[PayrollParams] = &[
         meals_full_day: 15.0,
         meals_subsidized_day: 7.5,
         commute_cap_ifd: 3_000.0,
+        commute_private_car_per_km: 0.7,
         private_car_monthly_pct: 0.9,
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
@@ -231,6 +237,7 @@ const YEARS: &[PayrollParams] = &[
         meals_full_day: 15.0,
         meals_subsidized_day: 7.5,
         commute_cap_ifd: 3_000.0,
+        commute_private_car_per_km: 0.7,
         private_car_monthly_pct: 0.9,
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 200.0,
