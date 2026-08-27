@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod db;
+mod payroll;
 mod storage;
 mod util;
 
