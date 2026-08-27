@@ -20,7 +20,7 @@ type FormState = Record<string, string | boolean>
 const FIELDS_NUMBER = [
   "activity_rate_pct", "annual_gross_agreed", "salary_periods_per_year",
   "weekly_hours", "lpp_employee_share_pct", "laa_nonoccupational_pct",
-  "ijm_employee_pct", "company_car_purchase_price", "commute_km_per_day",
+  "ijm_employee_pct", "tax_at_source_rate_pct", "company_car_purchase_price", "commute_km_per_day",
   "commute_public_transport_cost_year",
 ] as const
 
@@ -45,6 +45,7 @@ const emptyForm = (incomeId: string): FormState => ({
   ijm_employee_pct: "",
   tax_at_source: false,
   tax_at_source_scale: "",
+  tax_at_source_rate_pct: "",
   company_car_purchase_price: "",
   subsidized_canteen: false,
   commute_km_per_day: "",
@@ -77,6 +78,7 @@ function toForm(c: api.EmploymentContract): FormState {
     ijm_employee_pct: str(c.ijm_employee_pct),
     tax_at_source: c.tax_at_source,
     tax_at_source_scale: str(c.tax_at_source_scale),
+    tax_at_source_rate_pct: str(c.tax_at_source_rate_pct),
     company_car_purchase_price: str(c.company_car_purchase_price),
     subsidized_canteen: c.subsidized_canteen,
     commute_km_per_day: str(c.commute_km_per_day),
@@ -121,6 +123,7 @@ function toContract(f: FormState): api.EmploymentContract {
     ijm_employee_pct: num("ijm_employee_pct"),
     tax_at_source: flag("tax_at_source"),
     tax_at_source_scale: text("tax_at_source_scale"),
+    tax_at_source_rate_pct: num("tax_at_source_rate_pct"),
     company_car_purchase_price: num("company_car_purchase_price"),
     subsidized_canteen: flag("subsidized_canteen"),
     commute_km_per_day: num("commute_km_per_day"),
@@ -516,13 +519,29 @@ export function EmploymentContractForm({
             hint="Décoché : taxation ordinaire, vous remplissez une déclaration."
           />
           {form.tax_at_source === true && (
-            <Field label="Barème" hint="A, B, C, H… tel qu'indiqué sur votre bulletin.">
-              <Input
-                value={str("tax_at_source_scale")}
-                onChange={(e) => set("tax_at_source_scale", e.target.value)}
-                placeholder="A0N"
-              />
-            </Field>
+            <>
+              <Field label="Barème" hint="A, B, C, H… tel qu'indiqué sur votre bulletin.">
+                <Input
+                  value={str("tax_at_source_scale")}
+                  onChange={(e) => set("tax_at_source_scale", e.target.value)}
+                  placeholder="A0N"
+                />
+              </Field>
+              <Field
+                label="Taux effectif (%)"
+                hint="Lu sur votre fiche de salaire. Sert tant que le barème de votre canton n'est pas importé dans Paramètres → Barèmes."
+              >
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={str("tax_at_source_rate_pct")}
+                  onChange={(e) => set("tax_at_source_rate_pct", e.target.value)}
+                  placeholder="0.00"
+                />
+              </Field>
+            </>
           )}
           <Field label="Notes" className="space-y-2 sm:col-span-2">
             <textarea

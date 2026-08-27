@@ -728,6 +728,9 @@ pub struct EmploymentContract {
     pub ijm_employee_pct: Option<f64>,
     pub tax_at_source: bool,
     pub tax_at_source_scale: Option<String>,
+    /// Taux effectif d'impôt à la source, lu sur la fiche de salaire.
+    /// Repli utilisé tant qu'aucun barème cantonal n'est importé.
+    pub tax_at_source_rate_pct: Option<f64>,
     /// Prix d'achat HT du véhicule d'entreprise, pour la part privée.
     pub company_car_purchase_price: Option<f64>,
     pub subsidized_canteen: bool,

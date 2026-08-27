@@ -12,6 +12,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { EmploymentContractForm } from "@/components/features/employment-contract-form"
+import { GrossToNetPanel } from "@/components/features/gross-to-net-panel"
 import { PayslipForm } from "@/components/features/payslip-form"
 import {
   emptyPayslipForm,
@@ -416,16 +417,22 @@ export function IncomeDetailPage() {
       )}
 
       {tab === "contract" && (
-        <EmploymentContractForm
-          incomeId={i.id}
-          defaultEmployerName={i.source_name}
-          onSaved={(c) => {
-            setContract(c)
-            // Les taux du contrat changent les montants attendus : les
-            // contrôles déjà calculés sont périmés.
-            setChecks({})
-          }}
-        />
+        <div className="space-y-6">
+          {/* En tête d'onglet : c'est la question que l'utilisateur se pose en
+              arrivant ici — « combien me restera-t-il ? » — et les taux qui y
+              répondent sont juste en dessous. */}
+          <GrossToNetPanel income={i} contract={contract} onAmountUpdated={load} />
+          <EmploymentContractForm
+            incomeId={i.id}
+            defaultEmployerName={i.source_name}
+            onSaved={(c) => {
+              setContract(c)
+              // Les taux du contrat changent les montants attendus : les
+              // contrôles déjà calculés sont périmés.
+              setChecks({})
+            }}
+          />
+        </div>
       )}
 
       {tab === "receipts" && (

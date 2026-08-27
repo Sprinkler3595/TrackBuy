@@ -1325,6 +1325,9 @@ export interface EmploymentContract {
   ijm_employee_pct: number | null
   tax_at_source: boolean
   tax_at_source_scale: string | null
+  /// Taux effectif lu sur la fiche de salaire, utilisé tant qu'aucun
+  /// barème cantonal n'est importé.
+  tax_at_source_rate_pct: number | null
   /// Prix d'achat HT : la part privée vaut 0.9 %/mois de ce montant.
   company_car_purchase_price: number | null
   subsidized_canteen: boolean
@@ -1413,6 +1416,117 @@ export interface PayrollParams {
   family_allowance_min_child: number
   family_allowance_min_training: number
   known_years: number[]
+  /// Champs que l'utilisateur a redéfinis pour cette année dans
+  /// Paramètres → Barèmes. Le reste vient des valeurs livrées.
+  overridden_fields: string[]
+  /// Années pour lesquelles une saisie existe — elles s'ajoutent au
+  /// sélecteur, sinon une année créée à la main serait invisible.
+  edited_years: number[]
+}
+
+/// Valeurs surchargeables d'une année. `null` = « garder la valeur livrée ».
+export type PayrollOverrideInput = Partial<
+  Record<
+    | "avs_ai_apg_employee_pct" | "avs_ai_apg_employer_pct"
+    | "ac_employee_pct" | "ac_ceiling" | "ac_solidarity_employee_pct"
+    | "laa_max_insured" | "laa_nonoccupational_min_weekly_hours"
+    | "lpp_entry_threshold" | "lpp_coordination_deduction"
+    | "lpp_avs_upper_limit" | "lpp_min_coordinated"
+    | "pillar3a_with_lpp" | "pillar3a_without_lpp_pct" | "pillar3a_without_lpp_cap"
+    | "pro_lump_sum_pct" | "pro_lump_sum_min" | "pro_lump_sum_max"
+    | "meals_full_year" | "meals_subsidized_year" | "meals_full_day" | "meals_subsidized_day"
+    | "commute_cap_ifd" | "commute_private_car_per_km"
+    | "private_car_monthly_pct" | "private_car_monthly_min"
+    | "family_allowance_min_child" | "family_allowance_min_training",
+    number | null
+  >
+> & {
+  lpp_credit_brackets?: Array<[number, number, number]> | null
+  note?: string | null
+}
+
+/// Termes de l'emploi tels que le moteur de paie les attend.
+export interface EmploymentTerms {
+  birth_date?: string | null
+  activity_rate_pct?: number | null
+  weekly_hours?: number | null
+  annual_gross_agreed?: number | null
+  salary_periods_per_year?: number | null
+  hourly_paid?: boolean
+  lpp_employee_share_pct?: number | null
+  laa_nonoccupational_pct?: number | null
+  ijm_employee_pct?: number | null
+  tax_at_source?: boolean
+  company_car_purchase_price?: number | null
+  subsidized_canteen?: boolean
+  thirteenth_salary?: boolean
+}
+
+/// Une période de paie projetée. `null` sur une retenue = taux inconnu, donc
+/// RIEN n'a été retenu et le net est surévalué d'autant. À ne pas confondre
+/// avec `0`, qui veut dire « rien n'est dû ».
+export interface ProjectedPeriod {
+  index: number
+  gross: number
+  avs_subject_gross: number
+  avs_ai_apg: number
+  ac: number
+  ac_solidarity: number
+  laa_nonoccupational: number | null
+  ijm: number | null
+  lpp_employee: number | null
+  tax_at_source: number | null
+  total_deductions: number
+  net: number
+}
+
+export interface NetProjection {
+  periods: ProjectedPeriod[]
+  periods_per_year: number
+  annual_gross: number
+  annual_net: number
+  /// Tant que ce n'est pas vide, le net est un MAJORANT.
+  uncomputable: string[]
+  /// Vrai quand le plafond annuel de l'AC est franchi en cours d'année.
+  varies_across_year: boolean
+}
+
+/// D'où vient le montant d'impôt à la source affiché.
+export type TaxSource = "tariff" | "manual_rate" | "not_subject" | "unavailable"
+
+export interface NetFromGrossRequest {
+  year: number
+  gross_per_period: number
+  family_allowance?: number | null
+  terms: EmploymentTerms
+  work_canton?: string | null
+  tax_at_source_scale?: string | null
+  tax_at_source_rate_pct?: number | null
+  income_id?: string | null
+}
+
+export interface NetFromGrossResponse {
+  projection: NetProjection
+  params: PayrollParams
+  overridden_fields: string[]
+  tax_source: TaxSource
+  tax_tariff_code: string | null
+  tax_annual_model: boolean
+  /// Net d'une période type — le montant à enregistrer pour le revenu.
+  net_per_period: number
+}
+
+/// Un barème cantonal d'impôt à la source importé par l'utilisateur.
+export interface TariffImport {
+  id: string
+  canton: string
+  fiscal_year: number
+  source_file: string
+  file_created_on: string | null
+  row_count: number
+  imported_at: string
+  /// FR, GE, TI, VD, VS taxent le revenu annualisé, pas le mois.
+  annual_model: boolean
 }
 
 export type FindingSeverity = "ok" | "info" | "warn" | "error"
@@ -1599,6 +1713,34 @@ export const deleteIncomeReceipt = (id: string) =>
 /// Barèmes légaux de l'année. Le front ne code aucun taux : il les lit ici.
 export const getPayrollParams = (year: number) =>
   invoke<PayrollParams>("get_payroll_params", { year })
+
+/// Enregistre les corrections de barème d'une année. L'envoi est un
+/// remplacement complet : un champ omis redevient la valeur livrée.
+export const upsertPayrollOverrides = (year: number, values: PayrollOverrideInput) =>
+  invoke<PayrollParams>("upsert_payroll_overrides", { year, values })
+
+/// Rend une année à ses valeurs livrées.
+export const resetPayrollOverrides = (year: number) =>
+  invoke<PayrollParams>("reset_payroll_overrides", { year })
+
+/// Recopie une année sur une autre, corrections comprises — le geste du
+/// 1er janvier.
+export const duplicatePayrollYear = (fromYear: number, toYear: number) =>
+  invoke<PayrollParams>("duplicate_payroll_year", { fromYear, toYear })
+
+/// Projette une année de paie à partir d'un brut par période.
+export const computeNetFromGross = (req: NetFromGrossRequest) =>
+  invoke<NetFromGrossResponse>("compute_net_from_gross", { req })
+
+export const listTaxAtSourceImports = () =>
+  invoke<TariffImport[]>("list_tax_at_source_imports")
+
+/// Importe un fichier de barèmes cantonal (TXT ou ZIP officiel).
+export const importTaxAtSourceTariff = (canton: string, fiscalYear: number, filePath: string) =>
+  invoke<TariffImport>("import_tax_at_source_tariff", { canton, fiscalYear, filePath })
+
+export const deleteTaxAtSourceImport = (canton: string, fiscalYear: number) =>
+  invoke<void>("delete_tax_at_source_import", { canton, fiscalYear })
 
 export const getEmploymentContract = (incomeId: string) =>
   invoke<EmploymentContract | null>("get_employment_contract", { incomeId })

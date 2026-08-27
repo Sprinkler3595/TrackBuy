@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 28;
+pub const CURRENT_SCHEMA_VERSION: i64 = 29;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -114,6 +114,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 28 {
         migrate_v28(conn)?;
+    }
+    if current_version < 29 {
+        migrate_v29(conn)?;
     }
 
     Ok(())
@@ -1853,6 +1856,127 @@ fn migrate_v28(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v29 — le brut devient saisissable, et les barèmes deviennent modifiables.
+///
+/// Trois ajouts, tous purement additifs (pas de reconstruction, pas de
+/// backfill) :
+///
+/// 1. `payroll_param_overrides` — une ligne par année, une colonne NULLABLE
+///    par valeur de `PayrollParams`. `NULL` signifie « garder la valeur
+///    livrée avec l'application ». Ce choix, plutôt qu'une copie complète du
+///    barème, donne la provenance valeur par valeur : l'écran Barèmes peut
+///    dire quels chiffres l'utilisateur a changés, et « Réinitialiser » se
+///    contente de remettre `NULL`.
+///
+/// 2. `tax_at_source_tariffs` / `tax_at_source_imports` — les barèmes
+///    cantonaux d'impôt à la source. L'AFC ne les publie qu'en fichiers
+///    réservés aux employeurs et aux éditeurs de logiciels : ils ne peuvent
+///    donc pas être livrés avec l'application, l'utilisateur les importe.
+///    Tant qu'aucun tarif n'est importé, l'impôt est annoncé comme non
+///    calculable — jamais estimé au doigt mouillé.
+///
+/// 3. `employment_contracts.tax_at_source_rate_pct` — le repli : le taux
+///    effectif lu sur la fiche de salaire, utilisable sans aucun import.
+fn migrate_v29(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE payroll_param_overrides (
+            year INTEGER PRIMARY KEY,
+
+            -- AVS / AI / APG (LAVS)
+            avs_ai_apg_employee_pct REAL,
+            avs_ai_apg_employer_pct REAL,
+
+            -- Assurance-chômage (LACI)
+            ac_employee_pct REAL,
+            ac_ceiling REAL,
+            ac_solidarity_employee_pct REAL,
+
+            -- LAA
+            laa_max_insured REAL,
+            laa_nonoccupational_min_weekly_hours REAL,
+
+            -- LPP / OPP2
+            lpp_entry_threshold REAL,
+            lpp_coordination_deduction REAL,
+            lpp_avs_upper_limit REAL,
+            lpp_min_coordinated REAL,
+            -- JSON [[age_min, age_max, taux_total_pct], ...] : la réforme LPP
+            -- remplacerait les 4 paliers par 2 taux, d'où le format libre.
+            lpp_credit_brackets TEXT,
+
+            -- Pilier 3a (OPP3)
+            pillar3a_with_lpp REAL,
+            pillar3a_without_lpp_pct REAL,
+            pillar3a_without_lpp_cap REAL,
+
+            -- Frais professionnels (art. 26 LIFD)
+            pro_lump_sum_pct REAL,
+            pro_lump_sum_min REAL,
+            pro_lump_sum_max REAL,
+            meals_full_year REAL,
+            meals_subsidized_year REAL,
+            meals_full_day REAL,
+            meals_subsidized_day REAL,
+            commute_cap_ifd REAL,
+            commute_private_car_per_km REAL,
+
+            -- Part privée d'un véhicule d'entreprise
+            private_car_monthly_pct REAL,
+            private_car_monthly_min REAL,
+
+            -- Allocations familiales (LAFam)
+            family_allowance_min_child REAL,
+            family_allowance_min_training REAL,
+
+            -- Pourquoi l'utilisateur a changé ces valeurs (circulaire, CCT...).
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Barèmes d'impôt à la source, tels que livrés par les cantons.
+        -- Une ligne = une tranche : l'impôt dû pour un revenu compris entre
+        -- income_from et income_from + income_step.
+        CREATE TABLE tax_at_source_tariffs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canton TEXT NOT NULL,
+            tariff_code TEXT NOT NULL,          -- A0N, B2Y, C1N...
+            valid_from TEXT NOT NULL,           -- AAAA-MM-JJ
+            children INTEGER NOT NULL,
+            income_from REAL NOT NULL,
+            income_step REAL NOT NULL,
+            tax_amount REAL,                    -- montant d'impôt de la tranche
+            rate_pct REAL,                      -- certains cantons livrent un taux
+            UNIQUE (canton, tariff_code, valid_from, children, income_from)
+        );
+        CREATE INDEX idx_qst_lookup ON tax_at_source_tariffs
+            (canton, tariff_code, children, valid_from, income_from);
+
+        -- Trace des imports : sans elle, impossible de dire à l'utilisateur
+        -- quels cantons et quelles années il a déjà chargés.
+        CREATE TABLE tax_at_source_imports (
+            id TEXT PRIMARY KEY,
+            canton TEXT NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            source_file TEXT NOT NULL,
+            file_created_on TEXT,               -- date portée par l'en-tête du fichier
+            row_count INTEGER NOT NULL,
+            imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (canton, fiscal_year)
+        );
+
+        -- Repli quand aucun tarif n'est importé : le taux effectif que
+        -- l'utilisateur lit sur sa fiche de salaire.
+        ALTER TABLE employment_contracts ADD COLUMN tax_at_source_rate_pct REAL;
+
+        INSERT INTO schema_version (version) VALUES (29);
+        "
+    ).map_err(|e| format!("Migration v29 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2152,5 +2276,123 @@ mod tests {
             )
             .unwrap();
         assert!(member.is_none(), "le revenu survit, le lien est dénoué");
+    }
+
+    /// État d'un coffre existant juste avant la v29.
+    fn conn_at_v28() -> Connection {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+        conn
+    }
+
+    /// La v29 est purement additive : un revenu, son contrat et ses bulletins
+    /// saisis avant la migration doivent traverser intacts, et le contrat
+    /// gagner une colonne de taux d'impôt à la source vide.
+    #[test]
+    fn v29_is_additive_and_keeps_existing_rows() {
+        let conn = conn_at_v28();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status, current_amount)
+             VALUES ('inc1', 'Salaire ACME', 'salary', 'monthly', 'CHF', 'active', 7180.58)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, employer_name, lpp_employee_share_pct)
+             VALUES ('c1', 'inc1', 'ACME SA', 3.5)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v29(&conn).unwrap();
+
+        let (amount, lpp, rate): (f64, f64, Option<f64>) = conn
+            .query_row(
+                "SELECT i.current_amount, c.lpp_employee_share_pct, c.tax_at_source_rate_pct
+                 FROM incomes i JOIN employment_contracts c ON c.income_id = i.id
+                 WHERE i.id = 'inc1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 7180.58, "le net déjà enregistré ne bouge pas");
+        assert_eq!(lpp, 3.5);
+        assert!(rate.is_none(), "la nouvelle colonne naît vide");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 29);
+    }
+
+    /// Une surcharge de barème est une ligne par année, dont chaque colonne
+    /// peut rester NULL — c'est ce NULL qui signifie « garder la valeur
+    /// livrée », et il doit donc être accepté partout.
+    #[test]
+    fn v29_param_override_accepts_partial_rows() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2026, 150000.0)",
+            [],
+        )
+        .unwrap();
+
+        let (ceiling, avs): (f64, Option<f64>) = conn
+            .query_row(
+                "SELECT ac_ceiling, avs_ai_apg_employee_pct FROM payroll_param_overrides WHERE year = 2026",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ceiling, 150_000.0);
+        assert!(avs.is_none(), "les valeurs non touchées restent NULL");
+
+        // Une seule ligne par année : la surcharge se met à jour, elle ne
+        // s'empile pas.
+        let dup = conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2026, 1.0)",
+            [],
+        );
+        assert!(dup.is_err(), "year est la clé primaire");
+    }
+
+    /// Le même barème ne peut pas être importé deux fois pour un canton et
+    /// une année : sinon un double import doublerait chaque tranche.
+    #[test]
+    fn v29_tax_at_source_tariffs_are_unique_per_bracket() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO tax_at_source_tariffs
+                (canton, tariff_code, valid_from, children, income_from, income_step, tax_amount)
+             VALUES ('VD', 'A0N', '2026-01-01', 0, 6000.0, 100.0, 540.0)",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO tax_at_source_tariffs
+                (canton, tariff_code, valid_from, children, income_from, income_step, tax_amount)
+             VALUES ('VD', 'A0N', '2026-01-01', 0, 6000.0, 100.0, 999.0)",
+            [],
+        );
+        assert!(dup.is_err(), "une tranche ne peut pas exister en double");
+
+        conn.execute(
+            "INSERT INTO tax_at_source_imports (id, canton, fiscal_year, source_file, row_count)
+             VALUES ('imp1', 'VD', 2026, 'tar26vd.txt', 1)",
+            [],
+        )
+        .unwrap();
+        let dup_import = conn.execute(
+            "INSERT INTO tax_at_source_imports (id, canton, fiscal_year, source_file, row_count)
+             VALUES ('imp2', 'VD', 2026, 'tar26vd.txt', 1)",
+            [],
+        );
+        assert!(dup_import.is_err(), "un canton-année ne s'importe qu'une fois");
     }
 }

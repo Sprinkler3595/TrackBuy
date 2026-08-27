@@ -20,9 +20,10 @@
 
 pub mod checks;
 pub mod params;
+pub mod tax_at_source;
 
 pub use checks::{check_payslip, Finding};
-pub use params::{known_years, params_for_year, PayrollParams};
+pub use params::{known_years, params_for_year, LppCreditBracket, PayrollParams};
 
 use serde::{Deserialize, Serialize};
 
@@ -324,6 +325,188 @@ pub fn expected_deductions(
         lpp_minimum_annual_credit: minimum_annual_credit,
         lpp_employee,
         lpp_employee_legal_cap,
+    }
+}
+
+// ===========================================================================
+// Du brut au net
+// ===========================================================================
+
+/// Une période de paie projetée.
+///
+/// Les `Option` gardent la distinction qui traverse tout le module : `None` =
+/// taux contractuel inconnu, donc RIEN n'a été retenu et le net est
+/// surévalué d'autant ; `Some(0.0)` = le poste existe mais rien n'est dû.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectedPeriod {
+    /// 1 pour la première paie de l'année civile.
+    pub index: i32,
+    /// Brut total de la période, allocations comprises.
+    pub gross: f64,
+    /// Assiette des cotisations (le brut moins les allocations familiales).
+    pub avs_subject_gross: f64,
+    pub avs_ai_apg: f64,
+    pub ac: f64,
+    pub ac_solidarity: f64,
+    pub laa_nonoccupational: Option<f64>,
+    pub ijm: Option<f64>,
+    pub lpp_employee: Option<f64>,
+    pub tax_at_source: Option<f64>,
+    /// Somme des seuls postes calculables.
+    pub total_deductions: f64,
+    pub net: f64,
+}
+
+/// Année de paie projetée à partir d'un brut par période.
+#[derive(Debug, Clone, Serialize)]
+pub struct NetProjection {
+    pub periods: Vec<ProjectedPeriod>,
+    pub periods_per_year: i32,
+    pub annual_gross: f64,
+    pub annual_net: f64,
+    /// Postes qu'aucun taux connu ne permet de chiffrer. Tant que cette liste
+    /// n'est pas vide, le net projeté est un MAJORANT et l'interface doit le
+    /// présenter comme tel plutôt que comme un montant.
+    pub uncomputable: Vec<&'static str>,
+    /// Vrai quand toutes les périodes ne se valent pas — typiquement un haut
+    /// salaire qui franchit le plafond annuel de l'assurance-chômage en cours
+    /// d'année. L'interface doit alors montrer l'année, pas seulement le mois.
+    pub varies_across_year: bool,
+}
+
+impl NetProjection {
+    /// Net de la première paie de l'année : c'est ce qu'on enregistre comme
+    /// montant du revenu, et ce que l'utilisateur reconnaît sur son décompte.
+    pub fn representative_net(&self) -> f64 {
+        self.periods.first().map(|p| p.net).unwrap_or(0.0)
+    }
+}
+
+/// Projette une année de paie à partir d'un brut par période.
+///
+/// Le calcul boucle période par période au lieu de multiplier par douze, et
+/// ce n'est pas un détail : le plafond de l'assurance-chômage et le maximum
+/// assuré LAA sont ANNUELS. À 20 000 par mois, les cotisations AC s'arrêtent
+/// en cours d'année, et une simple multiplication surestimerait les retenues
+/// de plusieurs milliers de francs. Chaque tour réinjecte le cumul dans
+/// `YtdContext`, dont `expected_deductions` sait déjà tirer les conséquences.
+///
+/// Le taux d'activité n'intervient PAS ici : le brut fourni est celui
+/// effectivement versé, donc déjà proratisé. Il est conservé au contrat pour
+/// le contrôle des bulletins. L'appliquer une seconde fois diviserait le
+/// salaire deux fois.
+///
+/// `family_allowance` est versée avec le salaire mais échappe aux
+/// cotisations (art. 6 RAVS) : elle grossit le brut et le net sans peser
+/// sur l'assiette AVS.
+///
+/// `tax_at_source` reçoit la base déterminante de la période et rend l'impôt
+/// retenu, ou `None` si aucun barème n'est disponible. Passer une fermeture
+/// plutôt qu'une table garde ce module pur : c'est la couche `commands` qui
+/// sait où sont rangés les tarifs cantonaux.
+pub fn project_net(
+    gross_per_period: f64,
+    family_allowance: Option<f64>,
+    terms: &EmploymentTerms,
+    p: &PayrollParams,
+    fiscal_year: i32,
+    tax_at_source: &dyn Fn(f64) -> Option<f64>,
+) -> NetProjection {
+    let periods = terms.salary_periods_per_year.unwrap_or(12).clamp(1, 53);
+    // Une allocation à zéro n'est pas une allocation : la laisser à `None`
+    // évite d'afficher une ligne vide sur le récapitulatif.
+    let family_allowance = family_allowance.filter(|v| *v > 0.0);
+
+    // Le salaire coordonné LPP se calcule sur l'année. On l'ancre sur le brut
+    // qu'on est en train de projeter, et non sur `annual_gross_agreed` : la
+    // question posée est « si mon brut devient X, quel est mon net ? », donc
+    // un montant convenu périmé fausserait la réponse.
+    let mut terms = terms.clone();
+    terms.annual_gross_agreed = Some(gross_per_period * periods as f64);
+    terms.salary_periods_per_year = Some(periods);
+
+    let mut projected = Vec::with_capacity(periods as usize);
+    let mut avs_cumulative = 0.0_f64;
+
+    for index in 1..=periods {
+        let input = PayslipInput {
+            fiscal_year,
+            net_paid: 0.0,
+            base_salary: Some(gross_per_period),
+            family_allowance,
+            ..Default::default()
+        };
+        let ytd = YtdContext {
+            avs_gross_before: avs_cumulative,
+            periods_per_year: periods as f64,
+        };
+        let e = expected_deductions(&input, &terms, &ytd, p);
+
+        let gross = total_gross(&input);
+
+        // Pas d'imposition à la source : le poste existe et vaut zéro, ce qui
+        // n'est pas la même chose qu'un barème introuvable.
+        let tax = if terms.tax_at_source {
+            tax_at_source(gross)
+        } else {
+            Some(0.0)
+        };
+
+        let total_deductions = e.avs_ai_apg
+            + e.ac
+            + e.ac_solidarity
+            + e.laa_nonoccupational.unwrap_or(0.0)
+            + e.ijm.unwrap_or(0.0)
+            + e.lpp_employee.unwrap_or(0.0)
+            + tax.unwrap_or(0.0);
+
+        projected.push(ProjectedPeriod {
+            index,
+            gross,
+            avs_subject_gross: e.avs_subject_gross,
+            avs_ai_apg: e.avs_ai_apg,
+            ac: e.ac,
+            ac_solidarity: e.ac_solidarity,
+            laa_nonoccupational: e.laa_nonoccupational,
+            ijm: e.ijm,
+            lpp_employee: e.lpp_employee,
+            tax_at_source: tax,
+            total_deductions,
+            net: gross - total_deductions,
+        });
+
+        avs_cumulative += e.avs_subject_gross;
+    }
+
+    let mut uncomputable = Vec::new();
+    if let Some(first) = projected.first() {
+        if first.lpp_employee.is_none() {
+            uncomputable.push("lpp");
+        }
+        if first.laa_nonoccupational.is_none() {
+            uncomputable.push("laa_nonoccupational");
+        }
+        if first.ijm.is_none() {
+            uncomputable.push("ijm");
+        }
+        if first.tax_at_source.is_none() {
+            uncomputable.push("tax_at_source");
+        }
+    }
+
+    let annual_gross = projected.iter().map(|p| p.gross).sum();
+    let annual_net = projected.iter().map(|p| p.net).sum();
+    let varies_across_year = projected
+        .windows(2)
+        .any(|w| (w[0].net - w[1].net).abs() > 0.005);
+
+    NetProjection {
+        periods: projected,
+        periods_per_year: periods,
+        annual_gross,
+        annual_net,
+        uncomputable,
+        varies_across_year,
     }
 }
 
@@ -750,5 +933,162 @@ mod tests {
         assert_eq!(pro_expenses_lump_sum(30_000.0, &p), 2_000.0, "plancher");
         assert_eq!(pro_expenses_lump_sum(100_000.0, &p), 3_000.0, "3 %");
         assert_eq!(pro_expenses_lump_sum(200_000.0, &p), 4_000.0, "plafond");
+    }
+
+    // --- projection brut → net ---
+
+    /// Aucune imposition à la source : la fermeture ne doit jamais être
+    /// appelée, et le lui faire renvoyer une valeur absurde le prouve.
+    fn no_tax(_: f64) -> Option<f64> {
+        Some(999_999.0)
+    }
+
+    fn project(gross: f64, terms: &EmploymentTerms) -> NetProjection {
+        project_net(gross, None, terms, &p2026(), 2026, &|b| no_tax(b))
+    }
+
+    /// Le brut → net doit retomber exactement sur le bulletin que le
+    /// contrôleur juge conforme : ce sont les deux sens d'un même calcul.
+    #[test]
+    fn a_projected_month_matches_the_payslip_the_checker_accepts() {
+        let pr = project(8_000.0, &terms());
+        let m = &pr.periods[0];
+        assert!((m.avs_ai_apg - 424.0).abs() < 0.01);
+        assert!((m.ac - 88.0).abs() < 0.01);
+        assert!((m.lpp_employee.unwrap() - 187.425).abs() < 0.01);
+        assert!((m.laa_nonoccupational.unwrap() - 80.0).abs() < 0.01);
+        assert!((m.ijm.unwrap() - 40.0).abs() < 0.01);
+        assert!((m.total_deductions - 819.425).abs() < 0.01);
+        assert!((m.net - 7_180.575).abs() < 0.01, "net obtenu : {}", m.net);
+        assert!(pr.uncomputable.is_empty());
+        assert!(!pr.varies_across_year, "un salaire ordinaire ne varie pas");
+        assert!((pr.annual_gross - 96_000.0).abs() < 0.01);
+    }
+
+    /// Le plafond de l'assurance-chômage est ANNUEL : à haut salaire, les
+    /// cotisations s'arrêtent en cours d'année. C'est toute la raison de
+    /// boucler sur les périodes au lieu de multiplier par douze.
+    #[test]
+    fn ac_contributions_stop_once_the_annual_ceiling_is_crossed() {
+        let pr = project(20_000.0, &terms());
+        // 148'200 / 20'000 = 7.41 : les sept premiers mois cotisent en plein,
+        // le huitième sur le reliquat, les suivants sur rien.
+        assert!((pr.periods[0].ac - 220.0).abs() < 0.01, "20'000 × 1.1 %");
+        assert!((pr.periods[6].ac - 220.0).abs() < 0.01, "7e mois : encore plein");
+        assert!((pr.periods[7].ac - 90.2).abs() < 0.01, "8e mois : 8'200 restants");
+        assert_eq!(pr.periods[8].ac, 0.0, "9e mois : plafond atteint");
+        // L'AVS, elle, n'est jamais plafonnée.
+        assert!((pr.periods[11].avs_ai_apg - 1_060.0).abs() < 0.01);
+        assert!(pr.varies_across_year, "le net change en cours d'année");
+    }
+
+    /// Un taux contractuel manquant ne s'invente pas : le poste reste vide,
+    /// il est signalé, et le net annoncé est un majorant.
+    #[test]
+    fn a_missing_contractual_rate_leaves_the_net_as_an_upper_bound() {
+        let bare = EmploymentTerms {
+            lpp_employee_share_pct: None,
+            laa_nonoccupational_pct: None,
+            ijm_employee_pct: None,
+            ..terms()
+        };
+        let pr = project(8_000.0, &bare);
+        let m = &pr.periods[0];
+        assert!(m.lpp_employee.is_none());
+        assert!(m.laa_nonoccupational.is_none());
+        assert!(m.ijm.is_none());
+        assert_eq!(pr.uncomputable, vec!["lpp", "laa_nonoccupational", "ijm"]);
+        // Seules l'AVS et l'AC ont pu être retenues.
+        assert!((m.total_deductions - 512.0).abs() < 0.01);
+        assert!(m.net > project(8_000.0, &terms()).periods[0].net);
+    }
+
+    /// Sous le seuil d'entrée LPP, rien n'est dû — ce qui est une réponse,
+    /// pas une absence de réponse.
+    #[test]
+    fn below_the_lpp_entry_threshold_the_answer_is_zero_not_unknown() {
+        let pr = project(1_500.0, &terms());
+        assert_eq!(pr.periods[0].lpp_employee, Some(0.0));
+        assert!(pr.uncomputable.is_empty());
+    }
+
+    /// Treize périodes : le 13ᵉ salaire est un mois de plus, pas un mois plus
+    /// gros.
+    #[test]
+    fn thirteen_periods_stretch_the_year_without_changing_the_month() {
+        let t = EmploymentTerms {
+            salary_periods_per_year: Some(13),
+            thirteenth_salary: true,
+            ..terms()
+        };
+        let pr = project(8_000.0, &t);
+        assert_eq!(pr.periods.len(), 13);
+        assert!((pr.annual_gross - 104_000.0).abs() < 0.01);
+        // Le salaire coordonné suit le brut annuel, donc la retenue LPP
+        // mensuelle change : c'est bien 13 × le mois, pas 12.
+        assert!((pr.periods[0].avs_ai_apg - 424.0).abs() < 0.01);
+    }
+
+    /// Les allocations familiales gonflent le brut et le net sans entrer dans
+    /// l'assiette des cotisations (art. 6 RAVS).
+    #[test]
+    fn family_allowances_reach_the_net_untouched_by_contributions() {
+        let plain = project(8_000.0, &terms());
+        let withkids = project_net(8_000.0, Some(430.0), &terms(), &p2026(), 2026, &|b| no_tax(b));
+        let a = &plain.periods[0];
+        let b = &withkids.periods[0];
+        assert_eq!(b.avs_subject_gross, a.avs_subject_gross, "assiette inchangée");
+        assert!((b.gross - a.gross - 430.0).abs() < 0.01);
+        assert!((b.total_deductions - a.total_deductions).abs() < 0.01);
+        assert!((b.net - a.net - 430.0).abs() < 0.01);
+    }
+
+    /// L'impôt à la source n'est retenu que si le contrat le prévoit, et il
+    /// porte sur le brut TOTAL — allocations comprises, contrairement aux
+    /// cotisations.
+    #[test]
+    fn tax_at_source_applies_to_the_total_gross_and_only_when_subject() {
+        let taxed = EmploymentTerms { tax_at_source: true, ..terms() };
+        let pr = project_net(8_000.0, Some(430.0), &taxed, &p2026(), 2026, &|base| {
+            Some(base * 10.0 / 100.0)
+        });
+        let m = &pr.periods[0];
+        assert!((m.tax_at_source.unwrap() - 843.0).abs() < 0.01, "10 % de 8'430");
+
+        // Non soumis : le poste vaut zéro, il n'est pas « inconnu ».
+        let pr = project(8_000.0, &terms());
+        assert_eq!(pr.periods[0].tax_at_source, Some(0.0));
+        assert!(pr.uncomputable.is_empty());
+    }
+
+    /// Soumis mais sans barème disponible : l'impôt reste non chiffré et le
+    /// net est annoncé comme majorant.
+    #[test]
+    fn a_subject_employee_without_any_tariff_leaves_the_tax_unknown() {
+        let taxed = EmploymentTerms { tax_at_source: true, ..terms() };
+        let pr = project_net(8_000.0, None, &taxed, &p2026(), 2026, &|_| None);
+        assert!(pr.periods[0].tax_at_source.is_none());
+        assert!(pr.uncomputable.contains(&"tax_at_source"));
+    }
+
+    /// Le taux d'activité décrit le poste, pas le montant : le brut saisi est
+    /// déjà celui qui est versé. L'appliquer ici le diviserait deux fois.
+    #[test]
+    fn the_activity_rate_does_not_shrink_the_gross_a_second_time() {
+        let half = EmploymentTerms { activity_rate_pct: Some(50.0), ..terms() };
+        let pr = project(4_000.0, &half);
+        assert!((pr.periods[0].gross - 4_000.0).abs() < 0.01);
+        assert!((pr.periods[0].avs_ai_apg - 212.0).abs() < 0.01, "4'000 × 5.3 %");
+    }
+
+    /// 2023 était absent de la table : l'année retombait sur 2024 en se
+    /// déclarant estimée, alors que les deux portent les mêmes valeurs.
+    #[test]
+    fn twenty_twenty_three_is_a_published_year() {
+        let p = params_for_year(2023);
+        assert!(!p.estimated);
+        assert_eq!(p.effective_year, 2023);
+        assert_eq!(p.lpp_entry_threshold, 22_050.0);
+        assert_eq!(p.ac_solidarity_employee_pct, 0.0, "aboli au 1.1.2023");
     }
 }

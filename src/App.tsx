@@ -19,6 +19,7 @@ import { ReimbursementsPage } from "@/pages/reimbursements"
 import { SettingsPage } from "@/pages/settings"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
+import { PayrollSettings } from "@/pages/settings-payroll"
 import { PurchaseWizardPage } from "@/pages/purchase-wizard"
 import { CeMoisPage } from "@/pages/ce-mois"
 import { InboxPage } from "@/pages/inbox"
@@ -197,6 +198,7 @@ function AppContent() {
             <Route index element={<ErrorBoundary><GeneralSettings /></ErrorBoundary>} />
             <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
+            <Route path="baremes" element={<ErrorBoundary><PayrollSettings /></ErrorBoundary>} />
           </Route>
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
           <Route path="*" element={<Navigate to="/ce-mois" replace />} />

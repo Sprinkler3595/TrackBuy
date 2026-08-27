@@ -20,32 +20,440 @@ use uuid::Uuid;
 
 use crate::commands::auth::AppState;
 use crate::db::models::{EmploymentContract, IncomeReceipt, SalaryCertificate};
+use crate::payroll::tax_at_source::{
+    children_from_code, parse_tariff_file, tax_for_base, uses_annual_model, TariffRow,
+};
 use crate::payroll::{
-    self, check_payslip, known_years, params_for_year, EmploymentTerms, ExpectedDeductions,
-    Finding, PayrollParams, PayslipInput, YtdContext,
+    self, check_payslip, known_years, params_for_year, project_net, EmploymentTerms,
+    ExpectedDeductions, Finding, LppCreditBracket, NetProjection, PayrollParams, PayslipInput,
+    YtdContext,
 };
 
 // ===========================================================================
 // Barèmes
 // ===========================================================================
 
-/// Barèmes d'une année, plus la liste des années effectivement publiées dans
-/// l'application — le front s'en sert pour son sélecteur d'année sans coder
-/// la liste une seconde fois.
+/// Barèmes d'une année, plus de quoi alimenter le sélecteur d'année du front
+/// sans coder la liste une seconde fois, et de quoi distinguer à l'écran ce
+/// qui est livré avec l'application de ce que l'utilisateur a corrigé.
 #[derive(Debug, Serialize)]
 pub struct PayrollParamsResponse {
     #[serde(flatten)]
     pub params: PayrollParams,
+    /// Années publiées dans le code.
     pub known_years: Vec<i32>,
+    /// Champs redéfinis par l'utilisateur pour CETTE année.
+    pub overridden_fields: Vec<String>,
+    /// Années pour lesquelles l'utilisateur a saisi quelque chose — elles
+    /// s'ajoutent au sélecteur, sinon une année créée à la main (2027) serait
+    /// invisible.
+    pub edited_years: Vec<i32>,
+}
+
+fn edited_years(conn: &rusqlite::Connection) -> Result<Vec<i32>, String> {
+    let mut stmt = conn
+        .prepare("SELECT year FROM payroll_param_overrides ORDER BY year DESC")
+        .map_err(|e| e.to_string())?;
+    let years = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<i32>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(years)
+}
+
+fn params_response(
+    conn: &rusqlite::Connection,
+    year: i32,
+) -> Result<PayrollParamsResponse, String> {
+    let resolved = resolve_params(conn, year)?;
+    Ok(PayrollParamsResponse {
+        params: resolved.params,
+        known_years: known_years(),
+        overridden_fields: resolved.overridden,
+        edited_years: edited_years(conn)?,
+    })
 }
 
 #[tauri::command]
-pub fn get_payroll_params(year: i32) -> Result<PayrollParamsResponse, String> {
-    Ok(PayrollParamsResponse {
-        params: params_for_year(year),
-        known_years: known_years(),
-    })
+pub fn get_payroll_params(
+    state: State<'_, AppState>,
+    year: i32,
+) -> Result<PayrollParamsResponse, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    params_response(&conn, year)
 }
+// ===========================================================================
+// Barèmes : valeurs livrées + surcharges de l'utilisateur
+// ===========================================================================
+
+/// Champs de `PayrollParams` que l'utilisateur peut redéfinir depuis
+/// Paramètres → Barèmes. L'ordre est celui de l'écran, et la liste sert trois
+/// choses à la fois : appliquer les surcharges, les écrire, et savoir si une
+/// année est intégralement saisie. Ajouter un champ ici et dans la migration
+/// suffit donc à l'exposer partout.
+pub const OVERRIDABLE_NUMERIC_FIELDS: &[&str] = &[
+    "avs_ai_apg_employee_pct",
+    "avs_ai_apg_employer_pct",
+    "ac_employee_pct",
+    "ac_ceiling",
+    "ac_solidarity_employee_pct",
+    "laa_max_insured",
+    "laa_nonoccupational_min_weekly_hours",
+    "lpp_entry_threshold",
+    "lpp_coordination_deduction",
+    "lpp_avs_upper_limit",
+    "lpp_min_coordinated",
+    "pillar3a_with_lpp",
+    "pillar3a_without_lpp_pct",
+    "pillar3a_without_lpp_cap",
+    "pro_lump_sum_pct",
+    "pro_lump_sum_min",
+    "pro_lump_sum_max",
+    "meals_full_year",
+    "meals_subsidized_year",
+    "meals_full_day",
+    "meals_subsidized_day",
+    "commute_cap_ifd",
+    "commute_private_car_per_km",
+    "private_car_monthly_pct",
+    "private_car_monthly_min",
+    "family_allowance_min_child",
+    "family_allowance_min_training",
+];
+
+/// Applique une colonne de surcharge sur le champ homonyme de `PayrollParams`.
+/// Le `stringify!` garantit que le nom de colonne SQL et le nom de champ Rust
+/// ne peuvent pas diverger en silence.
+macro_rules! apply_overrides {
+    ($row:expr, $params:expr, $seen:expr, $($field:ident),+ $(,)?) => {
+        $(
+            if let Some(v) = $row.get::<_, Option<f64>>(stringify!($field))? {
+                $params.$field = v;
+                $seen.push(stringify!($field).to_string());
+            }
+        )+
+    };
+}
+
+/// Barème d'une année, surcharges comprises.
+pub struct ResolvedParams {
+    pub params: PayrollParams,
+    /// Champs que l'utilisateur a effectivement redéfinis, pour que l'écran
+    /// puisse afficher « modifié » sans redemander la valeur livrée.
+    pub overridden: Vec<String>,
+}
+
+/// Barème applicable à une année : les valeurs livrées avec l'application,
+/// puis par-dessus celles saisies dans Paramètres → Barèmes.
+///
+/// **Toute** commande qui a besoin d'un taux passe par ici. C'est le seul
+/// endroit où la surcharge s'applique, donc le seul endroit où l'oublier
+/// ferait diverger deux écrans qui affichent le même chiffre.
+pub fn resolve_params(conn: &rusqlite::Connection, year: i32) -> Result<ResolvedParams, String> {
+    let mut params = params_for_year(year);
+    let mut overridden: Vec<String> = Vec::new();
+
+    let found = conn.query_row(
+        "SELECT * FROM payroll_param_overrides WHERE year = ?1",
+        [year],
+        |row| {
+            apply_overrides!(
+                row,
+                params,
+                overridden,
+                avs_ai_apg_employee_pct,
+                avs_ai_apg_employer_pct,
+                ac_employee_pct,
+                ac_ceiling,
+                ac_solidarity_employee_pct,
+                laa_max_insured,
+                laa_nonoccupational_min_weekly_hours,
+                lpp_entry_threshold,
+                lpp_coordination_deduction,
+                lpp_avs_upper_limit,
+                lpp_min_coordinated,
+                pillar3a_with_lpp,
+                pillar3a_without_lpp_pct,
+                pillar3a_without_lpp_cap,
+                pro_lump_sum_pct,
+                pro_lump_sum_min,
+                pro_lump_sum_max,
+                meals_full_year,
+                meals_subsidized_year,
+                meals_full_day,
+                meals_subsidized_day,
+                commute_cap_ifd,
+                commute_private_car_per_km,
+                private_car_monthly_pct,
+                private_car_monthly_min,
+                family_allowance_min_child,
+                family_allowance_min_training,
+            );
+
+            // Les tranches de bonification LPP sont une liste, pas un nombre :
+            // elles voyagent en JSON. Une liste illisible est ignorée plutôt
+            // que fatale — mieux vaut le barème livré qu'un écran en erreur.
+            if let Some(json) = row.get::<_, Option<String>>("lpp_credit_brackets")? {
+                if let Ok(brackets) = serde_json::from_str::<Vec<LppCreditBracket>>(&json) {
+                    if !brackets.is_empty() {
+                        params.lpp_credit_brackets = std::borrow::Cow::Owned(brackets);
+                        overridden.push("lpp_credit_brackets".to_string());
+                    }
+                }
+            }
+            Ok(())
+        },
+    );
+
+    match found {
+        Ok(()) => {}
+        // Aucune surcharge pour cette année : le cas normal.
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+
+    // Une année inconnue du code reste « estimée » tant qu'elle n'est pas
+    // ENTIÈREMENT saisie. Une surcharge partielle laisse le reste des valeurs
+    // provenir de l'année de repli : le dire serait faux.
+    let fully_specified = OVERRIDABLE_NUMERIC_FIELDS
+        .iter()
+        .all(|f| overridden.iter().any(|o| o == f));
+    if fully_specified {
+        params.estimated = false;
+        params.effective_year = year;
+    }
+
+    Ok(ResolvedParams { params, overridden })
+}
+
+/// Valeurs d'une année telles qu'elles doivent être écrites en surcharge.
+/// `None` = « garder la valeur livrée » ; le front envoie donc exactement ce
+/// que l'utilisateur a touché.
+#[derive(Debug, Default, Deserialize)]
+pub struct PayrollOverrideInput {
+    pub avs_ai_apg_employee_pct: Option<f64>,
+    pub avs_ai_apg_employer_pct: Option<f64>,
+    pub ac_employee_pct: Option<f64>,
+    pub ac_ceiling: Option<f64>,
+    pub ac_solidarity_employee_pct: Option<f64>,
+    pub laa_max_insured: Option<f64>,
+    pub laa_nonoccupational_min_weekly_hours: Option<f64>,
+    pub lpp_entry_threshold: Option<f64>,
+    pub lpp_coordination_deduction: Option<f64>,
+    pub lpp_avs_upper_limit: Option<f64>,
+    pub lpp_min_coordinated: Option<f64>,
+    pub lpp_credit_brackets: Option<Vec<LppCreditBracket>>,
+    pub pillar3a_with_lpp: Option<f64>,
+    pub pillar3a_without_lpp_pct: Option<f64>,
+    pub pillar3a_without_lpp_cap: Option<f64>,
+    pub pro_lump_sum_pct: Option<f64>,
+    pub pro_lump_sum_min: Option<f64>,
+    pub pro_lump_sum_max: Option<f64>,
+    pub meals_full_year: Option<f64>,
+    pub meals_subsidized_year: Option<f64>,
+    pub meals_full_day: Option<f64>,
+    pub meals_subsidized_day: Option<f64>,
+    pub commute_cap_ifd: Option<f64>,
+    pub commute_private_car_per_km: Option<f64>,
+    pub private_car_monthly_pct: Option<f64>,
+    pub private_car_monthly_min: Option<f64>,
+    pub family_allowance_min_child: Option<f64>,
+    pub family_allowance_min_training: Option<f64>,
+    pub note: Option<String>,
+}
+
+/// Écrit (ou remplace) les surcharges d'une année.
+///
+/// Remplacement complet et non fusion : l'écran envoie l'état entier du
+/// formulaire, donc un champ revenu à vide DOIT redevenir la valeur livrée.
+/// Une fusion rendrait « effacer une surcharge » impossible.
+fn upsert_overrides_inner(
+    conn: &rusqlite::Connection,
+    year: i32,
+    v: &PayrollOverrideInput,
+) -> Result<(), String> {
+    let brackets_json = match &v.lpp_credit_brackets {
+        Some(b) if !b.is_empty() => {
+            Some(serde_json::to_string(b).map_err(|e| e.to_string())?)
+        }
+        _ => None,
+    };
+
+    conn.execute(
+        "INSERT INTO payroll_param_overrides (
+            year, avs_ai_apg_employee_pct, avs_ai_apg_employer_pct, ac_employee_pct,
+            ac_ceiling, ac_solidarity_employee_pct, laa_max_insured,
+            laa_nonoccupational_min_weekly_hours, lpp_entry_threshold,
+            lpp_coordination_deduction, lpp_avs_upper_limit, lpp_min_coordinated,
+            lpp_credit_brackets, pillar3a_with_lpp, pillar3a_without_lpp_pct,
+            pillar3a_without_lpp_cap, pro_lump_sum_pct, pro_lump_sum_min,
+            pro_lump_sum_max, meals_full_year, meals_subsidized_year, meals_full_day,
+            meals_subsidized_day, commute_cap_ifd, commute_private_car_per_km,
+            private_car_monthly_pct, private_car_monthly_min,
+            family_allowance_min_child, family_allowance_min_training, note)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
+         ON CONFLICT(year) DO UPDATE SET
+            avs_ai_apg_employee_pct = excluded.avs_ai_apg_employee_pct,
+            avs_ai_apg_employer_pct = excluded.avs_ai_apg_employer_pct,
+            ac_employee_pct = excluded.ac_employee_pct,
+            ac_ceiling = excluded.ac_ceiling,
+            ac_solidarity_employee_pct = excluded.ac_solidarity_employee_pct,
+            laa_max_insured = excluded.laa_max_insured,
+            laa_nonoccupational_min_weekly_hours = excluded.laa_nonoccupational_min_weekly_hours,
+            lpp_entry_threshold = excluded.lpp_entry_threshold,
+            lpp_coordination_deduction = excluded.lpp_coordination_deduction,
+            lpp_avs_upper_limit = excluded.lpp_avs_upper_limit,
+            lpp_min_coordinated = excluded.lpp_min_coordinated,
+            lpp_credit_brackets = excluded.lpp_credit_brackets,
+            pillar3a_with_lpp = excluded.pillar3a_with_lpp,
+            pillar3a_without_lpp_pct = excluded.pillar3a_without_lpp_pct,
+            pillar3a_without_lpp_cap = excluded.pillar3a_without_lpp_cap,
+            pro_lump_sum_pct = excluded.pro_lump_sum_pct,
+            pro_lump_sum_min = excluded.pro_lump_sum_min,
+            pro_lump_sum_max = excluded.pro_lump_sum_max,
+            meals_full_year = excluded.meals_full_year,
+            meals_subsidized_year = excluded.meals_subsidized_year,
+            meals_full_day = excluded.meals_full_day,
+            meals_subsidized_day = excluded.meals_subsidized_day,
+            commute_cap_ifd = excluded.commute_cap_ifd,
+            commute_private_car_per_km = excluded.commute_private_car_per_km,
+            private_car_monthly_pct = excluded.private_car_monthly_pct,
+            private_car_monthly_min = excluded.private_car_monthly_min,
+            family_allowance_min_child = excluded.family_allowance_min_child,
+            family_allowance_min_training = excluded.family_allowance_min_training,
+            note = excluded.note,
+            updated_at = datetime('now')",
+        rusqlite::params![
+            year,
+            v.avs_ai_apg_employee_pct,
+            v.avs_ai_apg_employer_pct,
+            v.ac_employee_pct,
+            v.ac_ceiling,
+            v.ac_solidarity_employee_pct,
+            v.laa_max_insured,
+            v.laa_nonoccupational_min_weekly_hours,
+            v.lpp_entry_threshold,
+            v.lpp_coordination_deduction,
+            v.lpp_avs_upper_limit,
+            v.lpp_min_coordinated,
+            brackets_json,
+            v.pillar3a_with_lpp,
+            v.pillar3a_without_lpp_pct,
+            v.pillar3a_without_lpp_cap,
+            v.pro_lump_sum_pct,
+            v.pro_lump_sum_min,
+            v.pro_lump_sum_max,
+            v.meals_full_year,
+            v.meals_subsidized_year,
+            v.meals_full_day,
+            v.meals_subsidized_day,
+            v.commute_cap_ifd,
+            v.commute_private_car_per_km,
+            v.private_car_monthly_pct,
+            v.private_car_monthly_min,
+            v.family_allowance_min_child,
+            v.family_allowance_min_training,
+            v.note,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn upsert_payroll_overrides(
+    state: State<'_, AppState>,
+    year: i32,
+    values: PayrollOverrideInput,
+) -> Result<PayrollParamsResponse, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_overrides_inner(&conn, year, &values)?;
+    params_response(&conn, year)
+}
+
+/// Rend une année à ses valeurs livrées, en supprimant la ligne entière.
+#[tauri::command]
+pub fn reset_payroll_overrides(
+    state: State<'_, AppState>,
+    year: i32,
+) -> Result<PayrollParamsResponse, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute("DELETE FROM payroll_param_overrides WHERE year = ?1", [year])
+        .map_err(|e| e.to_string())?;
+    params_response(&conn, year)
+}
+
+/// Recopie une année sur une autre, surcharges comprises.
+///
+/// Sert au 1er janvier : on part de l'année écoulée telle qu'elle était
+/// RÉELLEMENT appliquée (valeurs livrées fusionnées avec les corrections de
+/// l'utilisateur), puis on ajuste les quelques chiffres qui bougent. L'année
+/// cible devient donc entièrement saisie, et cesse d'être annoncée « estimée ».
+fn duplicate_year_inner(
+    conn: &rusqlite::Connection,
+    from_year: i32,
+    to_year: i32,
+) -> Result<(), String> {
+    if from_year == to_year {
+        return Err("L'année source et l'année cible sont identiques.".into());
+    }
+    let source = resolve_params(conn, from_year)?.params;
+    let p = &source;
+    let values = PayrollOverrideInput {
+        avs_ai_apg_employee_pct: Some(p.avs_ai_apg_employee_pct),
+        avs_ai_apg_employer_pct: Some(p.avs_ai_apg_employer_pct),
+        ac_employee_pct: Some(p.ac_employee_pct),
+        ac_ceiling: Some(p.ac_ceiling),
+        ac_solidarity_employee_pct: Some(p.ac_solidarity_employee_pct),
+        laa_max_insured: Some(p.laa_max_insured),
+        laa_nonoccupational_min_weekly_hours: Some(p.laa_nonoccupational_min_weekly_hours),
+        lpp_entry_threshold: Some(p.lpp_entry_threshold),
+        lpp_coordination_deduction: Some(p.lpp_coordination_deduction),
+        lpp_avs_upper_limit: Some(p.lpp_avs_upper_limit),
+        lpp_min_coordinated: Some(p.lpp_min_coordinated),
+        lpp_credit_brackets: Some(p.lpp_credit_brackets.to_vec()),
+        pillar3a_with_lpp: Some(p.pillar3a_with_lpp),
+        pillar3a_without_lpp_pct: Some(p.pillar3a_without_lpp_pct),
+        pillar3a_without_lpp_cap: Some(p.pillar3a_without_lpp_cap),
+        pro_lump_sum_pct: Some(p.pro_lump_sum_pct),
+        pro_lump_sum_min: Some(p.pro_lump_sum_min),
+        pro_lump_sum_max: Some(p.pro_lump_sum_max),
+        meals_full_year: Some(p.meals_full_year),
+        meals_subsidized_year: Some(p.meals_subsidized_year),
+        meals_full_day: Some(p.meals_full_day),
+        meals_subsidized_day: Some(p.meals_subsidized_day),
+        commute_cap_ifd: Some(p.commute_cap_ifd),
+        commute_private_car_per_km: Some(p.commute_private_car_per_km),
+        private_car_monthly_pct: Some(p.private_car_monthly_pct),
+        private_car_monthly_min: Some(p.private_car_monthly_min),
+        family_allowance_min_child: Some(p.family_allowance_min_child),
+        family_allowance_min_training: Some(p.family_allowance_min_training),
+        note: Some(format!("Repris de {}", from_year)),
+    };
+    upsert_overrides_inner(conn, to_year, &values)
+}
+
+#[tauri::command]
+pub fn duplicate_payroll_year(
+    state: State<'_, AppState>,
+    from_year: i32,
+    to_year: i32,
+) -> Result<PayrollParamsResponse, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    duplicate_year_inner(&conn, from_year, to_year)?;
+    params_response(&conn, to_year)
+}
+
 
 // ===========================================================================
 // Contrat de travail
@@ -55,7 +463,7 @@ const CONTRACT_COLUMNS: &str = "id, income_id, employer_name, employer_uid, avs_
      birth_date, work_canton, activity_rate_pct, annual_gross_agreed,
      salary_periods_per_year, weekly_hours, hourly_paid, thirteenth_salary,
      lpp_fund_name, lpp_employee_share_pct, laa_insurer, laa_nonoccupational_pct,
-     ijm_employee_pct, tax_at_source, tax_at_source_scale,
+     ijm_employee_pct, tax_at_source, tax_at_source_scale, tax_at_source_rate_pct,
      company_car_purchase_price, subsidized_canteen, commute_km_per_day,
      commute_public_transport_cost_year, started_on, ended_on, notes,
      created_at, updated_at";
@@ -82,15 +490,16 @@ fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmploymentContra
         ijm_employee_pct: row.get(17)?,
         tax_at_source: row.get::<_, i64>(18)? != 0,
         tax_at_source_scale: row.get(19)?,
-        company_car_purchase_price: row.get(20)?,
-        subsidized_canteen: row.get::<_, i64>(21)? != 0,
-        commute_km_per_day: row.get(22)?,
-        commute_public_transport_cost_year: row.get(23)?,
-        started_on: row.get(24)?,
-        ended_on: row.get(25)?,
-        notes: row.get(26)?,
-        created_at: row.get(27)?,
-        updated_at: row.get(28)?,
+        tax_at_source_rate_pct: row.get(20)?,
+        company_car_purchase_price: row.get(21)?,
+        subsidized_canteen: row.get::<_, i64>(22)? != 0,
+        commute_km_per_day: row.get(23)?,
+        commute_public_transport_cost_year: row.get(24)?,
+        started_on: row.get(25)?,
+        ended_on: row.get(26)?,
+        notes: row.get(27)?,
+        created_at: row.get(28)?,
+        updated_at: row.get(29)?,
     })
 }
 
@@ -152,11 +561,11 @@ fn upsert_contract_inner(
             salary_periods_per_year, weekly_hours, hourly_paid, thirteenth_salary,
             lpp_fund_name, lpp_employee_share_pct, laa_insurer,
             laa_nonoccupational_pct, ijm_employee_pct, tax_at_source,
-            tax_at_source_scale, company_car_purchase_price, subsidized_canteen,
-            commute_km_per_day, commute_public_transport_cost_year,
+            tax_at_source_scale, tax_at_source_rate_pct, company_car_purchase_price,
+            subsidized_canteen, commute_km_per_day, commute_public_transport_cost_year,
             started_on, ended_on, notes)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
          ON CONFLICT(income_id) DO UPDATE SET
             employer_name = excluded.employer_name,
             employer_uid = excluded.employer_uid,
@@ -176,6 +585,7 @@ fn upsert_contract_inner(
             ijm_employee_pct = excluded.ijm_employee_pct,
             tax_at_source = excluded.tax_at_source,
             tax_at_source_scale = excluded.tax_at_source_scale,
+            tax_at_source_rate_pct = excluded.tax_at_source_rate_pct,
             company_car_purchase_price = excluded.company_car_purchase_price,
             subsidized_canteen = excluded.subsidized_canteen,
             commute_km_per_day = excluded.commute_km_per_day,
@@ -205,6 +615,7 @@ fn upsert_contract_inner(
             contract.ijm_employee_pct,
             contract.tax_at_source as i64,
             &contract.tax_at_source_scale,
+            contract.tax_at_source_rate_pct,
             contract.company_car_purchase_price,
             contract.subsidized_canteen as i64,
             contract.commute_km_per_day,
@@ -328,6 +739,420 @@ fn ytd_before(receipts: &[IncomeReceipt], year: i32, sort_key: &str, exclude_id:
 }
 
 // ===========================================================================
+// Impôt à la source : tarifs importés
+// ===========================================================================
+
+/// Tranches applicables à un barème, triées, pour la date donnée.
+///
+/// Une même combinaison canton/code peut exister en plusieurs millésimes :
+/// on retient le plus récent qui soit déjà entré en vigueur, jamais un
+/// barème futur.
+fn load_tariff_rows(
+    conn: &rusqlite::Connection,
+    canton: &str,
+    code: &str,
+    children: i32,
+    on_date: &str,
+) -> Result<Vec<TariffRow>, String> {
+    let valid_from: Option<String> = conn
+        .query_row(
+            "SELECT MAX(valid_from) FROM tax_at_source_tariffs
+             WHERE canton = ?1 AND tariff_code = ?2 AND children = ?3 AND valid_from <= ?4",
+            rusqlite::params![canton, code, children, on_date],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let Some(valid_from) = valid_from else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT canton, tariff_code, valid_from, children, income_from, income_step,
+                    tax_amount, rate_pct
+             FROM tax_at_source_tariffs
+             WHERE canton = ?1 AND tariff_code = ?2 AND children = ?3 AND valid_from = ?4
+             ORDER BY income_from",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![canton, code, children, valid_from],
+            |r| {
+                Ok(TariffRow {
+                    canton: r.get(0)?,
+                    tariff_code: r.get(1)?,
+                    valid_from: r.get(2)?,
+                    children: r.get(3)?,
+                    income_from: r.get(4)?,
+                    income_step: r.get(5)?,
+                    tax_amount: r.get(6)?,
+                    rate_pct: r.get(7)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[derive(Debug, Serialize)]
+pub struct TariffImport {
+    pub id: String,
+    pub canton: String,
+    pub fiscal_year: i32,
+    pub source_file: String,
+    pub file_created_on: Option<String>,
+    pub row_count: i64,
+    pub imported_at: String,
+    /// Vrai pour les cantons qui taxent sur le revenu annualisé (FR, GE, TI,
+    /// VD, VS) — l'écran doit le dire, le calcul n'est pas le même.
+    pub annual_model: bool,
+}
+
+#[tauri::command]
+pub fn list_tax_at_source_imports(
+    state: State<'_, AppState>,
+) -> Result<Vec<TariffImport>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, canton, fiscal_year, source_file, file_created_on, row_count, imported_at
+             FROM tax_at_source_imports ORDER BY fiscal_year DESC, canton",
+        )
+        .map_err(|e| e.to_string())?;
+    let out = stmt
+        .query_map([], |r| {
+            let canton: String = r.get(1)?;
+            Ok(TariffImport {
+                id: r.get(0)?,
+                annual_model: uses_annual_model(&canton),
+                canton,
+                fiscal_year: r.get(2)?,
+                source_file: r.get(3)?,
+                file_created_on: r.get(4)?,
+                row_count: r.get(5)?,
+                imported_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// Sort les octets du fichier choisi : soit le texte tel quel, soit la
+/// première entrée d'une archive — l'AFC livre les tarifs zippés.
+fn tariff_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("Lecture impossible : {e}"))?;
+    let is_zip = raw.starts_with(b"PK\x03\x04");
+    if !is_zip {
+        return Ok(raw);
+    }
+    let reader = std::io::Cursor::new(raw);
+    let mut zip = zip::ZipArchive::new(reader).map_err(|e| format!("Archive illisible : {e}"))?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if !entry.is_file() {
+            continue;
+        }
+        let name = entry.name().to_lowercase();
+        if name.ends_with(".txt") || name.ends_with(".dat") || !name.contains('.') {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            return Ok(buf);
+        }
+    }
+    Err("Aucun fichier de tarifs dans cette archive.".into())
+}
+
+/// Importe un fichier de barèmes cantonal.
+///
+/// Le canton attendu est celui que l'utilisateur a choisi à l'écran : si le
+/// fichier en annonce un autre, c'est qu'il s'est trompé de téléchargement, et
+/// l'importer silencieusement lui ferait calculer son impôt avec le barème
+/// d'un autre canton.
+#[tauri::command]
+pub fn import_tax_at_source_tariff(
+    state: State<'_, AppState>,
+    canton: String,
+    fiscal_year: i32,
+    file_path: String,
+) -> Result<TariffImport, String> {
+    let path = std::path::PathBuf::from(&file_path);
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.clone());
+    let bytes = tariff_bytes(&path)?;
+    let parsed = parse_tariff_file(&bytes)?;
+
+    let canton = canton.trim().to_uppercase();
+    if parsed.canton != canton {
+        return Err(format!(
+            "Ce fichier contient les barèmes du canton {}, pas {}. \
+             Vérifiez le fichier téléchargé.",
+            parsed.canton, canton
+        ));
+    }
+
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    // Un import remplace le précédent pour ce canton et cette année : sans
+    // cela, un second import doublerait chaque tranche et l'impôt lu
+    // deviendrait celui d'une tranche voisine au hasard.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM tax_at_source_tariffs WHERE canton = ?1 AND valid_from LIKE ?2",
+        rusqlite::params![canton, format!("{}-%", fiscal_year)],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM tax_at_source_imports WHERE canton = ?1 AND fiscal_year = ?2",
+        rusqlite::params![canton, fiscal_year],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut written = 0i64;
+    {
+        let mut insert = tx
+            .prepare(
+                "INSERT OR REPLACE INTO tax_at_source_tariffs
+                    (canton, tariff_code, valid_from, children, income_from, income_step,
+                     tax_amount, rate_pct)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| e.to_string())?;
+        for r in &parsed.rows {
+            insert
+                .execute(rusqlite::params![
+                    r.canton,
+                    r.tariff_code,
+                    r.valid_from,
+                    r.children,
+                    r.income_from,
+                    r.income_step,
+                    r.tax_amount,
+                    r.rate_pct,
+                ])
+                .map_err(|e| e.to_string())?;
+            written += 1;
+        }
+    }
+
+    let id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO tax_at_source_imports
+            (id, canton, fiscal_year, source_file, file_created_on, row_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![id, canton, fiscal_year, file_name, parsed.file_created_on, written],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(TariffImport {
+        id,
+        annual_model: uses_annual_model(&canton),
+        canton,
+        fiscal_year,
+        source_file: file_name,
+        file_created_on: parsed.file_created_on,
+        row_count: written,
+        imported_at: String::new(),
+    })
+}
+
+#[tauri::command]
+pub fn delete_tax_at_source_import(
+    state: State<'_, AppState>,
+    canton: String,
+    fiscal_year: i32,
+) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let canton = canton.trim().to_uppercase();
+    conn.execute(
+        "DELETE FROM tax_at_source_tariffs WHERE canton = ?1 AND valid_from LIKE ?2",
+        rusqlite::params![canton, format!("{}-%", fiscal_year)],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM tax_at_source_imports WHERE canton = ?1 AND fiscal_year = ?2",
+        rusqlite::params![canton, fiscal_year],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ===========================================================================
+// Du brut au net
+// ===========================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct NetFromGrossRequest {
+    pub year: i32,
+    pub gross_per_period: f64,
+    /// Allocations familiales du mois : versées avec le salaire, hors
+    /// assiette AVS (art. 6 RAVS).
+    pub family_allowance: Option<f64>,
+    pub terms: EmploymentTerms,
+    /// Canton de travail et code de barème : hors de `EmploymentTerms`, qui ne
+    /// connaît que le droit fédéral.
+    pub work_canton: Option<String>,
+    pub tax_at_source_scale: Option<String>,
+    /// Repli : le taux effectif lu sur la fiche de salaire, quand aucun
+    /// barème cantonal n'est importé.
+    pub tax_at_source_rate_pct: Option<f64>,
+    /// Revenu déjà enregistré : son contrat comble les champs que la requête
+    /// laisse vides, pour que l'écran n'ait pas à tout réexpédier.
+    pub income_id: Option<String>,
+}
+
+/// D'où vient le montant d'impôt à la source affiché.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaxSource {
+    /// Barème cantonal officiel importé par l'utilisateur.
+    Tariff,
+    /// Taux effectif saisi à la main.
+    ManualRate,
+    /// Pas d'imposition à la source pour ce contrat.
+    NotSubject,
+    /// Soumis, mais rien pour le calculer : l'impôt reste non chiffré.
+    Unavailable,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NetFromGrossResponse {
+    pub projection: NetProjection,
+    pub params: PayrollParams,
+    pub overridden_fields: Vec<String>,
+    pub tax_source: TaxSource,
+    /// Barème effectivement interrogé, pour que l'utilisateur puisse vérifier
+    /// que c'est bien le sien.
+    pub tax_tariff_code: Option<String>,
+    pub tax_annual_model: bool,
+    /// Net d'une période type — celui qu'on enregistre comme montant du
+    /// revenu. Calculé ici pour que l'écran n'ait pas à choisir lui-même
+    /// quelle période représente l'année.
+    pub net_per_period: f64,
+}
+
+#[tauri::command]
+pub fn compute_net_from_gross(
+    state: State<'_, AppState>,
+    req: NetFromGrossRequest,
+) -> Result<NetFromGrossResponse, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    net_from_gross_inner(&conn, req)
+}
+
+/// Séparé de la commande pour rester testable sans coffre déverrouillé —
+/// même découpage que `upsert_contract_inner`.
+fn net_from_gross_inner(
+    conn: &rusqlite::Connection,
+    req: NetFromGrossRequest,
+) -> Result<NetFromGrossResponse, String> {
+    let resolved = resolve_params(conn, req.year)?;
+
+    // Le contrat enregistré complète ce que la requête ne dit pas — jamais
+    // l'inverse : ce que l'utilisateur vient de taper à l'écran prime.
+    let contract = match &req.income_id {
+        Some(id) => load_contract(conn, id)?,
+        None => None,
+    };
+    let mut terms = req.terms;
+    if let Some(c) = &contract {
+        terms.birth_date = terms.birth_date.or_else(|| c.birth_date.clone());
+        terms.weekly_hours = terms.weekly_hours.or(c.weekly_hours);
+        terms.lpp_employee_share_pct = terms.lpp_employee_share_pct.or(c.lpp_employee_share_pct);
+        terms.laa_nonoccupational_pct = terms.laa_nonoccupational_pct.or(c.laa_nonoccupational_pct);
+        terms.ijm_employee_pct = terms.ijm_employee_pct.or(c.ijm_employee_pct);
+    }
+    let canton = req
+        .work_canton
+        .or_else(|| contract.as_ref().and_then(|c| c.work_canton.clone()))
+        .map(|c| c.trim().to_uppercase())
+        .filter(|c| c.len() == 2);
+    let scale = req
+        .tax_at_source_scale
+        .or_else(|| contract.as_ref().and_then(|c| c.tax_at_source_scale.clone()))
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty());
+    let manual_rate = req
+        .tax_at_source_rate_pct
+        .or_else(|| contract.as_ref().and_then(|c| c.tax_at_source_rate_pct))
+        .filter(|r| *r > 0.0);
+
+    let periods = terms.salary_periods_per_year.unwrap_or(12).clamp(1, 53) as f64;
+    let annual_model = canton.as_deref().map(uses_annual_model).unwrap_or(false);
+
+    // Tranches du barème, chargées une fois : la fermeture est appelée à
+    // chaque période et n'a pas à retourner en base douze fois.
+    let rows = match (&canton, &scale, terms.tax_at_source) {
+        (Some(canton), Some(code), true) => {
+            let children = children_from_code(code).unwrap_or(0);
+            let on_date = format!("{}-12-31", req.year);
+            load_tariff_rows(conn, canton, code, children, &on_date)?
+        }
+        _ => Vec::new(),
+    };
+
+    let tax_source = if !terms.tax_at_source {
+        TaxSource::NotSubject
+    } else if !rows.is_empty() {
+        TaxSource::Tariff
+    } else if manual_rate.is_some() {
+        TaxSource::ManualRate
+    } else {
+        TaxSource::Unavailable
+    };
+
+    let lookup = |base: f64| -> Option<f64> {
+        if !rows.is_empty() {
+            // Modèle annuel (FR, GE, TI, VD, VS) : le barème s'applique au
+            // revenu annualisé, et l'impôt trouvé se répartit sur les
+            // périodes. Interroger le barème annuel avec un salaire mensuel
+            // rendrait un impôt très inférieur au dû.
+            return if annual_model {
+                tax_for_base(&rows, base * periods).map(|t| t / periods)
+            } else {
+                tax_for_base(&rows, base)
+            };
+        }
+        manual_rate.map(|rate| base * rate / 100.0)
+    };
+
+    let projection = project_net(
+        req.gross_per_period,
+        req.family_allowance,
+        &terms,
+        &resolved.params,
+        req.year,
+        &lookup,
+    );
+
+    Ok(NetFromGrossResponse {
+        net_per_period: projection.representative_net(),
+        projection,
+        params: resolved.params,
+        overridden_fields: resolved.overridden,
+        tax_source,
+        tax_tariff_code: scale,
+        tax_annual_model: annual_model,
+    })
+}
+
+// ===========================================================================
 // Contrôle d'un bulletin
 // ===========================================================================
 
@@ -368,7 +1193,7 @@ fn build_report(
         periods_per_year: periods,
     };
 
-    let params = params_for_year(input.fiscal_year);
+    let params = resolve_params(conn, input.fiscal_year)?.params;
     let expected = payroll::expected_deductions(&input, &terms, &ctx, &params);
     let findings = check_payslip(&input, &terms, &ctx, &params);
 
@@ -947,7 +1772,7 @@ fn income_tax_summary_inner(
     year: i32,
     working_days: f64,
 ) -> Result<IncomeTaxSummary, String> {
-    let params = params_for_year(year);
+    let params = resolve_params(conn, year)?.params;
 
     // --- salaires ---
     let mut stmt = conn
@@ -1553,5 +2378,296 @@ mod tests {
         assert_eq!(cert.r8_gross_total, Some(0.0));
         assert_eq!(cert.r11_net_salary, Some(0.0));
         assert_eq!(cert.fiscal_year, 2026);
+    }
+
+
+    // --- barèmes surchargés ---
+
+    fn request(gross: f64) -> NetFromGrossRequest {
+        NetFromGrossRequest {
+            year: 2026,
+            gross_per_period: gross,
+            family_allowance: None,
+            terms: EmploymentTerms {
+                birth_date: Some("1985-06-15".into()),
+                weekly_hours: Some(42.0),
+                salary_periods_per_year: Some(12),
+                lpp_employee_share_pct: Some(3.5),
+                laa_nonoccupational_pct: Some(1.0),
+                ijm_employee_pct: Some(0.5),
+                ..Default::default()
+            },
+            work_canton: None,
+            tax_at_source_scale: None,
+            tax_at_source_rate_pct: None,
+            income_id: None,
+        }
+    }
+
+    /// Sans surcharge, le barème résolu est exactement celui livré : c'est le
+    /// cas normal, et il ne doit rien coûter.
+    #[test]
+    fn without_any_override_the_shipped_params_are_returned_untouched() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert_eq!(r.params.avs_ai_apg_employee_pct, 5.3);
+        assert_eq!(r.params.ac_ceiling, 148_200.0);
+        assert!(r.overridden.is_empty());
+        assert!(!r.params.estimated);
+    }
+
+    /// Une surcharge partielle ne touche que ses champs, et se signale.
+    #[test]
+    fn a_partial_override_changes_only_what_the_user_edited() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_overrides_inner(
+            &conn,
+            2026,
+            &PayrollOverrideInput {
+                avs_ai_apg_employee_pct: Some(5.4),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert_eq!(r.params.avs_ai_apg_employee_pct, 5.4);
+        assert_eq!(r.params.ac_employee_pct, 1.1, "le reste vient du barème livré");
+        assert_eq!(r.overridden, vec!["avs_ai_apg_employee_pct"]);
+    }
+
+    /// La surcharge doit atteindre le calcul, sinon l'écran Barèmes ne serait
+    /// qu'un formulaire décoratif.
+    #[test]
+    fn an_overridden_rate_reaches_the_projection() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+
+        let before = net_from_gross_inner(&conn, request(8_000.0)).unwrap();
+        assert!((before.projection.periods[0].avs_ai_apg - 424.0).abs() < 0.01);
+
+        upsert_overrides_inner(
+            &conn,
+            2026,
+            &PayrollOverrideInput {
+                avs_ai_apg_employee_pct: Some(5.4),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let after = net_from_gross_inner(&conn, request(8_000.0)).unwrap();
+        assert!((after.projection.periods[0].avs_ai_apg - 432.0).abs() < 0.01);
+        assert_eq!(after.overridden_fields, vec!["avs_ai_apg_employee_pct"]);
+    }
+
+    /// Réinitialiser efface la ligne entière : l'année redevient celle livrée.
+    #[test]
+    fn clearing_a_field_restores_the_shipped_value() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_overrides_inner(
+            &conn,
+            2026,
+            &PayrollOverrideInput { ac_ceiling: Some(160_000.0), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(resolve_params(&conn, 2026).unwrap().params.ac_ceiling, 160_000.0);
+
+        // Un envoi où le champ est vide vaut effacement, pas conservation.
+        upsert_overrides_inner(&conn, 2026, &PayrollOverrideInput::default()).unwrap();
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert_eq!(r.params.ac_ceiling, 148_200.0);
+        assert!(r.overridden.is_empty());
+    }
+
+    /// Une année inconnue reste « estimée » tant qu'elle n'est pas
+    /// intégralement saisie — une correction partielle ne la valide pas.
+    #[test]
+    fn an_unknown_year_stays_estimated_until_it_is_fully_specified() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+
+        let r = resolve_params(&conn, 2031).unwrap();
+        assert!(r.params.estimated);
+        assert_eq!(r.params.effective_year, 2026);
+
+        upsert_overrides_inner(
+            &conn,
+            2031,
+            &PayrollOverrideInput { ac_ceiling: Some(160_000.0), ..Default::default() },
+        )
+        .unwrap();
+        assert!(
+            resolve_params(&conn, 2031).unwrap().params.estimated,
+            "une surcharge partielle laisse le reste au barème de repli"
+        );
+
+        duplicate_year_inner(&conn, 2026, 2031).unwrap();
+        let r = resolve_params(&conn, 2031).unwrap();
+        assert!(!r.params.estimated, "année entièrement saisie");
+        assert_eq!(r.params.effective_year, 2031);
+        assert_eq!(r.params.ac_ceiling, 148_200.0, "reprise de 2026");
+    }
+
+    /// Dupliquer reprend l'année telle qu'elle était RÉELLEMENT appliquée,
+    /// corrections de l'utilisateur comprises.
+    #[test]
+    fn duplicating_a_year_carries_the_users_corrections_forward() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_overrides_inner(
+            &conn,
+            2026,
+            &PayrollOverrideInput { ac_employee_pct: Some(1.2), ..Default::default() },
+        )
+        .unwrap();
+
+        duplicate_year_inner(&conn, 2026, 2027).unwrap();
+        assert_eq!(resolve_params(&conn, 2027).unwrap().params.ac_employee_pct, 1.2);
+
+        assert!(
+            duplicate_year_inner(&conn, 2027, 2027).is_err(),
+            "dupliquer une année sur elle-même n'a pas de sens"
+        );
+    }
+
+    /// Les tranches LPP voyagent en JSON : une liste illisible doit être
+    /// ignorée au profit du barème livré, jamais faire échouer l'écran.
+    #[test]
+    fn unreadable_lpp_brackets_fall_back_to_the_shipped_ones() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO payroll_param_overrides (year, lpp_credit_brackets)
+             VALUES (2026, 'ceci n''est pas du JSON')",
+            [],
+        )
+        .unwrap();
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert_eq!(r.params.lpp_credit_brackets.len(), 4);
+        assert!(r.overridden.is_empty());
+
+        conn.execute(
+            "UPDATE payroll_param_overrides SET lpp_credit_brackets = '[[25,49,9.0],[50,999,14.0]]'
+             WHERE year = 2026",
+            [],
+        )
+        .unwrap();
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert_eq!(r.params.lpp_credit_brackets.len(), 2, "réforme LPP simulée");
+        assert_eq!(payroll::lpp_credit_rate(41, &r.params), 9.0);
+    }
+
+    // --- impôt à la source ---
+
+    fn insert_tariff(conn: &rusqlite::Connection, code: &str, from: f64, tax: f64) {
+        conn.execute(
+            "INSERT INTO tax_at_source_tariffs
+                (canton, tariff_code, valid_from, children, income_from, income_step, tax_amount)
+             VALUES ('VD', ?1, '2026-01-01', 0, ?2, 100.0, ?3)",
+            rusqlite::params![code, from, tax],
+        )
+        .unwrap();
+    }
+
+    /// Vaud applique le modèle annuel : le barème s'interroge sur le revenu
+    /// annualisé, et l'impôt trouvé se répartit sur les périodes.
+    #[test]
+    fn an_annual_model_canton_is_queried_on_the_annualised_income() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        // 8'000 × 12 = 96'000 par an.
+        insert_tariff(&conn, "A0N", 90_000.0, 12_000.0);
+        insert_tariff(&conn, "A0N", 100_000.0, 15_000.0);
+
+        let mut req = request(8_000.0);
+        req.terms.tax_at_source = true;
+        req.work_canton = Some("VD".into());
+        req.tax_at_source_scale = Some("A0N".into());
+
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.tax_source, TaxSource::Tariff);
+        assert!(r.tax_annual_model);
+        assert!(
+            (r.projection.periods[0].tax_at_source.unwrap() - 1_000.0).abs() < 0.01,
+            "12'000 annuels répartis sur 12 mois"
+        );
+    }
+
+    /// Sans barème importé, le taux effectif saisi prend le relais — et il
+    /// porte sur le brut total, allocations comprises.
+    #[test]
+    fn without_a_tariff_the_manual_rate_takes_over() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+
+        let mut req = request(8_000.0);
+        req.family_allowance = Some(430.0);
+        req.terms.tax_at_source = true;
+        req.work_canton = Some("VD".into());
+        req.tax_at_source_scale = Some("A0N".into());
+        req.tax_at_source_rate_pct = Some(10.0);
+
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.tax_source, TaxSource::ManualRate);
+        assert!((r.projection.periods[0].tax_at_source.unwrap() - 843.0).abs() < 0.01);
+    }
+
+    /// Soumis, sans barème ni taux : l'impôt reste NON CHIFFRÉ. Le retenir à
+    /// zéro annoncerait un net que l'employeur ne versera jamais.
+    #[test]
+    fn a_subject_employee_without_tariff_or_rate_leaves_the_tax_unknown() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+
+        let mut req = request(8_000.0);
+        req.terms.tax_at_source = true;
+        req.work_canton = Some("VD".into());
+        req.tax_at_source_scale = Some("A0N".into());
+
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.tax_source, TaxSource::Unavailable);
+        assert!(r.projection.periods[0].tax_at_source.is_none());
+        assert!(r.projection.uncomputable.contains(&"tax_at_source"));
+    }
+
+    /// Le contrat enregistré comble les blancs de la requête, mais ne prime
+    /// jamais sur ce que l'utilisateur vient de saisir.
+    #[test]
+    fn the_stored_contract_fills_the_blanks_without_overriding_the_form() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+
+        // Requête vide de tout taux : le contrat les fournit.
+        let mut req = request(8_000.0);
+        req.income_id = Some("inc1".into());
+        req.terms.lpp_employee_share_pct = None;
+        req.terms.laa_nonoccupational_pct = None;
+        req.terms.ijm_employee_pct = None;
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert!((r.projection.periods[0].lpp_employee.unwrap() - 187.425).abs() < 0.01);
+        assert!(r.projection.uncomputable.is_empty());
+
+        // Un taux saisi à l'écran l'emporte sur celui du contrat.
+        let mut req = request(8_000.0);
+        req.income_id = Some("inc1".into());
+        req.terms.lpp_employee_share_pct = Some(7.0);
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert!((r.projection.periods[0].lpp_employee.unwrap() - 374.85).abs() < 0.01);
+    }
+
+    /// Le net enregistré comme montant du revenu est celui d'une période, pas
+    /// la moyenne annuelle : c'est ce que l'utilisateur voit sur son décompte.
+    #[test]
+    fn the_stored_amount_is_the_net_of_one_period() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        let r = net_from_gross_inner(&conn, request(8_000.0)).unwrap();
+        assert!((r.net_per_period - 7_180.575).abs() < 0.01);
     }
 }
