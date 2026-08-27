@@ -598,6 +598,80 @@ export interface ExtractedVehicle {
 export const aiExtractVehicle = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedVehicle>("ai_extract_vehicle", { ocrText, config })
 
+/// Postes d'un bulletin de salaire suisse extraits de son texte (couche PDF ou
+/// OCR). Tous les montants reviennent POSITIFS, retenues comprises : le signe
+/// dépend de la mise en page de l'employeur, pas du sens du poste.
+export interface ExtractedPayslip {
+  employer_name: string | null
+  period_label: string | null
+  period_start: string | null
+  period_end: string | null
+  received_on: string | null
+  net_paid: number | null
+  gross_amount: number | null
+  base_salary: number | null
+  thirteenth: number | null
+  overtime: number | null
+  overtime_hours: number | null
+  holiday_pay: number | null
+  bonus: number | null
+  benefits_in_kind: number | null
+  company_car_private: number | null
+  family_allowance: number | null
+  other_gross: number | null
+  avs_ai_apg: number | null
+  ac: number | null
+  ac_solidarity: number | null
+  lpp: number | null
+  laa_nonoccupational: number | null
+  ijm: number | null
+  tax_at_source: number | null
+  other_deductions: number | null
+  expense_reimbursement: number | null
+  expense_lump_sum: number | null
+  currency: string | null
+}
+
+export const aiExtractPayslip = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedPayslip>("ai_extract_payslip", { ocrText, config })
+
+/// Rubriques d'un certificat de salaire suisse (formulaire 11).
+export interface ExtractedSalaryCertificate {
+  employer_name: string | null
+  employee_name: string | null
+  fiscal_year: number | null
+  r1_salary: number | null
+  r2_1_benefits_in_kind: number | null
+  r2_2_company_car: number | null
+  r2_3_other_benefits: number | null
+  r3_irregular: number | null
+  r4_capital_shares: number | null
+  r5_board_fees: number | null
+  r6_other_benefits: number | null
+  r7_other_payments: number | null
+  r8_gross_total: number | null
+  r9_social_contributions: number | null
+  r10_1_lpp_ordinary: number | null
+  r10_2_lpp_buyback: number | null
+  r11_net_salary: number | null
+  r12_tax_at_source: number | null
+  r13_1_effective_expenses: number | null
+  r13_2_lump_sum_expenses: number | null
+  r14_other_disclosures: number | null
+  r15_remarks: string | null
+  box_f_employer_transport: boolean | null
+  box_g_free_meals: boolean | null
+}
+
+export const aiExtractSalaryCertificate = (
+  ocrText: string,
+  config: AiExtractionConfig,
+) =>
+  invoke<ExtractedSalaryCertificate>("ai_extract_salary_certificate", {
+    ocrText,
+    config,
+  })
+
 /// Focused, schema-constrained extraction of just the payment due date —
 /// reliable even with a small local model (e.g. Ministral 8B). Returns an ISO
 /// date or null.

@@ -603,6 +603,379 @@ pub async fn ai_extract_leasing(
 }
 
 // ===========================================================================
+// Extraction d'un bulletin de salaire suisse
+// ===========================================================================
+
+const PAYSLIP_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les bulletins de salaire suisses (décompte de salaire / Lohnabrechnung / conteggio salario). Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : si un poste est absent du bulletin, mets null. Un poste absent n'est PAS un poste à zéro.";
+
+const PAYSLIP_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un BULLETIN DE SALAIRE suisse. Extrais chaque poste.
+
+Les bulletins romands sortent souvent d'un logiciel alémanique : les libellés peuvent être en allemand ou en italien. Correspondances :
+- AVS/AI/APG = AHV/IV/EO = AVS/AI/IPG
+- AC (assurance-chômage) = ALV (Arbeitslosenversicherung) = AD
+- LPP / 2e pilier / prévoyance professionnelle = BVG / PK (Pensionskasse) = LPP / CP
+- LAA accidents non professionnels = NBU / NBUV (Nichtberufsunfall) = AINP
+- LAA accidents professionnels = BU / BUV (Berufsunfall) — À LA CHARGE DE L'EMPLOYEUR, ne pas le mettre dans les retenues du salarié
+- Indemnités journalières maladie = KTG (Krankentaggeld) = IPG malattia
+- Allocations familiales = Kinderzulagen / Familienzulagen = assegni familiari
+- 13e salaire = 13. Monatslohn = 13esima
+- Heures supplémentaires = Überstunden = ore supplementari
+- Impôt à la source = Quellensteuer = imposta alla fonte
+
+RÈGLES STRICTES :
+1. Tous les montants sont POSITIFS, même les retenues. Une retenue de -424.00 sur le bulletin devient 424.00.
+2. `net_paid` = montant effectivement versé (« Net à payer », « Auszahlung », « Nettolohn »). C'est le chiffre du bas.
+3. `gross_amount` = brut total (« Total brut », « Bruttolohn », « Total brut soumis »). Si le bulletin distingue « brut » et « brut soumis AVS », prends le BRUT TOTAL.
+4. `base_salary` = salaire de base mensuel, hors 13e, hors heures supplémentaires, hors primes.
+5. `family_allowance` = allocations familiales / de formation. ATTENTION : elles s'ajoutent au brut mais ne sont PAS soumises aux cotisations. Ne les inclus pas dans `base_salary`.
+6. `company_car_private` = part privée du véhicule de service (souvent 0.9 % du prix d'achat, ou « part privée voiture », « Privatanteil Geschäftsauto »).
+7. `benefits_in_kind` = prestations en nature (repas, logement) — PAS le véhicule, qui a son propre champ.
+8. `expense_reimbursement` / `expense_lump_sum` = remboursements de frais (« indemnité de frais », « frais forfaitaires », « Spesen »). Ce ne sont PAS des éléments de salaire : ils s'ajoutent au net sans être soumis.
+9. `laa_nonoccupational` = SEULEMENT la prime accidents NON professionnels (NBU). Si le bulletin ne montre qu'une ligne « LAA » sans distinction, mets-la ici.
+10. `overtime_hours` = nombre d'heures supplémentaires, si le bulletin le donne. Sinon null.
+11. `period_start` / `period_end` = période couverte (YYYY-MM-DD). Les dates suisses sont JJ.MM.AAAA. Si seul un mois est donné (« Mars 2026 », « 03.2026 »), déduis le premier et le dernier jour du mois.
+12. `received_on` = date de versement / de valeur, si elle figure. Sinon null.
+13. `employer_name` = raison sociale de l'employeur, en haut du bulletin.
+14. Si un montant est ambigu ou introuvable → null. N'invente RIEN.
+
+Réponds avec ce JSON EXACT :
+{
+  "employer_name": string|null,
+  "period_label": string|null,
+  "period_start": "YYYY-MM-DD"|null,
+  "period_end": "YYYY-MM-DD"|null,
+  "received_on": "YYYY-MM-DD"|null,
+  "net_paid": number|null,
+  "gross_amount": number|null,
+  "base_salary": number|null,
+  "thirteenth": number|null,
+  "overtime": number|null,
+  "overtime_hours": number|null,
+  "holiday_pay": number|null,
+  "bonus": number|null,
+  "benefits_in_kind": number|null,
+  "company_car_private": number|null,
+  "family_allowance": number|null,
+  "other_gross": number|null,
+  "avs_ai_apg": number|null,
+  "ac": number|null,
+  "ac_solidarity": number|null,
+  "lpp": number|null,
+  "laa_nonoccupational": number|null,
+  "ijm": number|null,
+  "tax_at_source": number|null,
+  "other_deductions": number|null,
+  "expense_reimbursement": number|null,
+  "expense_lump_sum": number|null,
+  "currency": string|null
+}
+
+TEXTE DU BULLETIN :
+{TEXT}"#;
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ExtractedPayslip {
+    pub employer_name: Option<String>,
+    pub period_label: Option<String>,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub received_on: Option<String>,
+    pub net_paid: Option<f64>,
+    pub gross_amount: Option<f64>,
+    pub base_salary: Option<f64>,
+    pub thirteenth: Option<f64>,
+    pub overtime: Option<f64>,
+    pub overtime_hours: Option<f64>,
+    pub holiday_pay: Option<f64>,
+    pub bonus: Option<f64>,
+    pub benefits_in_kind: Option<f64>,
+    pub company_car_private: Option<f64>,
+    pub family_allowance: Option<f64>,
+    pub other_gross: Option<f64>,
+    pub avs_ai_apg: Option<f64>,
+    pub ac: Option<f64>,
+    pub ac_solidarity: Option<f64>,
+    pub lpp: Option<f64>,
+    pub laa_nonoccupational: Option<f64>,
+    pub ijm: Option<f64>,
+    pub tax_at_source: Option<f64>,
+    pub other_deductions: Option<f64>,
+    pub expense_reimbursement: Option<f64>,
+    pub expense_lump_sum: Option<f64>,
+    pub currency: Option<String>,
+}
+
+/// Champs monétaires du bulletin, dans l'ordre du schéma JSON. Sert à la fois
+/// à construire le schéma et à lire la réponse, pour qu'ils ne puissent pas
+/// diverger.
+const PAYSLIP_MONEY_FIELDS: &[&str] = &[
+    "net_paid", "gross_amount", "base_salary", "thirteenth", "overtime",
+    "overtime_hours", "holiday_pay", "bonus", "benefits_in_kind",
+    "company_car_private", "family_allowance", "other_gross", "avs_ai_apg",
+    "ac", "ac_solidarity", "lpp", "laa_nonoccupational", "ijm",
+    "tax_at_source", "other_deductions", "expense_reimbursement",
+    "expense_lump_sum",
+];
+
+const PAYSLIP_TEXT_FIELDS: &[&str] = &[
+    "employer_name", "period_label", "period_start", "period_end",
+    "received_on", "currency",
+];
+
+fn payslip_schema() -> Value {
+    let mut props = serde_json::Map::new();
+    for f in PAYSLIP_TEXT_FIELDS {
+        props.insert((*f).to_string(), json!({"type": ["string", "null"]}));
+    }
+    for f in PAYSLIP_MONEY_FIELDS {
+        props.insert((*f).to_string(), json!({"type": ["number", "null"]}));
+    }
+    let required: Vec<&str> = PAYSLIP_TEXT_FIELDS
+        .iter()
+        .chain(PAYSLIP_MONEY_FIELDS.iter())
+        .copied()
+        .collect();
+    json!({
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+/// Une retenue négative sur le papier est une retenue positive dans le modèle.
+/// Les fournisseurs rendent tantôt l'un tantôt l'autre selon la mise en page :
+/// on normalise plutôt que de faire confiance au signe.
+fn abs_opt(v: &Value) -> Option<f64> {
+    v.as_f64().map(f64::abs)
+}
+
+#[tauri::command]
+pub async fn ai_extract_payslip(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedPayslip, String> {
+    let prompt = PAYSLIP_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = payslip_schema();
+    let (raw, usage) =
+        call_provider(&config, PAYSLIP_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let v: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+
+    Ok(ExtractedPayslip {
+        employer_name: as_opt_string(&v["employer_name"]),
+        period_label: as_opt_string(&v["period_label"]),
+        period_start: as_opt_string(&v["period_start"]),
+        period_end: as_opt_string(&v["period_end"]),
+        received_on: as_opt_string(&v["received_on"]),
+        net_paid: abs_opt(&v["net_paid"]),
+        gross_amount: abs_opt(&v["gross_amount"]),
+        base_salary: abs_opt(&v["base_salary"]),
+        thirteenth: abs_opt(&v["thirteenth"]),
+        overtime: abs_opt(&v["overtime"]),
+        overtime_hours: abs_opt(&v["overtime_hours"]),
+        holiday_pay: abs_opt(&v["holiday_pay"]),
+        bonus: abs_opt(&v["bonus"]),
+        benefits_in_kind: abs_opt(&v["benefits_in_kind"]),
+        company_car_private: abs_opt(&v["company_car_private"]),
+        family_allowance: abs_opt(&v["family_allowance"]),
+        other_gross: abs_opt(&v["other_gross"]),
+        avs_ai_apg: abs_opt(&v["avs_ai_apg"]),
+        ac: abs_opt(&v["ac"]),
+        ac_solidarity: abs_opt(&v["ac_solidarity"]),
+        lpp: abs_opt(&v["lpp"]),
+        laa_nonoccupational: abs_opt(&v["laa_nonoccupational"]),
+        ijm: abs_opt(&v["ijm"]),
+        tax_at_source: abs_opt(&v["tax_at_source"]),
+        other_deductions: abs_opt(&v["other_deductions"]),
+        expense_reimbursement: abs_opt(&v["expense_reimbursement"]),
+        expense_lump_sum: abs_opt(&v["expense_lump_sum"]),
+        currency: as_opt_string(&v["currency"]),
+    })
+}
+
+// ===========================================================================
+// Extraction d'un certificat de salaire suisse (formulaire 11)
+// ===========================================================================
+
+const CERTIFICATE_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les certificats de salaire suisses (Lohnausweis / certificato di salario, formulaire 11). Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. Le formulaire est NUMÉROTÉ : appuie-toi sur les numéros de rubrique, pas sur les libellés. Si une rubrique est vide, mets null.";
+
+const CERTIFICATE_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un CERTIFICAT DE SALAIRE suisse (Lohnausweis, formulaire 11). Extrais chaque rubrique numérotée.
+
+Le formulaire est identique dans les trois langues, seuls les libellés changent. Fie-toi aux NUMÉROS :
+  1     Salaire brut / rente (Lohn / Rente)
+  2.1   Prestations salariales accessoires — pension et logement (Verpflegung, Unterkunft)
+  2.2   Part privée voiture de service (Privatanteil Geschäftswagen)
+  2.3   Autres prestations salariales accessoires
+  3     Prestations non périodiques (unregelmässige Leistungen)
+  4     Participations de collaborateur (Mitarbeiterbeteiligungen)
+  5     Indemnités des membres de l'administration (Verwaltungsratsentschädigungen)
+  6     Autres prestations (andere Leistungen)
+  7     Prestations en capital (Kapitalleistungen)
+  8     SALAIRE BRUT TOTAL (Bruttolohn total) — c'est un TOTAL
+  9     Cotisations AVS/AI/APG/AC/AANP (AHV/IV/EO/ALV/NBUV-Beiträge)
+  10.1  Cotisations de prévoyance professionnelle ordinaires (BVG ordentlich)
+  10.2  Cotisations de prévoyance professionnelle, rachats (BVG Einkauf)
+  11    SALAIRE NET (Nettolohn) — c'est un TOTAL
+  12    Impôt à la source retenu (Quellensteuerabzug)
+  13.1  Frais effectifs — voyage, repas, nuitées (effektive Spesen)
+  13.2  Frais forfaitaires (Pauschalspesen)
+  14    Autres prestations de l'employeur
+  15    Observations (Bemerkungen) — TEXTE LIBRE
+
+CASES À COCHER (lettres A à I dans l'en-tête) :
+- `box_f_employer_transport` = case F cochée : transport gratuit entre le domicile et le lieu de travail.
+- `box_g_free_meals` = case G cochée : repas gratuits ou cantine à prix réduit.
+
+RÈGLES STRICTES :
+1. Tous les montants sont POSITIFS, y compris les rubriques 9, 10.1, 10.2 et 12 qui sont des déductions.
+2. `fiscal_year` = année civile couverte par le certificat (souvent « du 01.01.AAAA au 31.12.AAAA »).
+3. Les rubriques 8 et 11 sont des TOTAUX imprimés : reprends-les telles quelles, ne les recalcule pas. Si elles sont illisibles, mets null — le total sera recalculé ailleurs.
+4. `employer_name` = raison sociale de l'employeur. `employee_name` = nom du salarié.
+5. `r15_remarks` = texte intégral de la rubrique 15, tel quel.
+6. Une rubrique vide ou barrée → null. N'invente RIEN.
+
+Réponds avec ce JSON EXACT :
+{
+  "employer_name": string|null,
+  "employee_name": string|null,
+  "fiscal_year": number|null,
+  "r1_salary": number|null,
+  "r2_1_benefits_in_kind": number|null,
+  "r2_2_company_car": number|null,
+  "r2_3_other_benefits": number|null,
+  "r3_irregular": number|null,
+  "r4_capital_shares": number|null,
+  "r5_board_fees": number|null,
+  "r6_other_benefits": number|null,
+  "r7_other_payments": number|null,
+  "r8_gross_total": number|null,
+  "r9_social_contributions": number|null,
+  "r10_1_lpp_ordinary": number|null,
+  "r10_2_lpp_buyback": number|null,
+  "r11_net_salary": number|null,
+  "r12_tax_at_source": number|null,
+  "r13_1_effective_expenses": number|null,
+  "r13_2_lump_sum_expenses": number|null,
+  "r14_other_disclosures": number|null,
+  "r15_remarks": string|null,
+  "box_f_employer_transport": boolean|null,
+  "box_g_free_meals": boolean|null
+}
+
+TEXTE DU CERTIFICAT :
+{TEXT}"#;
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct ExtractedSalaryCertificate {
+    pub employer_name: Option<String>,
+    pub employee_name: Option<String>,
+    pub fiscal_year: Option<i64>,
+    pub r1_salary: Option<f64>,
+    pub r2_1_benefits_in_kind: Option<f64>,
+    pub r2_2_company_car: Option<f64>,
+    pub r2_3_other_benefits: Option<f64>,
+    pub r3_irregular: Option<f64>,
+    pub r4_capital_shares: Option<f64>,
+    pub r5_board_fees: Option<f64>,
+    pub r6_other_benefits: Option<f64>,
+    pub r7_other_payments: Option<f64>,
+    pub r8_gross_total: Option<f64>,
+    pub r9_social_contributions: Option<f64>,
+    pub r10_1_lpp_ordinary: Option<f64>,
+    pub r10_2_lpp_buyback: Option<f64>,
+    pub r11_net_salary: Option<f64>,
+    pub r12_tax_at_source: Option<f64>,
+    pub r13_1_effective_expenses: Option<f64>,
+    pub r13_2_lump_sum_expenses: Option<f64>,
+    pub r14_other_disclosures: Option<f64>,
+    pub r15_remarks: Option<String>,
+    pub box_f_employer_transport: Option<bool>,
+    pub box_g_free_meals: Option<bool>,
+}
+
+const CERTIFICATE_MONEY_FIELDS: &[&str] = &[
+    "r1_salary", "r2_1_benefits_in_kind", "r2_2_company_car",
+    "r2_3_other_benefits", "r3_irregular", "r4_capital_shares", "r5_board_fees",
+    "r6_other_benefits", "r7_other_payments", "r8_gross_total",
+    "r9_social_contributions", "r10_1_lpp_ordinary", "r10_2_lpp_buyback",
+    "r11_net_salary", "r12_tax_at_source", "r13_1_effective_expenses",
+    "r13_2_lump_sum_expenses", "r14_other_disclosures",
+];
+
+fn certificate_schema() -> Value {
+    let mut props = serde_json::Map::new();
+    for f in ["employer_name", "employee_name", "r15_remarks"] {
+        props.insert(f.to_string(), json!({"type": ["string", "null"]}));
+    }
+    props.insert("fiscal_year".into(), json!({"type": ["number", "null"]}));
+    for f in CERTIFICATE_MONEY_FIELDS {
+        props.insert((*f).to_string(), json!({"type": ["number", "null"]}));
+    }
+    for f in ["box_f_employer_transport", "box_g_free_meals"] {
+        props.insert(f.to_string(), json!({"type": ["boolean", "null"]}));
+    }
+    let required: Vec<&str> = ["employer_name", "employee_name", "fiscal_year"]
+        .iter()
+        .copied()
+        .chain(CERTIFICATE_MONEY_FIELDS.iter().copied())
+        .chain(["r15_remarks", "box_f_employer_transport", "box_g_free_meals"])
+        .collect();
+    json!({
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_salary_certificate(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedSalaryCertificate, String> {
+    let prompt = CERTIFICATE_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = certificate_schema();
+    let (raw, usage) =
+        call_provider(&config, CERTIFICATE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let v: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+
+    Ok(ExtractedSalaryCertificate {
+        employer_name: as_opt_string(&v["employer_name"]),
+        employee_name: as_opt_string(&v["employee_name"]),
+        fiscal_year: as_opt_i64(&v["fiscal_year"]),
+        r1_salary: abs_opt(&v["r1_salary"]),
+        r2_1_benefits_in_kind: abs_opt(&v["r2_1_benefits_in_kind"]),
+        r2_2_company_car: abs_opt(&v["r2_2_company_car"]),
+        r2_3_other_benefits: abs_opt(&v["r2_3_other_benefits"]),
+        r3_irregular: abs_opt(&v["r3_irregular"]),
+        r4_capital_shares: abs_opt(&v["r4_capital_shares"]),
+        r5_board_fees: abs_opt(&v["r5_board_fees"]),
+        r6_other_benefits: abs_opt(&v["r6_other_benefits"]),
+        r7_other_payments: abs_opt(&v["r7_other_payments"]),
+        r8_gross_total: abs_opt(&v["r8_gross_total"]),
+        r9_social_contributions: abs_opt(&v["r9_social_contributions"]),
+        r10_1_lpp_ordinary: abs_opt(&v["r10_1_lpp_ordinary"]),
+        r10_2_lpp_buyback: abs_opt(&v["r10_2_lpp_buyback"]),
+        r11_net_salary: abs_opt(&v["r11_net_salary"]),
+        r12_tax_at_source: abs_opt(&v["r12_tax_at_source"]),
+        r13_1_effective_expenses: abs_opt(&v["r13_1_effective_expenses"]),
+        r13_2_lump_sum_expenses: abs_opt(&v["r13_2_lump_sum_expenses"]),
+        r14_other_disclosures: abs_opt(&v["r14_other_disclosures"]),
+        r15_remarks: as_opt_string(&v["r15_remarks"]),
+        box_f_employer_transport: v["box_f_employer_transport"].as_bool(),
+        box_g_free_meals: v["box_g_free_meals"].as_bool(),
+    })
+}
+
+// ===========================================================================
 // Extraction d'un permis de circulation / carte grise (Suisse)
 // ===========================================================================
 

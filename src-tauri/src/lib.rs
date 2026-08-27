@@ -167,6 +167,8 @@ pub fn run() {
             commands::ai::ai_extract_receipt,
             commands::ai::ai_extract_car_insurance,
             commands::ai::ai_extract_leasing,
+            commands::ai::ai_extract_payslip,
+            commands::ai::ai_extract_salary_certificate,
             commands::ai::ai_extract_vehicle,
             commands::ai::ai_extract_due_date,
             commands::ai::ai_extract_due_date_image,

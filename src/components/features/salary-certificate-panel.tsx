@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { ErrorPanel } from "@/components/ui/error-panel"
+import { AiScanPanel } from "@/components/features/ai-scan-panel"
+import { getAiSettings } from "@/lib/ai-settings"
 import { cn, formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
 
@@ -145,6 +147,41 @@ export function SalaryCertificatePanel({
     [reconciliation],
   )
 
+  /// Pré-remplit la saisie depuis un certificat scanné, puis bascule en mode
+  /// édition sans rien enregistrer. Le certificat de l'employeur pèse lourd
+  /// (c'est lui que l'administration recevra) : il passe par une relecture,
+  /// comme les autres extractions de l'application.
+  const applyExtraction = (x: api.ExtractedSalaryCertificate): string => {
+    const filled: string[] = []
+    const next: Record<string, string> = {}
+    for (const r of RUBRICS) {
+      const v = x[r.key as keyof api.ExtractedSalaryCertificate]
+      if (typeof v === "number") {
+        next[r.key] = String(v)
+        filled.push(r.num)
+      } else {
+        next[r.key] = ""
+      }
+    }
+    next.r15_remarks = x.r15_remarks ?? ""
+    next.received_on = reconciliation?.declared?.received_on ?? ""
+    next.box_f_employer_transport = x.box_f_employer_transport ? "1" : ""
+    next.box_g_free_meals = x.box_g_free_meals ? "1" : ""
+    setDraft(next)
+    setEditing(true)
+
+    if (x.fiscal_year && x.fiscal_year !== year) {
+      // Le certificat scanné porte une autre année : suivre le document plutôt
+      // que d'écrire ses chiffres sur l'exercice affiché.
+      toast(
+        `Ce certificat porte sur ${x.fiscal_year} — bascule sur cette année.`,
+        "success",
+      )
+      onYearChange(x.fiscal_year)
+    }
+    return filled.length ? `rubriques ${filled.slice(0, 8).join(", ")}…` : ""
+  }
+
   const save = async () => {
     if (!reconciliation) return
     const num = (k: string): number | null => {
@@ -245,6 +282,15 @@ export function SalaryCertificatePanel({
           )}
         </div>
       </div>
+
+      <AiScanPanel
+        fr
+        title="Scanner le certificat de salaire"
+        subtitle="PDF ou photo du formulaire 11. Les rubriques sont pré-remplies puis confrontées à vos bulletins."
+        onExtract={async (text) =>
+          applyExtraction(await api.aiExtractSalaryCertificate(text, getAiSettings()))
+        }
+      />
 
       {receipt_count === 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
