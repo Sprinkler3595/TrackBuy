@@ -428,6 +428,37 @@ export type TranslationKeys = {
   "incomes.noReceipts": string
   "incomes.totalYTD": string
   "incomes.attachments": string
+  "incomes.notFound": string
+  "incomes.monthlyEquivalent": string
+  "incomes.yearlyEquivalent": string
+  "incomes.perMonth": string
+  "incomes.perYear": string
+  "incomes.inDays": string
+  "incomes.lateBy": string
+  "incomes.receiptSaved": string
+  "incomes.receiptUpdated": string
+  "incomes.receiptDeleted": string
+  "incomes.deleteReceiptTitle": string
+  "incomes.deleteReceiptConfirm": string
+  "incomes.receiptLogged": string
+  "incomes.receiptsLogged": string
+  "incomes.tabContract": string
+  "incomes.tabFiscalYear": string
+  "incomes.payslips": string
+  "incomes.logPayslip": string
+  "incomes.compliant": string
+  "incomes.showCheck": string
+  "incomes.hideCheck": string
+  "incomes.noContractTitle": string
+  "incomes.noContractHint": string
+  "incomes.fillContract": string
+  "incomes.filterType": string
+  "incomes.annualSummary": string
+  "incomes.netTotal": string
+  "incomes.deductionsTotal": string
+  "incomes.exportCsv": string
+  "incomes.exportCsvTitle": string
+  "incomes.exportError": string
 
   // Income type labels
   "incomes.type.salary": string
@@ -894,6 +925,37 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.noReceipts": "Aucun versement enregistré.",
     "incomes.totalYTD": "Cumul versé",
     "incomes.attachments": "Bulletins de salaire",
+    "incomes.notFound": "Revenu introuvable",
+    "incomes.monthlyEquivalent": "Équivalent mensuel",
+    "incomes.yearlyEquivalent": "Équivalent annuel",
+    "incomes.perMonth": "/ mois",
+    "incomes.perYear": "/ an",
+    "incomes.inDays": "dans",
+    "incomes.lateBy": "retard",
+    "incomes.receiptSaved": "Bulletin enregistré",
+    "incomes.receiptUpdated": "Bulletin modifié",
+    "incomes.receiptDeleted": "Bulletin supprimé",
+    "incomes.deleteReceiptTitle": "Supprimer ce bulletin ?",
+    "incomes.deleteReceiptConfirm": "Ce bulletin et ses pièces jointes seront supprimés définitivement.",
+    "incomes.receiptLogged": "versement enregistré",
+    "incomes.receiptsLogged": "versements enregistrés",
+    "incomes.tabContract": "Contrat",
+    "incomes.tabFiscalYear": "Année fiscale",
+    "incomes.payslips": "Bulletins",
+    "incomes.logPayslip": "Saisir un bulletin",
+    "incomes.compliant": "Conforme",
+    "incomes.showCheck": "Voir le contrôle",
+    "incomes.hideCheck": "Masquer",
+    "incomes.noContractTitle": "Contrat de travail non renseigné",
+    "incomes.noContractHint": "Les taux de votre caisse de pension, de l'assurance accidents non professionnels et des indemnités journalières sont contractuels : sans eux, ces retenues ne peuvent pas être vérifiées.",
+    "incomes.fillContract": "Remplir le contrat",
+    "incomes.filterType": "Type",
+    "incomes.annualSummary": "Synthèse annuelle",
+    "incomes.netTotal": "Net",
+    "incomes.deductionsTotal": "Retenues",
+    "incomes.exportCsv": "Exporter CSV",
+    "incomes.exportCsvTitle": "Exporter en CSV (revenus, bulletins détaillés et certificats de salaire)",
+    "incomes.exportError": "Erreur export",
 
     "incomes.type.salary": "Salaire",
     "incomes.type.bonus": "Prime / bonus",
@@ -1357,6 +1419,37 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.noReceipts": "No receipts recorded.",
     "incomes.totalYTD": "YTD total",
     "incomes.attachments": "Payslips",
+    "incomes.notFound": "Income not found",
+    "incomes.monthlyEquivalent": "Monthly equivalent",
+    "incomes.yearlyEquivalent": "Yearly equivalent",
+    "incomes.perMonth": "/ month",
+    "incomes.perYear": "/ year",
+    "incomes.inDays": "in",
+    "incomes.lateBy": "late by",
+    "incomes.receiptSaved": "Payslip saved",
+    "incomes.receiptUpdated": "Payslip updated",
+    "incomes.receiptDeleted": "Payslip deleted",
+    "incomes.deleteReceiptTitle": "Delete this payslip?",
+    "incomes.deleteReceiptConfirm": "This payslip and its attachments will be permanently deleted.",
+    "incomes.receiptLogged": "receipt logged",
+    "incomes.receiptsLogged": "receipts logged",
+    "incomes.tabContract": "Contract",
+    "incomes.tabFiscalYear": "Tax year",
+    "incomes.payslips": "Payslips",
+    "incomes.logPayslip": "Add a payslip",
+    "incomes.compliant": "Compliant",
+    "incomes.showCheck": "Show check",
+    "incomes.hideCheck": "Hide",
+    "incomes.noContractTitle": "Employment contract not filled in",
+    "incomes.noContractHint": "Your pension fund, non-occupational accident and daily-allowance rates are contractual: without them those deductions cannot be verified.",
+    "incomes.fillContract": "Fill in the contract",
+    "incomes.filterType": "Type",
+    "incomes.annualSummary": "Annual summary",
+    "incomes.netTotal": "Net",
+    "incomes.deductionsTotal": "Deductions",
+    "incomes.exportCsv": "Export CSV",
+    "incomes.exportCsvTitle": "Export to CSV (incomes, detailed payslips and salary certificates)",
+    "incomes.exportError": "Export error",
 
     "incomes.type.salary": "Salary",
     "incomes.type.bonus": "Bonus",

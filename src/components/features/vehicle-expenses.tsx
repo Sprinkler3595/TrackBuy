@@ -52,9 +52,12 @@ interface VehicleExpensesProps {
   vehicleId: string
   /// Used to default the expense category (charging for EV, fuel otherwise).
   defaultCategory: api.VehicleExpenseCategory
+  /// Called after a create / update / delete so the vehicle overview can
+  /// recompute the month's figures without a page reload.
+  onChanged?: () => void
 }
 
-export function VehicleExpenses({ vehicleId, defaultCategory }: VehicleExpensesProps) {
+export function VehicleExpenses({ vehicleId, defaultCategory, onChanged }: VehicleExpensesProps) {
   const { locale } = useContext(I18nContext)
   const fr = locale === "fr"
   const { toast } = useToast()
@@ -165,6 +168,7 @@ export function VehicleExpenses({ vehicleId, defaultCategory }: VehicleExpensesP
       }
       resetForm()
       await load()
+      onChanged?.()
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
     }
@@ -177,6 +181,7 @@ export function VehicleExpenses({ vehicleId, defaultCategory }: VehicleExpensesP
       toast(fr ? "Dépense supprimée" : "Expense deleted", "success")
       setDeleteTarget(null)
       await load()
+      onChanged?.()
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
     }

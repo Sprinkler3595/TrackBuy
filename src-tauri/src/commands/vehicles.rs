@@ -88,6 +88,9 @@ pub struct VehicleEngagementSummary {
     pub current_amount: Option<f64>,
     pub currency: String,
     pub billing_cycle: String,
+    /// Multiplier on the cycle ("every 2 months" = monthly ×2). Needed to
+    /// normalise a contract to a monthly cost on the vehicle dashboard.
+    pub cycle_interval: i64,
     pub status: String,
     pub next_due_date: Option<String>,
     pub contract_end_date: Option<String>,
@@ -143,16 +146,18 @@ fn row_to_engagement_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Vehicl
         current_amount: row.get(3)?,
         currency: row.get(4)?,
         billing_cycle: row.get(5)?,
-        status: row.get(6)?,
-        next_due_date: row.get(7)?,
-        contract_end_date: row.get(8)?,
-        vehicle_plate: row.get(9)?,
-        vehicle_id: row.get(10)?,
+        cycle_interval: row.get(6)?,
+        status: row.get(7)?,
+        next_due_date: row.get(8)?,
+        contract_end_date: row.get(9)?,
+        vehicle_plate: row.get(10)?,
+        vehicle_id: row.get(11)?,
     })
 }
 
 const ENGAGEMENT_SUMMARY_COLUMNS: &str = "id, name, engagement_type, current_amount, currency,
-    billing_cycle, status, next_due_date, contract_end_date, vehicle_plate, vehicle_id";
+    billing_cycle, cycle_interval, status, next_due_date, contract_end_date, vehicle_plate,
+    vehicle_id";
 
 #[tauri::command]
 pub fn get_vehicles(state: State<'_, AppState>) -> Result<Vec<Vehicle>, String> {

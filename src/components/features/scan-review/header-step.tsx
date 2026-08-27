@@ -1,4 +1,4 @@
-import { Plus, FileText, ClipboardList, AlertCircle, TicketPercent, Paperclip, Clock } from "lucide-react"
+import { Plus, FileText, ClipboardList, AlertCircle, TicketPercent, FileSignature, Receipt, ShoppingCart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DocSlot } from "@/components/features/doc-slot"
@@ -6,14 +6,22 @@ import * as api from "@/lib/tauri"
 import type { SharedState } from "./types"
 
 /**
- * Step 0 of the scan-review wizard: per-invoice fields that apply to all
- * items in the receipt — merchant, location, card, date, currency, invoice
- * documents — plus a read-only summary of discount lines (voucher items with
- * a negative price) so the user sees them without having to create them.
+ * Step 0 of the purchase assistant: what kind of document was scanned, plus
+ * the fields that apply to every line of it — merchant, location, card, date,
+ * currency, documents — and a read-only summary of discount lines (voucher
+ * items with a negative price) so the user sees them without creating them.
  *
  * Selectors follow the same `<select>` + "+" + QuickCreateDialog pattern used
  * in items.tsx and tickets.tsx so the look is familiar.
  */
+
+/** The four documents a purchase can start from, in chronological order. */
+const DOC_KINDS: Array<{ value: api.DocumentKind; label: string; hint: string; icon: typeof FileText }> = [
+  { value: "offer", label: "Offre", hint: "devis, proposition", icon: FileSignature },
+  { value: "purchase_order", label: "Bon de commande", hint: "commande confirmée", icon: ShoppingCart },
+  { value: "invoice", label: "Facture", hint: "montant à payer", icon: FileText },
+  { value: "receipt", label: "Ticket de caisse", hint: "déjà payé", icon: Receipt },
+]
 
 interface HeaderStepProps {
   shared: SharedState
@@ -22,10 +30,12 @@ interface HeaderStepProps {
   locations: api.Location[]
   cards: api.PaymentCard[]
   onQuickCreate: (entity: "merchant" | "location" | "card") => void
-  /** When the wizard was launched from a pending invoice, holds the original
-   *  filename so we can show a visual hint that it will be auto-attached on
-   *  submit (the user can still override by picking a file in the slot). */
-  pendingInvoiceName?: string | null
+  /** Confirmed nature of the scanned document — pre-selected from the AI's
+   *  reading, overridable here. */
+  docKind: api.DocumentKind
+  onDocKindChange: (next: api.DocumentKind) => void
+  /** True when the AI is the one who picked `docKind` (vs. a fallback). */
+  docKindDetected: boolean
 }
 
 export function HeaderStep({
@@ -35,16 +45,44 @@ export function HeaderStep({
   locations,
   cards,
   onQuickCreate,
-  pendingInvoiceName,
+  docKind,
+  onDocKindChange,
+  docKindDetected,
 }: HeaderStepProps) {
   const discountTotal = shared.discounts.reduce((sum, d) => sum + d.price, 0)
-  // Pre-attached state: a file from the pending queue is queued for auto
-  // attach. The hint disappears as soon as the user manually picks one in
-  // the slot (manual pick takes priority on submit).
-  const showPendingHint = !!pendingInvoiceName && !shared.invoiceFile
 
   return (
     <div className="space-y-5">
+      {/* What was scanned. Decides how the document is filed, not what gets
+          created: an offer, an order and an invoice all describe the same
+          purchase at three moments of its life. */}
+      <div className="space-y-2">
+        <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Document scanné{docKindDetected ? " (détecté)" : ""}
+        </label>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {DOC_KINDS.map(({ value, label, hint, icon: Icon }) => {
+            const active = docKind === value
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onDocKindChange(value)}
+                className={`flex flex-col items-center gap-1 rounded-md border p-3 text-sm transition-colors ${
+                  active
+                    ? "border-primary bg-primary/10 font-semibold text-foreground"
+                    : "border-input bg-background text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                <Icon className="h-5 w-5" />
+                {label}
+                <span className="text-[10px] font-normal text-muted-foreground">{hint}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
       {/* OCR didn't match an existing merchant — nudge the user to create one. */}
       {shared.merchantHint && !shared.merchant_id && (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
@@ -134,34 +172,15 @@ export function HeaderStep({
       {/* Shared documents — facture (invoice) and bon de commande (purchase
           order) attached at the order level (shareWithOrder=true on submit). */}
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-2">
-          <DocSlot
-            label="Facture"
-            icon={<FileText className="h-3.5 w-3.5" />}
-            value={shared.invoiceFile}
-            onChange={(v) => onChange({ invoiceFile: v })}
-            dialogTitle="Sélectionner la facture"
-          />
-          {showPendingHint && (
-            <div className="flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-2.5 py-2 text-xs text-blue-700 dark:text-blue-300">
-              <Paperclip className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-              <div className="min-w-0 flex-1">
-                <p className="font-medium flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  Facture déjà en file d'attente
-                </p>
-                <p className="truncate" title={pendingInvoiceName ?? ""}>
-                  {pendingInvoiceName}
-                </p>
-                <p className="text-blue-700/80 dark:text-blue-300/80 mt-0.5">
-                  S'attachera automatiquement. Choisis un fichier ci-dessus pour la remplacer.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
         <DocSlot
-          label="Bon de commande"
+          label="Facture"
+          icon={<FileText className="h-3.5 w-3.5" />}
+          value={shared.invoiceFile}
+          onChange={(v) => onChange({ invoiceFile: v })}
+          dialogTitle="Sélectionner la facture"
+        />
+        <DocSlot
+          label="Offre / bon de commande"
           icon={<ClipboardList className="h-3.5 w-3.5" />}
           value={shared.purchaseOrderFile}
           onChange={(v) => onChange({ purchaseOrderFile: v })}

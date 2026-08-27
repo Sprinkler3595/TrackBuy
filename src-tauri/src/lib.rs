@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod db;
+mod payroll;
 mod storage;
 mod util;
 
@@ -103,6 +104,16 @@ pub fn run() {
             commands::incomes::log_income_receipt,
             commands::incomes::update_income_receipt,
             commands::incomes::delete_income_receipt,
+            commands::payroll::get_payroll_params,
+            commands::payroll::get_employment_contract,
+            commands::payroll::upsert_employment_contract,
+            commands::payroll::check_income_receipt,
+            commands::payroll::preview_payslip_check,
+            commands::payroll::get_salary_certificate,
+            commands::payroll::upsert_salary_certificate,
+            commands::payroll::compute_salary_certificate,
+            commands::payroll::reconcile_salary_certificate,
+            commands::payroll::get_income_tax_summary,
             commands::pending_reimbursements::list_pending_reimbursements,
             commands::pending_reimbursements::get_pending_reimbursement,
             commands::pending_reimbursements::create_pending_reimbursement,
@@ -147,6 +158,7 @@ pub fn run() {
             commands::backup::export_engagement_charges_csv,
             commands::backup::export_incomes_csv,
             commands::backup::export_income_receipts_csv,
+            commands::backup::export_salary_certificates_csv,
             commands::backup::export_reimbursements_csv,
             commands::backup::get_stats,
             commands::files::write_text_file,
@@ -155,6 +167,8 @@ pub fn run() {
             commands::ai::ai_extract_receipt,
             commands::ai::ai_extract_car_insurance,
             commands::ai::ai_extract_leasing,
+            commands::ai::ai_extract_payslip,
+            commands::ai::ai_extract_salary_certificate,
             commands::ai::ai_extract_vehicle,
             commands::ai::ai_extract_due_date,
             commands::ai::ai_extract_due_date_image,

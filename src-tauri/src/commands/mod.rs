@@ -15,6 +15,7 @@ pub mod files;
 pub mod items;
 pub mod locations;
 pub mod merchants;
+pub mod payroll;
 pub mod pending_invoices;
 pub mod pending_reimbursements;
 pub mod qrbill;

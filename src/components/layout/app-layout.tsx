@@ -1,6 +1,5 @@
 import { Outlet } from "react-router-dom"
 import { Sidebar } from "@/components/layout/sidebar"
-import { OnboardingWizard } from "@/components/features/onboarding-wizard"
 
 interface AppLayoutProps {
   onLock: () => void
@@ -14,8 +13,6 @@ export function AppLayout({ onLock, vaultName }: AppLayoutProps) {
       <main className="flex-1 overflow-y-auto p-8">
         <Outlet />
       </main>
-      {/* First-run budget assistant — self-decides whether to show. */}
-      <OnboardingWizard vaultName={vaultName} />
     </div>
   )
 }

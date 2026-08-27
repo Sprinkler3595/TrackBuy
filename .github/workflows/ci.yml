@@ -64,3 +64,9 @@ jobs:
 
       - name: Build Rust backend
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+
+      # Le domaine (moteur de paie, migrations, import CAMT.053, classification)
+      # est couvert par des tests unitaires : les exécuter en CI, pas seulement
+      # compiler.
+      - name: Test Rust backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
