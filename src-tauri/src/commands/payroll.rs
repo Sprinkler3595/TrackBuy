@@ -130,7 +130,15 @@ pub fn upsert_employment_contract(
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_contract_inner(&conn, &contract)
+}
 
+/// Séparé de la commande pour être testable sans `AppState` — même découpage
+/// que `roll_forward_inner` dans `engagements`.
+fn upsert_contract_inner(
+    conn: &rusqlite::Connection,
+    contract: &EmploymentContract,
+) -> Result<EmploymentContract, String> {
     let id = if contract.id.is_empty() {
         Uuid::new_v4().to_string()
     } else {
@@ -178,37 +186,37 @@ pub fn upsert_employment_contract(
             updated_at = datetime('now')",
         rusqlite::params![
             id,
-            contract.income_id,
-            contract.employer_name,
-            contract.employer_uid,
-            contract.avs_number,
-            contract.birth_date,
-            contract.work_canton,
+            &contract.income_id,
+            &contract.employer_name,
+            &contract.employer_uid,
+            &contract.avs_number,
+            &contract.birth_date,
+            &contract.work_canton,
             contract.activity_rate_pct,
             contract.annual_gross_agreed,
             contract.salary_periods_per_year,
             contract.weekly_hours,
             contract.hourly_paid as i64,
             contract.thirteenth_salary as i64,
-            contract.lpp_fund_name,
+            &contract.lpp_fund_name,
             contract.lpp_employee_share_pct,
-            contract.laa_insurer,
+            &contract.laa_insurer,
             contract.laa_nonoccupational_pct,
             contract.ijm_employee_pct,
             contract.tax_at_source as i64,
-            contract.tax_at_source_scale,
+            &contract.tax_at_source_scale,
             contract.company_car_purchase_price,
             contract.subsidized_canteen as i64,
             contract.commute_km_per_day,
             contract.commute_public_transport_cost_year,
-            contract.started_on,
-            contract.ended_on,
-            contract.notes,
+            &contract.started_on,
+            &contract.ended_on,
+            &contract.notes,
         ],
     )
     .map_err(|e| e.to_string())?;
 
-    load_contract(&conn, &contract.income_id)?
+    load_contract(conn, &contract.income_id)?
         .ok_or_else(|| "Contrat introuvable après enregistrement".to_string())
 }
 
@@ -508,7 +516,13 @@ pub fn upsert_salary_certificate(
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_certificate_inner(&conn, &certificate)
+}
 
+fn upsert_certificate_inner(
+    conn: &rusqlite::Connection,
+    certificate: &SalaryCertificate,
+) -> Result<SalaryCertificate, String> {
     let id = if certificate.id.is_empty() {
         Uuid::new_v4().to_string()
     } else {
@@ -559,7 +573,7 @@ pub fn upsert_salary_certificate(
             updated_at = datetime('now')",
         rusqlite::params![
             id,
-            certificate.income_id,
+            &certificate.income_id,
             certificate.fiscal_year,
             certificate.r1_salary,
             certificate.r2_1_benefits_in_kind,
@@ -579,17 +593,17 @@ pub fn upsert_salary_certificate(
             certificate.r13_1_effective_expenses,
             certificate.r13_2_lump_sum_expenses,
             certificate.r14_other_disclosures,
-            certificate.r15_remarks,
+            &certificate.r15_remarks,
             certificate.box_f_employer_transport as i64,
             certificate.box_g_free_meals as i64,
-            certificate.received_on,
+            &certificate.received_on,
             origin,
-            certificate.notes,
+            &certificate.notes,
         ],
     )
     .map_err(|e| e.to_string())?;
 
-    load_certificate(&conn, &certificate.income_id, certificate.fiscal_year)?
+    load_certificate(conn, &certificate.income_id, certificate.fiscal_year)?
         .ok_or_else(|| "Certificat introuvable après enregistrement".to_string())
 }
 
@@ -919,13 +933,21 @@ pub fn get_income_tax_summary(
     let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
     let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
     let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
-
-    let params = params_for_year(year);
     let working_days = options
-        .as_ref()
         .and_then(|o| o.working_days)
         .filter(|d| *d > 0.0)
+        // 220 jours = 5 jours × 44 semaines, l'usage admis pour les frais de
+        // repas et de transport.
         .unwrap_or(220.0);
+    income_tax_summary_inner(&conn, year, working_days)
+}
+
+fn income_tax_summary_inner(
+    conn: &rusqlite::Connection,
+    year: i32,
+    working_days: f64,
+) -> Result<IncomeTaxSummary, String> {
+    let params = params_for_year(year);
 
     // --- salaires ---
     let mut stmt = conn
@@ -948,11 +970,11 @@ pub fn get_income_tax_summary(
     let mut main_contract: Option<(f64, EmploymentContract)> = None;
 
     for (income_id, name) in salaries {
-        let receipts = load_receipts(&conn, &income_id)?;
+        let receipts = load_receipts(conn, &income_id)?;
         let count = receipts.iter().filter(|r| receipt_year(r) == year).count();
         let computed = compute_certificate(&receipts, &income_id, year);
-        let declared = load_certificate(&conn, &income_id, year)?;
-        let contract = load_contract(&conn, &income_id)?;
+        let declared = load_certificate(conn, &income_id, year)?;
+        let contract = load_contract(conn, &income_id)?;
 
         // Le certificat de l'employeur fait foi dès qu'il est enregistré :
         // c'est lui que l'administration fiscale recevra.
@@ -1096,6 +1118,298 @@ pub fn get_income_tax_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
+    use crate::payroll::checks::Severity;
+    use crate::util::test_support::{test_key, TempDir};
+
+    fn open_db() -> (TempDir, Database) {
+        let tmp = TempDir::new();
+        let db = Database::open(tmp.path(), &test_key()).unwrap();
+        (tmp, db)
+    }
+
+    fn insert_income(conn: &rusqlite::Connection, id: &str, kind: &str) {
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES (?1, 'Salaire ACME', ?2, 'monthly', 'CHF', 'active')",
+            rusqlite::params![id, kind],
+        )
+        .unwrap();
+    }
+
+    fn sample_contract(income_id: &str) -> EmploymentContract {
+        EmploymentContract {
+            income_id: income_id.into(),
+            employer_name: Some("ACME SA".into()),
+            birth_date: Some("1985-06-15".into()),
+            work_canton: Some("VD".into()),
+            annual_gross_agreed: Some(96_000.0),
+            salary_periods_per_year: Some(12),
+            weekly_hours: Some(42.0),
+            lpp_employee_share_pct: Some(3.5),
+            laa_nonoccupational_pct: Some(1.0),
+            ijm_employee_pct: Some(0.5),
+            commute_public_transport_cost_year: Some(1_200.0),
+            ..Default::default()
+        }
+    }
+
+    fn insert_receipt(conn: &rusqlite::Connection, id: &str, income_id: &str, month: u32) {
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency,
+                 period_start, period_end, fiscal_year, base_salary_amount,
+                 social_charges_amount, ac_amount, pension_amount,
+                 laa_nonoccupational_amount)
+             VALUES (?1, ?2, ?3, 7220.57, 'CHF', ?4, ?5, 2026, 8000.0,
+                     424.0, 88.0, 187.43, 80.0)",
+            rusqlite::params![
+                id,
+                income_id,
+                format!("2026-{:02}-25", month),
+                format!("2026-{:02}-01", month),
+                format!("2026-{:02}-28", month),
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Le SQL des upserts n'est exercé nulle part ailleurs : une colonne mal
+    /// nommée ne se verrait qu'à l'exécution.
+    #[test]
+    fn contract_upsert_round_trips_every_field() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        let saved = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+        assert!(!saved.id.is_empty());
+        assert_eq!(saved.employer_name.as_deref(), Some("ACME SA"));
+        assert_eq!(saved.lpp_employee_share_pct, Some(3.5));
+        assert_eq!(saved.weekly_hours, Some(42.0));
+        assert_eq!(saved.work_canton.as_deref(), Some("VD"));
+
+        let loaded = load_contract(&conn, "inc1").unwrap().unwrap();
+        assert_eq!(loaded.id, saved.id);
+        assert_eq!(loaded.ijm_employee_pct, Some(0.5));
+    }
+
+    /// Un revenu = un employeur : réenregistrer met à jour au lieu de créer
+    /// une seconde ligne (la contrainte UNIQUE l'interdirait de toute façon).
+    #[test]
+    fn contract_upsert_updates_in_place() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        let first = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+        let mut second = sample_contract("inc1");
+        second.id = first.id.clone();
+        second.employer_name = Some("ACME Holding SA".into());
+        second.lpp_employee_share_pct = Some(4.0);
+        let updated = upsert_contract_inner(&conn, &second).unwrap();
+
+        assert_eq!(updated.id, first.id);
+        assert_eq!(updated.employer_name.as_deref(), Some("ACME Holding SA"));
+        assert_eq!(updated.lpp_employee_share_pct, Some(4.0));
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM employment_contracts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn certificate_upsert_round_trips_rubrics_and_boxes() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        let cert = SalaryCertificate {
+            income_id: "inc1".into(),
+            fiscal_year: 2026,
+            r1_salary: Some(96_000.0),
+            r2_2_company_car: Some(4_320.0),
+            r8_gross_total: Some(100_320.0),
+            r9_social_contributions: Some(7_104.0),
+            r10_1_lpp_ordinary: Some(2_249.1),
+            r11_net_salary: Some(90_966.9),
+            r13_2_lump_sum_expenses: Some(3_600.0),
+            r15_remarks: Some("Véhicule de service dès le 01.03".into()),
+            box_f_employer_transport: true,
+            origin: "manual".into(),
+            ..Default::default()
+        };
+        let saved = upsert_certificate_inner(&conn, &cert).unwrap();
+        assert_eq!(saved.r8_gross_total, Some(100_320.0));
+        assert_eq!(saved.r2_2_company_car, Some(4_320.0));
+        assert!(saved.box_f_employer_transport);
+        assert!(!saved.box_g_free_meals);
+        assert_eq!(
+            saved.r15_remarks.as_deref(),
+            Some("Véhicule de service dès le 01.03")
+        );
+
+        let loaded = load_certificate(&conn, "inc1", 2026).unwrap().unwrap();
+        assert_eq!(loaded.id, saved.id);
+        assert_eq!(loaded.r13_2_lump_sum_expenses, Some(3_600.0));
+        assert!(load_certificate(&conn, "inc1", 2025).unwrap().is_none());
+    }
+
+    /// Chemin complet du contrôle : chargement du contrat, des bulletins,
+    /// calcul du cumul annuel, application des barèmes.
+    #[test]
+    fn build_report_runs_the_whole_chain() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+        for m in 1..=3 {
+            insert_receipt(&conn, &format!("r{}", m), "inc1", m);
+        }
+
+        let receipts = load_receipts(&conn, "inc1").unwrap();
+        assert_eq!(receipts.len(), 3);
+        let third = receipts.iter().find(|r| r.id == "r3").unwrap();
+
+        let report = build_report(
+            &conn,
+            "inc1",
+            to_payslip_input(third),
+            &receipt_sort_key(third),
+            "r3",
+        )
+        .unwrap();
+
+        assert!(report.has_contract);
+        assert_eq!(report.ytd_before, 16_000.0, "janvier + février");
+        assert!((report.expected.avs_ai_apg - 424.0).abs() < 0.01);
+        // Le bulletin est correct : aucune anomalie ne doit sortir.
+        assert!(
+            !report.findings.iter().any(|f| f.severity == Severity::Error),
+            "constats inattendus : {:?}",
+            report.findings
+        );
+    }
+
+    /// Sans contrat, le rapport le dit et les contrôles contractuels tombent
+    /// en « non vérifiable » au lieu d'inventer des montants.
+    #[test]
+    fn build_report_without_contract_flags_it() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "r1", "inc1", 1);
+
+        let receipts = load_receipts(&conn, "inc1").unwrap();
+        let r = &receipts[0];
+        let report =
+            build_report(&conn, "inc1", to_payslip_input(r), &receipt_sort_key(r), "r1").unwrap();
+
+        assert!(!report.has_contract);
+        let laa = report
+            .findings
+            .iter()
+            .find(|f| f.id == "laa_anp_rate_unknown")
+            .expect("le taux AANP inconnu doit être signalé");
+        assert!(laa.expected.is_none(), "aucun montant ne doit être inventé");
+    }
+
+    /// La synthèse fiscale traverse plusieurs tables : salaires, bulletins,
+    /// certificats, contrat, plus l'agrégation des autres revenus.
+    #[test]
+    fn tax_summary_consolidates_salary_and_other_income() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+        for m in 1..=12 {
+            insert_receipt(&conn, &format!("r{}", m), "inc1", m);
+        }
+        // Un revenu locatif, qui doit apparaître à part des salaires.
+        insert_income(&conn, "inc2", "rental");
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency, fiscal_year)
+             VALUES ('rr1', 'inc2', '2026-06-30', 1500.0, 'CHF', 2026)",
+            [],
+        )
+        .unwrap();
+
+        let summary = income_tax_summary_inner(&conn, 2026, 220.0).unwrap();
+
+        assert_eq!(summary.gross_total, 96_000.0);
+        assert_eq!(summary.social_contributions, (424.0 + 88.0 + 80.0) * 12.0);
+        assert!((summary.lpp_contributions - 187.43 * 12.0).abs() < 0.01);
+        assert!(summary.affiliated_to_lpp);
+        assert_eq!(summary.pillar3a_cap, 7_258.0);
+
+        assert_eq!(summary.salary_sources.len(), 1);
+        assert_eq!(summary.salary_sources[0].receipt_count, 12);
+        assert!(summary.salary_sources[0].has_contract);
+        assert!(!summary.salary_sources[0].has_declared_certificate);
+
+        assert_eq!(summary.other_income_by_type.len(), 1);
+        assert_eq!(summary.other_income_by_type[0].income_type, "rental");
+        assert_eq!(summary.other_income_by_type[0].total, 1_500.0);
+
+        // Abonnement de 1'200 : sous le plafond, donc repris tel quel.
+        let pe = &summary.professional_expenses;
+        assert_eq!(pe.commute_capped, 1_200.0);
+        assert_eq!(pe.meals, 3_200.0);
+        assert!(pe.lump_sum_other_expenses > 0.0);
+    }
+
+    /// Dès qu'un certificat est enregistré, c'est lui qui fait foi : c'est le
+    /// document que l'administration recevra.
+    #[test]
+    fn declared_certificate_overrides_the_computed_one() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "r1", "inc1", 1);
+
+        let before = income_tax_summary_inner(&conn, 2026, 220.0).unwrap();
+        assert_eq!(before.gross_total, 8_000.0, "un seul bulletin saisi");
+
+        upsert_certificate_inner(
+            &conn,
+            &SalaryCertificate {
+                income_id: "inc1".into(),
+                fiscal_year: 2026,
+                r8_gross_total: Some(96_000.0),
+                r9_social_contributions: Some(7_104.0),
+                r10_1_lpp_ordinary: Some(2_249.16),
+                r11_net_salary: Some(86_646.84),
+                origin: "manual".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let after = income_tax_summary_inner(&conn, 2026, 220.0).unwrap();
+        assert_eq!(after.gross_total, 96_000.0);
+        assert_eq!(after.net_salary, 86_646.84);
+        assert!(after.salary_sources[0].has_declared_certificate);
+    }
+
+    /// Sans contrat, les frais de transport et de repas ne sont pas comptés
+    /// zéro en silence : le calcul dit ce qu'il n'a pas pu établir.
+    #[test]
+    fn tax_summary_says_what_it_could_not_compute() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "r1", "inc1", 1);
+
+        let summary = income_tax_summary_inner(&conn, 2026, 220.0).unwrap();
+        let pe = &summary.professional_expenses;
+        assert_eq!(pe.commute_capped, 0.0);
+        assert_eq!(pe.meals, 0.0);
+        assert!(
+            pe.notes.iter().any(|n| n.contains("contrat de travail")),
+            "l'absence de contrat doit être expliquée : {:?}",
+            pe.notes
+        );
+    }
 
     fn receipt(id: &str, received: &str, period_end: Option<&str>, base: f64) -> IncomeReceipt {
         IncomeReceipt {

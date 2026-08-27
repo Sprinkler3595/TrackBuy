@@ -63,8 +63,14 @@ TrackBuy centralise tes achats, factures, garanties, abonnements, engagements r�
 - Roll-forward automatique (mêmes garde-fous « présumé ») et membres partagés (familles / colocs)
 - Migration possible d'un abonnement vers un engagement (`migrate_subscription_to_engagement`)
 
-### Revenus & remboursements
-- Revenus récurrents (`incomes`) + fiches de paie détaillées (`income_receipts` : brut, AVS, 2e pilier, impôt source…)
+### Revenus & salaire suisse
+- Revenus récurrents (`incomes`) : salaires, primes, rentes, allocations, dividendes, loyers
+- **Contrat de travail** (`employment_contracts`) : taux d'activité, salaire annuel convenu, canton de travail, et les trois taux qu'aucun barème ne permet de deviner — part employé de la caisse de pension, prime AANP, prime IJM
+- **Bulletin de salaire détaillé** (`income_receipts`) : brut décomposé (13ᵉ, heures supplémentaires, allocations, part privée du véhicule) et retenues poste par poste (AVS/AI/APG, AC, LPP, AANP, IJM, impôt source)
+- **Contrôle de conformité** ([payroll/](src-tauri/src/payroll/)) : barèmes légaux versionnés par année, recalcul des retenues attendues et constats portant chacun leur base légale — taux AVS, plafond annuel AC, affiliation LPP obligatoire, AANP due dès 8 h/semaine, majoration de 25 % des heures supplémentaires, minimum LAFam, cohérence brut → net, mentions obligatoires du décompte (art. 323b al. 1 CO)
+- Le moteur distingue ce qu'il calcule exactement (AVS, AC avec cumul annuel, salaire coordonné, part privée du véhicule), ce qu'il borne (la part employé LPP ne peut dépasser la moitié de la bonification, art. 66 al. 1 LPP) et ce qui est contractuel — ces derniers sont annoncés comme non vérifiables, jamais inventés
+- **Certificat de salaire** (`annual_salary_certificates`) : les 15 rubriques du formulaire 11, reconstituées depuis les bulletins et confrontées au document reçu de l'employeur (art. 127 LIFD)
+- **Scan IA** du bulletin et du certificat, libellés DE/FR/IT reconnus
 - Remboursements en attente (`pending_reimbursements`) : assurance, employeur, garantie…
 
 ### Banque
@@ -77,7 +83,10 @@ TrackBuy centralise tes achats, factures, garanties, abonnements, engagements r�
 - **QR-facture suisse** : lecture du QR-code de paiement
 
 ### Impôts (Suisse)
+- **Base imposable** consolidée depuis les bulletins et certificats de salaire de l'année
+- **Frais professionnels** : forfait de 3 % du salaire net et frais effectifs plafonnés (transports, repas), montrés côte à côte — c'est au contribuable de retenir la branche la plus favorable
 - Rubriques fiscales déductibles par achat/charge (`tax_category` : médical, dons, 3e pilier, formation, garde d'enfants…)
+- Plafonds (3a, transports, repas) tirés des barèmes de l'année sélectionnée, jamais codés dans l'interface
 - Ménage (`household_members`) : attribution des dépenses par personne
 
 ### Garanties
@@ -216,6 +225,7 @@ Environ **165 commandes**, regroupées par domaine. Toutes sont typées côté f
 | Créanciers      | [creditors.rs](src-tauri/src/commands/creditors.rs)  | CRUD `creditors`                                      |
 | Abonnements     | [subscriptions.rs](src-tauri/src/commands/subscriptions.rs) | `roll_forward_due_subscriptions`, `mark_renewed`, `log_subscription_payment`, `confirm_subscription_payment` |
 | Revenus         | [incomes.rs](src-tauri/src/commands/incomes.rs)      | CRUD `incomes` + `income_receipts`                    |
+| Paie suisse     | [payroll.rs](src-tauri/src/commands/payroll.rs) · [payroll/](src-tauri/src/payroll/) | `get_payroll_params`, `upsert_employment_contract`, `check_income_receipt`, `preview_payslip_check`, `compute_salary_certificate`, `reconcile_salary_certificate`, `get_income_tax_summary` |
 | Remboursements  | [pending_reimbursements.rs](src-tauri/src/commands/pending_reimbursements.rs) | CRUD + statuts (pending/claimed/partial) |
 | Banque          | [bank_statements.rs](src-tauri/src/commands/bank_statements.rs) · [camt053.rs](src-tauri/src/commands/camt053.rs) · [qrbill.rs](src-tauri/src/commands/qrbill.rs) · [classify.rs](src-tauri/src/commands/classify.rs) | `add_bank_statement`, `suggest_matches_for_statement`, `apply_transaction_match`, `create_item_from_transaction`, `parse_camt053`, `parse_qr_bill` |
 | Impôts / ménage | [taxes.rs](src-tauri/src/commands/taxes.rs) · [household.rs](src-tauri/src/commands/household.rs) | rubriques déductibles, membres du ménage |
@@ -223,7 +233,7 @@ Environ **165 commandes**, regroupées par domaine. Toutes sont typées côté f
 | Pièces jointes  | [attachments.rs](src-tauri/src/commands/attachments.rs) | upload chiffré, lecture déchiffrée, suppression best-effort, par type d'entité |
 | Synthèse        | [this_month.rs](src-tauri/src/commands/this_month.rs) · [backup.rs](src-tauri/src/commands/backup.rs) | `get_this_month` (totaux par devise), `get_stats` |
 | Backup          | [backup.rs](src-tauri/src/commands/backup.rs)        | `backup_vault`, `inspect_backup`, `restore_backup`, exports CSV |
-| IA              | [ai.rs](src-tauri/src/commands/ai.rs)                | `ai_extract_receipt`, `ai_extract_bank_statement`, `ai_test_connection` |
+| IA              | [ai.rs](src-tauri/src/commands/ai.rs)                | `ai_extract_receipt`, `ai_extract_bank_statement`, `ai_extract_payslip`, `ai_extract_salary_certificate`, `ai_test_connection` |
 | Divers          | `merchants.rs` / `locations.rs` / `cards.rs` / `reminders.rs` / `filename_templates.rs` / `swiss_seed.rs` / `files.rs` | CRUD & utilitaires |
 
 ---
@@ -338,12 +348,12 @@ cd src-tauri && cargo clippy        # lints Rust
 
 ## Roadmap / état du projet
 
-**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 15`) et le format de backup peuvent encore évoluer avant 1.0.
+**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 28`) et le format de backup peuvent encore évoluer avant 1.0.
 
 ### Stable & implémenté
 
 - Multi-coffres + switch à chaud + **rotation du mot de passe maître** (rekey base + pièces jointes, rejouable)
-- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v15`, refus des schémas plus récents)
+- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v28`, refus des schémas plus récents)
 - Achats / engagements / abonnements / revenus / remboursements / garanties / créanciers / ménage
 - Banque : import CAMT.053 + OCR, QR-facture, rapprochement avec garde-fou anti-doublon
 - Impôts : rubriques déductibles, attribution par membre du ménage
