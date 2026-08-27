@@ -334,6 +334,28 @@ cd src-tauri && cargo test          # tests Rust (crypto, rotation, roll-forward
 cd src-tauri && cargo clippy        # lints Rust
 ```
 
+### Configurations de lancement RustRover / IntelliJ
+
+Le dossier `.run/` contient les configurations de lancement partagées : RustRover les
+charge automatiquement à l'ouverture du projet (rien à créer via « Add Configuration »).
+
+| Dossier    | Configuration              | Équivalent CLI                          |
+| ---------- | -------------------------- | --------------------------------------- |
+| `Tauri`    | Tauri Dev                  | `npm run tauri:dev`                     |
+| `Tauri`    | Tauri Build                | `npm run tauri:build`                   |
+| `Frontend` | Front Dev (Vite)           | `npm run dev`                           |
+| `Frontend` | Front Build (tsc + vite)   | `npm run build`                         |
+| `Frontend` | Lint (ESLint)              | `npm run lint`                          |
+| `Frontend` | Fetch Tessdata (OCR)       | `npm run fetch-tessdata`                |
+| `Rust`     | Cargo Check                | `cargo check --workspace --all-targets` |
+| `Rust`     | Cargo Test                 | `cargo test --workspace`                |
+| `Rust`     | Cargo Clippy               | `cargo clippy … -D warnings`            |
+| `Rust`     | Cargo Fmt                  | `cargo fmt --all`                       |
+
+Les configurations `Rust` s'exécutent dans `src-tauri/` ; les configurations npm utilisent
+l'interpréteur Node du projet (`npm install` requis au préalable). Les configurations Cargo
+sont aussi lançables en mode debug (icône scarabée) pour poser des points d'arrêt côté Rust.
+
 ---
 
 ## Roadmap / état du projet
