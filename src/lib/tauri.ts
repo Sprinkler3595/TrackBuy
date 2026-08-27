@@ -432,6 +432,8 @@ export const exportEngagementsCsv = () => invoke<string>("export_engagements_csv
 export const exportEngagementChargesCsv = () => invoke<string>("export_engagement_charges_csv")
 export const exportIncomesCsv = () => invoke<string>("export_incomes_csv")
 export const exportIncomeReceiptsCsv = () => invoke<string>("export_income_receipts_csv")
+export const exportSalaryCertificatesCsv = () =>
+  invoke<string>("export_salary_certificates_csv")
 export const exportReimbursementsCsv = () => invoke<string>("export_reimbursements_csv")
 
 export interface YoyEngagement {
@@ -1152,27 +1154,280 @@ export interface Income {
   status: IncomeStatus
   started_on: string | null
   ended_on: string | null
+  /// Membre du ménage. Aucune UI ne l'expose encore : la colonne existe pour
+  /// qu'un second revenu puisse entrer sans migration cassante.
+  attributed_to_member_id: string | null
   notes: string | null
   created_at: string
   updated_at: string
   card_name?: string | null
 }
 
+/// Un versement. Pour un salaire c'est un bulletin complet ; pour une
+/// allocation ou un dividende seuls `amount` et la date comptent.
+///
+/// Deux distinctions du droit suisse expliquent les champs séparés : les
+/// allocations familiales sont imposables mais pas soumises aux cotisations
+/// (art. 6 RAVS), et les frais remboursés ne sont ni l'un ni l'autre
+/// (art. 327a CO).
 export interface IncomeReceipt {
   id: string
   income_id: string
   received_on: string
+  /// Net effectivement versé.
   amount: number
   currency: string
   period_label: string | null
+  period_start: string | null
+  period_end: string | null
+  /// Peut différer de l'année de `received_on` : un salaire de décembre versé
+  /// en janvier appartient à l'exercice précédent.
+  fiscal_year: number | null
+
+  // Brut
   gross_amount: number | null
+  base_salary_amount: number | null
+  thirteenth_amount: number | null
+  overtime_amount: number | null
+  overtime_hours: number | null
+  holiday_pay_amount: number | null
+  bonus_amount: number | null
+  benefits_in_kind_amount: number | null
+  company_car_private_amount: number | null
+  family_allowance_amount: number | null
+  other_gross_amount: number | null
+
+  // Retenues. `social_charges_amount` = AVS/AI/APG, `pension_amount` = LPP
+  // (noms hérités du schéma v10, conservés pour les coffres existants).
   social_charges_amount: number | null
+  ac_amount: number | null
+  ac_solidarity_amount: number | null
   pension_amount: number | null
+  laa_nonoccupational_amount: number | null
+  ijm_amount: number | null
   tax_at_source_amount: number | null
   other_deductions_amount: number | null
-  bonus_amount: number | null
+
+  // Frais remboursés (ch. 13 du certificat)
+  expense_reimbursement_amount: number | null
+  expense_lump_sum_amount: number | null
+
   notes: string | null
   created_at: string
+}
+
+/// Termes de l'emploi. `lpp_employee_share_pct`, `laa_nonoccupational_pct` et
+/// `ijm_employee_pct` sont contractuels : sans eux le moteur annonce qu'il ne
+/// peut pas vérifier la retenue correspondante plutôt que d'inventer.
+export interface EmploymentContract {
+  id: string
+  income_id: string
+  employer_name: string | null
+  /// IDE, format CHE-123.456.789
+  employer_uid: string | null
+  /// N° AVS, format 756.xxxx.xxxx.xx
+  avs_number: string | null
+  /// Sert uniquement à la tranche de bonification LPP.
+  birth_date: string | null
+  /// Canton de travail — c'est lui qui fixe le barème des allocations
+  /// familiales, pas le canton de domicile.
+  work_canton: string | null
+  activity_rate_pct: number | null
+  annual_gross_agreed: number | null
+  salary_periods_per_year: number | null
+  weekly_hours: number | null
+  hourly_paid: boolean
+  thirteenth_salary: boolean
+  lpp_fund_name: string | null
+  lpp_employee_share_pct: number | null
+  laa_insurer: string | null
+  laa_nonoccupational_pct: number | null
+  ijm_employee_pct: number | null
+  tax_at_source: boolean
+  tax_at_source_scale: string | null
+  /// Prix d'achat HT : la part privée vaut 0.9 %/mois de ce montant.
+  company_car_purchase_price: number | null
+  subsidized_canteen: boolean
+  commute_km_per_day: number | null
+  commute_public_transport_cost_year: number | null
+  started_on: string | null
+  ended_on: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/// Certificat de salaire annuel (formulaire 11). L'employeur doit l'établir
+/// même sans demande du salarié (art. 127 LIFD).
+export interface SalaryCertificate {
+  id: string
+  income_id: string
+  fiscal_year: number
+  r1_salary: number | null
+  r2_1_benefits_in_kind: number | null
+  r2_2_company_car: number | null
+  r2_3_other_benefits: number | null
+  r3_irregular: number | null
+  r4_capital_shares: number | null
+  r5_board_fees: number | null
+  r6_other_benefits: number | null
+  r7_other_payments: number | null
+  r8_gross_total: number | null
+  r9_social_contributions: number | null
+  r10_1_lpp_ordinary: number | null
+  r10_2_lpp_buyback: number | null
+  r11_net_salary: number | null
+  r12_tax_at_source: number | null
+  r13_1_effective_expenses: number | null
+  r13_2_lump_sum_expenses: number | null
+  r14_other_disclosures: number | null
+  r15_remarks: string | null
+  /// Case F : transport domicile-travail payé par l'employeur.
+  box_f_employer_transport: boolean
+  /// Case G : repas gratuits — réduit le forfait repas déductible.
+  box_g_free_meals: boolean
+  received_on: string | null
+  origin: "manual" | "ai_scan" | "computed"
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/// Barèmes légaux d'une année. Aucune de ces valeurs n'est codée côté front :
+/// elles viennent toutes de `getPayrollParams`.
+export interface PayrollParams {
+  year: number
+  /// `true` quand aucun barème n'est publié pour l'année demandée et que
+  /// ceux de `effective_year` sont appliqués à la place.
+  estimated: boolean
+  effective_year: number
+  source: string
+  verified_on: string
+  avs_ai_apg_employee_pct: number
+  avs_ai_apg_employer_pct: number
+  ac_employee_pct: number
+  ac_ceiling: number
+  /// Supprimé au 1.1.2023, non nul pour les années antérieures.
+  ac_solidarity_employee_pct: number
+  laa_max_insured: number
+  laa_nonoccupational_min_weekly_hours: number
+  lpp_entry_threshold: number
+  lpp_coordination_deduction: number
+  lpp_avs_upper_limit: number
+  lpp_min_coordinated: number
+  lpp_credit_brackets: Array<[number, number, number]>
+  pillar3a_with_lpp: number
+  pillar3a_without_lpp_pct: number
+  pillar3a_without_lpp_cap: number
+  pro_lump_sum_pct: number
+  pro_lump_sum_min: number
+  pro_lump_sum_max: number
+  meals_full_year: number
+  meals_subsidized_year: number
+  meals_full_day: number
+  meals_subsidized_day: number
+  commute_cap_ifd: number
+  commute_private_car_per_km: number
+  private_car_monthly_pct: number
+  private_car_monthly_min: number
+  family_allowance_min_child: number
+  family_allowance_min_training: number
+  known_years: number[]
+}
+
+export type FindingSeverity = "ok" | "info" | "warn" | "error"
+
+/// Un constat du contrôle de conformité. `expected: null` signale un contrôle
+/// impossible (taux contractuel manquant) — pas un montant nul.
+export interface PayslipFinding {
+  id: string
+  severity: FindingSeverity
+  label: string
+  message: string
+  legal_ref: string
+  expected: number | null
+  actual: number | null
+}
+
+export interface ExpectedDeductions {
+  avs_subject_gross: number
+  avs_ai_apg: number
+  ac_base: number
+  ac: number
+  ac_solidarity: number
+  laa_nonoccupational: number | null
+  ijm: number | null
+  lpp_coordinated_salary: number
+  lpp_minimum_annual_credit: number
+  lpp_employee: number | null
+  /// L'employeur doit financer au moins la moitié de la bonification.
+  lpp_employee_legal_cap: number
+}
+
+export interface PayslipReport {
+  findings: PayslipFinding[]
+  expected: ExpectedDeductions
+  params: PayrollParams
+  /// Cumul annuel avant cette période, utilisé pour le plafond AC.
+  ytd_before: number
+  has_contract: boolean
+}
+
+export interface CertificateDiff {
+  rubric: string
+  label: string
+  computed: number | null
+  declared: number | null
+  difference: number | null
+  mismatch: boolean
+}
+
+export interface CertificateReconciliation {
+  year: number
+  computed: SalaryCertificate
+  declared: SalaryCertificate | null
+  diffs: CertificateDiff[]
+  receipt_count: number
+}
+
+/// Comparatif forfait / frais effectifs. Les deux branches sont rendues :
+/// c'est au contribuable de retenir la plus favorable.
+export interface ProfessionalExpenses {
+  lump_sum_other_expenses: number
+  commute_claimed: number
+  commute_capped: number
+  commute_cap: number
+  meals: number
+  meals_reduced_by_employer: boolean
+  total: number
+  /// Ce que le calcul n'a pas pu établir, à afficher tel quel.
+  notes: string[]
+}
+
+export interface SalarySource {
+  income_id: string
+  name: string
+  employer_name: string | null
+  receipt_count: number
+  gross_total: number
+  net_salary: number
+  has_contract: boolean
+  has_declared_certificate: boolean
+}
+
+export interface IncomeTaxSummary {
+  year: number
+  params: PayrollParams
+  gross_total: number
+  social_contributions: number
+  lpp_contributions: number
+  net_salary: number
+  tax_at_source: number
+  other_income_by_type: Array<{ income_type: string; total: number; count: number }>
+  professional_expenses: ProfessionalExpenses
+  pillar3a_cap: number
+  affiliated_to_lpp: boolean
+  salary_sources: SalarySource[]
 }
 
 // Incomes CRUD
@@ -1194,6 +1449,7 @@ export const createIncome = (income: {
   currency?: string
   status?: IncomeStatus
   started_on?: string | null
+  attributed_to_member_id?: string | null
   notes?: string | null
 }) => invoke<Income>("create_income", { income })
 
@@ -1207,26 +1463,94 @@ export const deleteIncome = (id: string) =>
 export const getIncomeReceipts = (incomeId: string) =>
   invoke<IncomeReceipt[]>("get_income_receipts", { incomeId })
 
-export const logIncomeReceipt = (receipt: {
+/// Tous les postes du bulletin sont optionnels : un dividende ne remplit que
+/// `amount`, un salaire remplit tout. `fiscal_year` est déduit de la période
+/// (ou de la date d'encaissement) quand il n'est pas fourni.
+export type CreateIncomeReceipt = {
   income_id: string
   received_on: string
   amount: number
   currency?: string
   period_label?: string | null
-  gross_amount?: number | null
-  social_charges_amount?: number | null
-  pension_amount?: number | null
-  tax_at_source_amount?: number | null
-  other_deductions_amount?: number | null
-  bonus_amount?: number | null
-  notes?: string | null
-}) => invoke<IncomeReceipt>("log_income_receipt", { receipt })
+  period_start?: string | null
+  period_end?: string | null
+  fiscal_year?: number | null
+} & Partial<
+  Pick<
+    IncomeReceipt,
+    | "gross_amount"
+    | "base_salary_amount"
+    | "thirteenth_amount"
+    | "overtime_amount"
+    | "overtime_hours"
+    | "holiday_pay_amount"
+    | "bonus_amount"
+    | "benefits_in_kind_amount"
+    | "company_car_private_amount"
+    | "family_allowance_amount"
+    | "other_gross_amount"
+    | "social_charges_amount"
+    | "ac_amount"
+    | "ac_solidarity_amount"
+    | "pension_amount"
+    | "laa_nonoccupational_amount"
+    | "ijm_amount"
+    | "tax_at_source_amount"
+    | "other_deductions_amount"
+    | "expense_reimbursement_amount"
+    | "expense_lump_sum_amount"
+    | "notes"
+  >
+>
+
+export const logIncomeReceipt = (receipt: CreateIncomeReceipt) =>
+  invoke<IncomeReceipt>("log_income_receipt", { receipt })
 
 export const updateIncomeReceipt = (receipt: IncomeReceipt) =>
   invoke<void>("update_income_receipt", { receipt })
 
 export const deleteIncomeReceipt = (id: string) =>
   invoke<void>("delete_income_receipt", { id })
+
+// ---------------------------------------------------------------------------
+// Paie suisse : barèmes, contrat de travail, contrôle, certificat de salaire
+// ---------------------------------------------------------------------------
+
+/// Barèmes légaux de l'année. Le front ne code aucun taux : il les lit ici.
+export const getPayrollParams = (year: number) =>
+  invoke<PayrollParams>("get_payroll_params", { year })
+
+export const getEmploymentContract = (incomeId: string) =>
+  invoke<EmploymentContract | null>("get_employment_contract", { incomeId })
+
+export const upsertEmploymentContract = (contract: EmploymentContract) =>
+  invoke<EmploymentContract>("upsert_employment_contract", { contract })
+
+/// Contrôle un bulletin déjà enregistré.
+export const checkIncomeReceipt = (receiptId: string) =>
+  invoke<PayslipReport>("check_income_receipt", { receiptId })
+
+/// Contrôle un bulletin en cours de saisie, avant enregistrement.
+export const previewPayslipCheck = (incomeId: string, draft: IncomeReceipt) =>
+  invoke<PayslipReport>("preview_payslip_check", { incomeId, draft })
+
+export const getSalaryCertificate = (incomeId: string, year: number) =>
+  invoke<SalaryCertificate | null>("get_salary_certificate", { incomeId, year })
+
+export const upsertSalaryCertificate = (certificate: SalaryCertificate) =>
+  invoke<SalaryCertificate>("upsert_salary_certificate", { certificate })
+
+/// Reconstitue le certificat depuis les bulletins de l'année, sans l'enregistrer.
+export const computeSalaryCertificate = (incomeId: string, year: number) =>
+  invoke<SalaryCertificate>("compute_salary_certificate", { incomeId, year })
+
+/// Confronte le certificat reçu de l'employeur aux bulletins de l'année.
+export const reconcileSalaryCertificate = (incomeId: string, year: number) =>
+  invoke<CertificateReconciliation>("reconcile_salary_certificate", { incomeId, year })
+
+/// Base imposable et déductions liées au revenu, pour une année fiscale.
+export const getIncomeTaxSummary = (year: number, options?: { working_days?: number }) =>
+  invoke<IncomeTaxSummary>("get_income_tax_summary", { year, options: options ?? null })
 
 // Polymorphic attachments
 export const getIncomeAttachments = (incomeId: string) =>

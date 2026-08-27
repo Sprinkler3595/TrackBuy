@@ -67,18 +67,25 @@ export function IncomesPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [form, setForm] = useState<FormState>(emptyForm())
   const [statusFilter, setStatusFilter] = useState<"all" | api.IncomeStatus>("active")
+  const [typeFilter, setTypeFilter] = useState<"all" | api.IncomeType>("all")
   const [search, setSearch] = useState("")
+  const [summary, setSummary] = useState<api.IncomeTaxSummary | null>(null)
   const [amountsVisible, setAmountsVisible] = useAmountsVisible()
   const { toast } = useToast()
 
   const load = async () => {
     try {
-      const [incData, cardData] = await Promise.all([
+      const year = new Date().getFullYear()
+      const [incData, cardData, sum] = await Promise.all([
         api.getIncomes(),
         api.getCards(),
+        // La synthèse annuelle est un confort : son échec ne doit pas vider
+        // la liste des revenus.
+        api.getIncomeTaxSummary(year).catch(() => null),
       ])
       setIncomes(incData)
       setCards(cardData)
+      setSummary(sum)
     } catch (e) {
       console.error(e)
       toast(`Erreur: ${e}`, "error")
@@ -190,13 +197,14 @@ export function IncomesPage() {
     const q = search.trim().toLowerCase()
     return incomes.filter((i) => {
       if (statusFilter !== "all" && i.status !== statusFilter) return false
+      if (typeFilter !== "all" && i.income_type !== typeFilter) return false
       if (!q) return true
       return (
         i.name.toLowerCase().includes(q) ||
         (i.source_name ?? "").toLowerCase().includes(q)
       )
     })
-  }, [incomes, statusFilter, search])
+  }, [incomes, statusFilter, typeFilter, search])
 
   const monthlyTotal = useMemo(() => {
     return incomes
@@ -235,20 +243,23 @@ export function IncomesPage() {
             size="sm"
             onClick={async () => {
               try {
-                const [hdr, recpts] = await Promise.all([
+                const stamp = today().slice(0, 7)
+                const [hdr, recpts, certs] = await Promise.all([
                   api.exportIncomesCsv(),
                   api.exportIncomeReceiptsCsv(),
+                  api.exportSalaryCertificatesCsv(),
                 ])
-                await downloadExport(hdr, `revenus-${today().slice(0, 7)}.csv`)
-                await downloadExport(recpts, `revenus-versements-${today().slice(0, 7)}.csv`)
+                await downloadExport(hdr, `revenus-${stamp}.csv`)
+                await downloadExport(recpts, `revenus-bulletins-${stamp}.csv`)
+                await downloadExport(certs, `certificats-salaire-${stamp}.csv`)
               } catch (e) {
-                toast(`Erreur export: ${e}`, "error")
+                toast(`${t("incomes.exportError")}: ${e}`, "error")
               }
             }}
-            title="Exporter en CSV (revenus + versements avec bulletins)"
+            title={t("incomes.exportCsvTitle")}
           >
             <Download className="h-4 w-4" />
-            Exporter CSV
+            {t("incomes.exportCsv")}
           </Button>
           <Button onClick={() => { resetForm(); setShowForm(true) }}>
             <Plus className="h-4 w-4" />{t("incomes.new")}
@@ -269,6 +280,17 @@ export function IncomesPage() {
              t("incomes.statusEnded")}
           </Button>
         ))}
+        <select
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value as "all" | api.IncomeType)}
+          aria-label={t("incomes.filterType")}
+        >
+          <option value="all">{t("incomes.filterType")} — {t("common.all")}</option>
+          {ALL_TYPES.map((typ) => (
+            <option key={typ} value={typ}>{t(typeKey(typ))}</option>
+          ))}
+        </select>
         <div className="ml-auto relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -400,6 +422,52 @@ export function IncomesPage() {
         </Card>
       )}
 
+      {summary && summary.gross_total > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              {t("incomes.annualSummary")} {summary.year}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <p className="text-xs text-muted-foreground">{t("incomes.grossAmount")}</p>
+              <p className="text-xl font-semibold">
+                <MaskedAmount amount={summary.gross_total} currency="CHF" visible={amountsVisible} />
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{t("incomes.deductionsTotal")}</p>
+              <p className="text-xl font-semibold">
+                <MaskedAmount
+                  amount={summary.social_contributions + summary.lpp_contributions}
+                  currency="CHF"
+                  visible={amountsVisible}
+                />
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("incomes.socialCharges")} + {t("incomes.pension")}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{t("incomes.netTotal")}</p>
+              <p className="text-xl font-semibold">
+                <MaskedAmount amount={summary.net_salary} currency="CHF" visible={amountsVisible} />
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">3ᵉ pilier — plafond</p>
+              <p className="text-xl font-semibold">
+                <MaskedAmount amount={summary.pillar3a_cap} currency="CHF" visible={amountsVisible} />
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {summary.affiliated_to_lpp ? "affilié LPP" : "sans LPP"}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-3">
         {filtered.length === 0 ? (
           <Card>
@@ -426,7 +494,12 @@ export function IncomesPage() {
                       <span>{t(typeKey(i.income_type))}</span>
                       {i.source_name && <span>· {i.source_name}</span>}
                       {i.next_expected_date && days != null && (
-                        <span>· {t("incomes.nextExpected")} {formatDate(i.next_expected_date)} ({days >= 0 ? `dans ${days}j` : `${-days}j de retard`})</span>
+                        <span>
+                          · {t("incomes.nextExpected")} {formatDate(i.next_expected_date)}{" "}
+                          ({days >= 0
+                            ? `${t("incomes.inDays")} ${days}j`
+                            : `${t("incomes.lateBy")} ${-days}j`})
+                        </span>
                       )}
                     </div>
                   </Link>
@@ -437,7 +510,7 @@ export function IncomesPage() {
                     <p className="text-xs text-muted-foreground">{cycleLabel(i)}</p>
                     {monthly > 0 && monthly !== i.current_amount && (
                       <p className="text-xs text-muted-foreground">
-                        ≈ <MaskedAmount amount={monthly} currency={i.currency} visible={amountsVisible} />/mois
+                        ≈ <MaskedAmount amount={monthly} currency={i.currency} visible={amountsVisible} />{t("incomes.perMonth")}
                       </p>
                     )}
                   </div>
