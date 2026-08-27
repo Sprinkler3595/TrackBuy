@@ -82,12 +82,12 @@ TrackBuy centralise tes achats, factures, garanties, abonnements, engagements r�
 - Règles de matching réutilisables (`bank_match_rules`), création d'article/facture depuis une transaction (avec garde-fou anti-doublon)
 - **QR-facture suisse** : lecture du QR-code de paiement
 
-### Impôts (Suisse)
-- **Base imposable** consolidée depuis les bulletins et certificats de salaire de l'année
+### Synthèse fiscale (Suisse)
+Affichée dans l'onglet **Revenus**, au-dessus de la liste.
+- **Base imposable** consolidée depuis les bulletins et certificats de salaire de l'année, tous employeurs confondus
 - **Frais professionnels** : forfait de 3 % du salaire net et frais effectifs plafonnés (transports, repas), montrés côte à côte — c'est au contribuable de retenir la branche la plus favorable
-- Rubriques fiscales déductibles par achat/charge (`tax_category` : médical, dons, 3e pilier, formation, garde d'enfants…)
 - Plafonds (3a, transports, repas) tirés des barèmes de l'année sélectionnée, jamais codés dans l'interface
-- Ménage (`household_members`) : attribution des dépenses par personne
+- Rubriques fiscales déductibles par achat/charge (`tax_category`) et attribution par membre du ménage : commandes toujours présentes côté backend ([taxes.rs](src-tauri/src/commands/taxes.rs), [household.rs](src-tauri/src/commands/household.rs)), sans écran dédié depuis la simplification de la navigation
 
 ### Garanties
 - Alertes d'expiration (`get_expiring_warranties`), notifications natives

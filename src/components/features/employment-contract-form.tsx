@@ -185,9 +185,14 @@ function Checkbox({
 /// permet de les déduire — sans eux le contrôle du bulletin reste partiel.
 export function EmploymentContractForm({
   incomeId,
+  defaultEmployerName,
   onSaved,
 }: {
   incomeId: string
+  /// Employeur déjà connu du revenu (l'assistant de création l'enregistre
+  /// comme créancier). Sert à pré-remplir un contrat neuf, jamais à écraser
+  /// un contrat existant.
+  defaultEmployerName?: string | null
   onSaved?: (contract: api.EmploymentContract) => void
 }) {
   const { toast } = useToast()
@@ -214,7 +219,11 @@ export function EmploymentContractForm({
         ])
         if (cancelled) return
         setParams(p)
-        setForm(contract ? toForm(contract) : emptyForm(incomeId))
+        setForm(
+          contract
+            ? toForm(contract)
+            : { ...emptyForm(incomeId), employer_name: defaultEmployerName ?? "" },
+        )
       } catch (e) {
         if (!cancelled) setLoadError(String(e))
       } finally {
@@ -223,7 +232,7 @@ export function EmploymentContractForm({
     }
     void load()
     return () => { cancelled = true }
-  }, [incomeId, reloadKey])
+  }, [incomeId, reloadKey, defaultEmployerName])
 
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }))
   const str = (k: string) => String(form[k] ?? "")

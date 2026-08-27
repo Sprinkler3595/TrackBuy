@@ -418,6 +418,7 @@ export function IncomeDetailPage() {
       {tab === "contract" && (
         <EmploymentContractForm
           incomeId={i.id}
+          defaultEmployerName={i.source_name}
           onSaved={(c) => {
             setContract(c)
             // Les taux du contrat changent les montants attendus : les

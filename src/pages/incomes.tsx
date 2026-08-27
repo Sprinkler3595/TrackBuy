@@ -12,6 +12,8 @@ import { SUPPORTED_CURRENCIES } from "@/lib/currencies"
 import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
+import { IncomeWizard } from "@/components/features/income-wizard"
+import { IncomeTaxSummaryPanel } from "@/components/features/income-tax-summary-panel"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
@@ -68,24 +70,20 @@ export function IncomesPage() {
   const [form, setForm] = useState<FormState>(emptyForm())
   const [statusFilter, setStatusFilter] = useState<"all" | api.IncomeStatus>("active")
   const [typeFilter, setTypeFilter] = useState<"all" | api.IncomeType>("all")
+  // Creation goes through the guided assistant; the form below only edits.
+  const [showWizard, setShowWizard] = useState(false)
   const [search, setSearch] = useState("")
-  const [summary, setSummary] = useState<api.IncomeTaxSummary | null>(null)
   const [amountsVisible, setAmountsVisible] = useAmountsVisible()
   const { toast } = useToast()
 
   const load = async () => {
     try {
-      const year = new Date().getFullYear()
-      const [incData, cardData, sum] = await Promise.all([
+      const [incData, cardData] = await Promise.all([
         api.getIncomes(),
         api.getCards(),
-        // La synthèse annuelle est un confort : son échec ne doit pas vider
-        // la liste des revenus.
-        api.getIncomeTaxSummary(year).catch(() => null),
       ])
       setIncomes(incData)
       setCards(cardData)
-      setSummary(sum)
     } catch (e) {
       console.error(e)
       toast(`Erreur: ${e}`, "error")
@@ -117,9 +115,10 @@ export function IncomesPage() {
     setShowForm(true)
   }
 
+  // Edit-only: new incomes come from the guided assistant.
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
-    if (!form.name.trim()) return
+    if (!editing || !form.name.trim()) return
     const amount = form.current_amount ? parseFloat(form.current_amount) : null
     if (form.current_amount && (Number.isNaN(amount as number) || (amount as number) < 0)) {
       toast("Montant invalide", "error")
@@ -127,40 +126,22 @@ export function IncomesPage() {
     }
     const interval = Math.max(1, parseInt(form.cycle_interval) || 1)
     try {
-      if (editing) {
-        await api.updateIncome({
-          ...editing,
-          name: form.name.trim(),
-          income_type: form.income_type,
-          source_name: form.source_name || null,
-          payment_card_id: form.payment_card_id || null,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_expected_date: form.next_expected_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          status: form.status,
-          started_on: form.started_on || null,
-          notes: form.notes || null,
-        })
-        toast(t("incomes.updated"), "success")
-      } else {
-        await api.createIncome({
-          name: form.name.trim(),
-          income_type: form.income_type,
-          source_name: form.source_name || null,
-          payment_card_id: form.payment_card_id || null,
-          billing_cycle: form.billing_cycle,
-          cycle_interval: interval,
-          next_expected_date: form.next_expected_date || null,
-          current_amount: amount,
-          currency: form.currency,
-          status: form.status,
-          started_on: form.started_on || null,
-          notes: form.notes || null,
-        })
-        toast(t("incomes.created"), "success")
-      }
+      await api.updateIncome({
+        ...editing,
+        name: form.name.trim(),
+        income_type: form.income_type,
+        source_name: form.source_name || null,
+        payment_card_id: form.payment_card_id || null,
+        billing_cycle: form.billing_cycle,
+        cycle_interval: interval,
+        next_expected_date: form.next_expected_date || null,
+        current_amount: amount,
+        currency: form.currency,
+        status: form.status,
+        started_on: form.started_on || null,
+        notes: form.notes || null,
+      })
+      toast(t("incomes.updated"), "success")
       resetForm()
       await load()
     } catch (e) {
@@ -261,7 +242,7 @@ export function IncomesPage() {
             <Download className="h-4 w-4" />
             {t("incomes.exportCsv")}
           </Button>
-          <Button onClick={() => { resetForm(); setShowForm(true) }}>
+          <Button onClick={() => setShowWizard(true)}>
             <Plus className="h-4 w-4" />{t("incomes.new")}
           </Button>
         </div>
@@ -305,7 +286,7 @@ export function IncomesPage() {
       {showForm && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">{editing ? t("incomes.edit") : t("incomes.new")}</CardTitle>
+            <CardTitle className="text-lg">{t("incomes.edit")}</CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -414,7 +395,7 @@ export function IncomesPage() {
               </div>
 
               <div className="flex gap-2 sm:col-span-2 lg:col-span-3">
-                <Button type="submit">{editing ? t("common.save") : t("common.add")}</Button>
+                <Button type="submit">{t("common.save")}</Button>
                 <Button type="button" variant="outline" onClick={resetForm}>{t("common.cancel")}</Button>
               </div>
             </form>
@@ -422,51 +403,7 @@ export function IncomesPage() {
         </Card>
       )}
 
-      {summary && summary.gross_total > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">
-              {t("incomes.annualSummary")} {summary.year}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <p className="text-xs text-muted-foreground">{t("incomes.grossAmount")}</p>
-              <p className="text-xl font-semibold">
-                <MaskedAmount amount={summary.gross_total} currency="CHF" visible={amountsVisible} />
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">{t("incomes.deductionsTotal")}</p>
-              <p className="text-xl font-semibold">
-                <MaskedAmount
-                  amount={summary.social_contributions + summary.lpp_contributions}
-                  currency="CHF"
-                  visible={amountsVisible}
-                />
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {t("incomes.socialCharges")} + {t("incomes.pension")}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">{t("incomes.netTotal")}</p>
-              <p className="text-xl font-semibold">
-                <MaskedAmount amount={summary.net_salary} currency="CHF" visible={amountsVisible} />
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">3ᵉ pilier — plafond</p>
-              <p className="text-xl font-semibold">
-                <MaskedAmount amount={summary.pillar3a_cap} currency="CHF" visible={amountsVisible} />
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {summary.affiliated_to_lpp ? "affilié LPP" : "sans LPP"}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <IncomeTaxSummaryPanel amountsVisible={amountsVisible} />
 
       <div className="grid gap-3">
         {filtered.length === 0 ? (
@@ -534,6 +471,14 @@ export function IncomesPage() {
         onConfirm={handleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {showWizard && (
+        <IncomeWizard
+          incomes={incomes}
+          cards={cards}
+          onClose={() => { setShowWizard(false); load() }}
+        />
+      )}
     </div>
   )
 }

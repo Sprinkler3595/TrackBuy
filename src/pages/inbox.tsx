@@ -1,24 +1,11 @@
 import { useRef, useState } from "react"
-import { Link } from "react-router-dom"
-import {
-  ArrowRight,
-  Banknote,
-  FileSpreadsheet,
-  FileText,
-  Loader2,
-  QrCode,
-  ScanLine,
-  Upload,
-} from "lucide-react"
+import { Loader2, QrCode, ScanLine } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { useToast } from "@/components/ui/toast"
-import { cn } from "@/lib/utils"
 import * as api from "@/lib/tauri"
 import { scanQrFromBytes, extractTextFromBytes, ocrSourceToText, findDueDateInText, renderFirstPageJpeg } from "@/lib/qr-scan"
 import { QrBillReview } from "@/components/features/qrbill-review"
-import { Camt053Import } from "@/components/features/camt053-import"
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64)
@@ -27,16 +14,14 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes
 }
 
-/// Unified inbox: anywhere an "to-process" item arrives. Each source has its
-/// own panel with a clear next action. Counts on the right come from the
-/// existing Tauri endpoints — we don't store anything in this view, the
-/// underlying pages (bank-statements, pending-invoices) remain the source
-/// of truth for the data itself.
+/// Inbox: the single place where an incoming Swiss QR-bill is turned into a
+/// charge on an engagement. Nothing is stored by this view — the QR payload is
+/// decoded, enriched with the due date read off the document, and handed to
+/// <QrBillReview /> which does the actual write.
 export function InboxPage() {
   const { toast } = useToast()
   const [qrModalOpen, setQrModalOpen] = useState(false)
   const [qrPayload, setQrPayload] = useState("")
-  const [camtOpen, setCamtOpen] = useState(false)
   const [scanning, setScanning] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -133,162 +118,65 @@ export function InboxPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-2xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Inbox</h1>
         <p className="text-sm text-muted-foreground">
-          Toutes les factures et transactions à traiter arrivent ici. Choisissez
-          la source qui correspond à ce que vous avez reçu.
+          Déposez ici la facture que vous venez de recevoir : le QR-code suisse
+          est lu automatiquement et rattaché au bon engagement.
         </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {/* QR-bill — the primary Swiss workflow */}
-        <Card className="border-primary/30">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <QrCode className="h-5 w-5 text-primary" />
-                QR-facture suisse
-              </CardTitle>
-              <Badge variant="default" className="text-[10px]">
-                Recommandé
-              </Badge>
-            </div>
-            <CardDescription>
-              Prenez en photo ou déposez le PDF d'une facture reçue par la poste
-              ou par e-mail — le QR-code est lu automatiquement.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div
-              onDrop={onDrop}
-              onDragOver={(e) => e.preventDefault()}
-              className="rounded-lg border-2 border-dashed border-muted-foreground/25 p-4 text-center"
-            >
-              <Button onClick={pickAndScan} className="w-full" disabled={scanning}>
-                {scanning ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Lecture du QR-code…
-                  </>
-                ) : (
-                  <>
-                    <ScanLine className="mr-2 h-4 w-4" />
-                    Photo ou PDF d'une facture
-                  </>
-                )}
-              </Button>
-              <p className="mt-2 text-xs text-muted-foreground">
-                ou glissez le fichier ici
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setQrModalOpen(true)}
-              className="mt-2 w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
-            >
-              Coller le texte du QR-code manuellement
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,application/pdf"
-              className="hidden"
-              onChange={onFileInputChange}
-            />
-          </CardContent>
-        </Card>
-
-        {/* CamT.053 import — best path for monthly statements */}
-        <Card className="border-primary/30">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <FileSpreadsheet className="h-5 w-5 text-primary" />
-                Relevé e-banking (CamT.053)
-              </CardTitle>
-              <Badge variant="default" className="text-[10px]">
-                Recommandé
-              </Badge>
-            </div>
-            <CardDescription>
-              Fichier XML ISO 20022 exporté depuis UBS, PostFinance, Raiffeisen,
-              ZKB, BCV… Aucune IA, 100% fiable.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => setCamtOpen(true)} className="w-full">
-              <Upload className="mr-2 h-4 w-4" />
-              Importer un fichier .xml
+      <Card className="border-primary/30">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <QrCode className="h-5 w-5 text-primary" />
+            QR-facture suisse
+          </CardTitle>
+          <CardDescription>
+            Prenez en photo ou déposez le PDF d'une facture reçue par la poste
+            ou par e-mail — le QR-code est lu automatiquement.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div
+            onDrop={onDrop}
+            onDragOver={(e) => e.preventDefault()}
+            className="rounded-lg border-2 border-dashed border-muted-foreground/25 p-4 text-center"
+          >
+            <Button onClick={pickAndScan} className="w-full" disabled={scanning}>
+              {scanning ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Lecture du QR-code…
+                </>
+              ) : (
+                <>
+                  <ScanLine className="mr-2 h-4 w-4" />
+                  Photo ou PDF d'une facture
+                </>
+              )}
             </Button>
-          </CardContent>
-        </Card>
-
-        {/* Existing PDF bank statements (kept as fallback) */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Banknote className="h-5 w-5 text-muted-foreground" />
-              Relevé PDF (extraction IA)
-            </CardTitle>
-            <CardDescription>
-              Si votre banque ne propose pas le CamT.053 — fallback OCR + IA.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Link
-              to="/bank-statements"
-              className={cn(buttonVariants({ variant: "outline" }), "w-full")}
-            >
-              Ouvrir <ArrowRight className="ml-2 h-3.5 w-3.5" />
-            </Link>
-          </CardContent>
-        </Card>
-
-        {/* Receipt scan (existing flow) */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <ScanLine className="h-5 w-5 text-muted-foreground" />
-              Ticket de caisse
-            </CardTitle>
-            <CardDescription>
-              Photo de reçu papier — OCR local Tesseract + extraction IA optionnelle.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Link
-              to="/scan"
-              className={cn(buttonVariants({ variant: "outline" }), "w-full")}
-            >
-              Scanner <ArrowRight className="ml-2 h-3.5 w-3.5" />
-            </Link>
-          </CardContent>
-        </Card>
-
-        {/* Pending invoices in flight */}
-        <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5 text-muted-foreground" />
-              Factures en attente
-            </CardTitle>
-            <CardDescription>
-              Lignes bancaires sans justificatif PDF rattaché — promesses à
-              compléter quand le document arrivera.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Link
-              to="/bank-statements"
-              className={cn(buttonVariants({ variant: "outline" }))}
-            >
-              Voir les factures en attente <ArrowRight className="ml-2 h-3.5 w-3.5" />
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              ou glissez le fichier ici
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setQrModalOpen(true)}
+            className="mt-2 w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
+          >
+            Coller le texte du QR-code manuellement
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf"
+            className="hidden"
+            onChange={onFileInputChange}
+          />
+        </CardContent>
+      </Card>
 
       {qrModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -344,7 +232,6 @@ export function InboxPage() {
       )}
 
       <QrBillReview />
-      {camtOpen && <Camt053Import onClose={() => setCamtOpen(false)} />}
     </div>
   )
 }
