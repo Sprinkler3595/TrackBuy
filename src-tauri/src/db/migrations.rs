@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 27;
+pub const CURRENT_SCHEMA_VERSION: i64 = 28;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -111,6 +111,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 27 {
         migrate_v27(conn)?;
+    }
+    if current_version < 28 {
+        migrate_v28(conn)?;
     }
 
     Ok(())
@@ -1687,6 +1690,169 @@ fn migrate_v27(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Salaire suisse (v28) : ce qu'il faut pour contrôler un bulletin et
+/// reconstituer un certificat de salaire.
+///
+/// Trois ajouts et une préparation.
+///
+/// 1. `employment_contracts` — les termes de l'emploi, saisis une fois : taux
+///    d'activité, salaire annuel convenu, heures hebdomadaires, et surtout les
+///    trois taux que AUCUN barème ne permet de deviner (part employé de la
+///    caisse de pension, prime AANP, prime IJM). Sans eux le moteur annonce
+///    qu'il ne peut pas contrôler, plutôt que d'inventer un montant.
+///    Un contrat par revenu (`UNIQUE`), parce qu'un revenu de type `salary`
+///    correspond à un employeur.
+///
+/// 2. `income_receipts` s'élargit par simple `ADD COLUMN` — pas de
+///    reconstruction, pas de backfill : les bulletins déjà saisis restent
+///    lisibles tels quels. On RÉUTILISE les colonnes v10 plutôt que d'en
+///    créer des doublons : `social_charges_amount` reste l'AVS/AI/APG (c'est
+///    déjà son libellé dans l'UI et dans l'export CSV) et `pension_amount`
+///    reste le 2ᵉ pilier. Les nouvelles colonnes décomposent le brut (13ᵉ,
+///    heures supplémentaires, allocations, part privée du véhicule…) et
+///    séparent les retenues jusqu'ici noyées dans `other_deductions_amount`.
+///
+///    Deux distinctions comptent juridiquement et justifient des colonnes
+///    dédiées : les allocations familiales transitent par le bulletin sans
+///    être du salaire déterminant (art. 6 RAVS), et les frais remboursés ne
+///    sont ni du salaire ni du revenu imposable (art. 327a CO, ch. 13 du
+///    certificat). Les noyer dans le brut fausse toutes les cotisations.
+///
+/// 3. `annual_salary_certificates` — le certificat de salaire rubrique par
+///    rubrique. L'employeur doit l'établir (art. 127 LIFD) ; le stocker tel
+///    quel permet de le confronter aux douze bulletins.
+///
+/// 4. `incomes.attributed_to_member_id` — même forme que sur `items` et
+///    `engagements` (v14). Aucune UI ne s'en sert encore : la colonne existe
+///    pour que le jour où un second revenu entre dans le ménage, il n'y ait
+///    pas de migration cassante sur une table déjà remplie.
+fn migrate_v28(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE employment_contracts (
+            id TEXT PRIMARY KEY,
+            income_id TEXT NOT NULL UNIQUE,
+            employer_name TEXT,
+            employer_uid TEXT,                     -- IDE, format CHE-123.456.789
+            avs_number TEXT,                       -- n° AVS, format 756.xxxx.xxxx.xx
+            birth_date TEXT,                       -- sert à la tranche de bonification LPP
+            work_canton TEXT,                      -- canton de travail (barème des allocations familiales)
+            activity_rate_pct REAL,
+            annual_gross_agreed REAL,
+            salary_periods_per_year INTEGER,       -- 12 ou 13 selon que le 13e est versé à part
+            weekly_hours REAL,
+            hourly_paid INTEGER NOT NULL DEFAULT 0,
+            thirteenth_salary INTEGER NOT NULL DEFAULT 0,
+            -- Taux contractuels : jamais déduits d'un barème.
+            lpp_fund_name TEXT,
+            lpp_employee_share_pct REAL,           -- % du salaire coordonné
+            laa_insurer TEXT,
+            laa_nonoccupational_pct REAL,          -- AANP, % du salaire assuré
+            ijm_employee_pct REAL,                 -- indemnités journalières maladie
+            -- Régime fiscal. L'impôt à la source est préparé mais l'app vise
+            -- d'abord la taxation ordinaire.
+            tax_at_source INTEGER NOT NULL DEFAULT 0,
+            tax_at_source_scale TEXT,              -- A | B | C | H | ...
+            -- Prix d'achat HT du véhicule d'entreprise : la part privée vaut
+            -- 0.9 %/mois de ce montant (min. 150 CHF), ch. 2.2 du certificat.
+            company_car_purchase_price REAL,
+            -- Pilote le forfait repas déductible : 3'200 CHF/an, ou 1'600 si
+            -- l'employeur subventionne la cantine.
+            subsidized_canteen INTEGER NOT NULL DEFAULT 0,
+            commute_km_per_day REAL,
+            commute_public_transport_cost_year REAL,
+            started_on TEXT,
+            ended_on TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_employment_contracts_income ON employment_contracts(income_id);
+
+        -- Décomposition du brut.
+        ALTER TABLE income_receipts ADD COLUMN period_start TEXT;
+        ALTER TABLE income_receipts ADD COLUMN period_end TEXT;
+        ALTER TABLE income_receipts ADD COLUMN fiscal_year INTEGER;
+        ALTER TABLE income_receipts ADD COLUMN base_salary_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN thirteenth_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN overtime_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN overtime_hours REAL;
+        ALTER TABLE income_receipts ADD COLUMN holiday_pay_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN family_allowance_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN benefits_in_kind_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN company_car_private_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN other_gross_amount REAL;
+
+        -- Retenues, jusqu'ici agrégées dans other_deductions_amount.
+        ALTER TABLE income_receipts ADD COLUMN ac_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN ac_solidarity_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN laa_nonoccupational_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN ijm_amount REAL;
+
+        -- Frais remboursés : ni salaire, ni revenu imposable.
+        ALTER TABLE income_receipts ADD COLUMN expense_reimbursement_amount REAL;
+        ALTER TABLE income_receipts ADD COLUMN expense_lump_sum_amount REAL;
+
+        -- Renseigne l'année fiscale des bulletins déjà saisis à partir de leur
+        -- date de réception, pour que les agrégations annuelles les voient.
+        UPDATE income_receipts
+           SET fiscal_year = CAST(substr(received_on, 1, 4) AS INTEGER)
+         WHERE fiscal_year IS NULL;
+
+        CREATE INDEX idx_income_receipts_year ON income_receipts(fiscal_year);
+
+        CREATE TABLE annual_salary_certificates (
+            id TEXT PRIMARY KEY,
+            income_id TEXT NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            -- Rubriques du formulaire officiel (form. 11).
+            r1_salary REAL,                        -- 1.  Salaire brut / rente
+            r2_1_benefits_in_kind REAL,            -- 2.1 Prestations en nature (repas, logement)
+            r2_2_company_car REAL,                 -- 2.2 Part privée du véhicule de service
+            r2_3_other_benefits REAL,              -- 2.3 Autres prestations salariales accessoires
+            r3_irregular REAL,                     -- 3.  Prestations non périodiques
+            r4_capital_shares REAL,                -- 4.  Participations de collaborateur
+            r5_board_fees REAL,                    -- 5.  Indemnités des membres de l'administration
+            r6_other_benefits REAL,                -- 6.  Autres prestations
+            r7_other_payments REAL,                -- 7.  Prestations en capital
+            r8_gross_total REAL,                   -- 8.  Salaire brut total
+            r9_social_contributions REAL,          -- 9.  Cotisations AVS/AI/APG/AC/AANP
+            r10_1_lpp_ordinary REAL,               -- 10.1 Cotisations LPP ordinaires
+            r10_2_lpp_buyback REAL,                -- 10.2 Cotisations LPP, rachats
+            r11_net_salary REAL,                   -- 11. Salaire net
+            r12_tax_at_source REAL,                -- 12. Impôt à la source retenu
+            r13_1_effective_expenses REAL,         -- 13.1 Frais effectifs
+            r13_2_lump_sum_expenses REAL,          -- 13.2 Frais forfaitaires
+            r14_other_disclosures REAL,            -- 14. Autres prestations de l'employeur
+            r15_remarks TEXT,                      -- 15. Observations
+            -- Cases à cocher du certificat.
+            box_f_employer_transport INTEGER NOT NULL DEFAULT 0,
+            box_g_free_meals INTEGER NOT NULL DEFAULT 0,
+            received_on TEXT,
+            origin TEXT NOT NULL DEFAULT 'manual', -- manual | ai_scan
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (income_id, fiscal_year),
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_salary_certificates_income ON annual_salary_certificates(income_id);
+        CREATE INDEX idx_salary_certificates_year ON annual_salary_certificates(fiscal_year);
+
+        -- Préparation multi-membres : même forme que items / engagements.
+        ALTER TABLE incomes ADD COLUMN attributed_to_member_id TEXT
+            REFERENCES household_members(id) ON DELETE SET NULL;
+        CREATE INDEX idx_incomes_member ON incomes(attributed_to_member_id)
+            WHERE attributed_to_member_id IS NOT NULL;
+
+        INSERT INTO schema_version (version) VALUES (28);
+        "
+    ).map_err(|e| format!("Migration v28 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1799,5 +1965,192 @@ mod tests {
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 18);
+    }
+
+    /// Rejoue toutes les migrations jusqu'à v27 sur une base neuve, clés
+    /// étrangères actives — l'état d'un coffre existant avant la v28.
+    fn conn_at_v27() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        for m in [
+            migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6,
+            migrate_v7, migrate_v8, migrate_v9, migrate_v10, migrate_v11, migrate_v12,
+            migrate_v13, migrate_v14, migrate_v15, migrate_v16, migrate_v17, migrate_v18,
+            migrate_v19, migrate_v20, migrate_v21, migrate_v22, migrate_v23, migrate_v24,
+            migrate_v25, migrate_v26, migrate_v27,
+        ] {
+            m(&conn).unwrap();
+        }
+        conn
+    }
+
+    /// La v28 ne doit rien casser d'existant : un bulletin saisi avant la
+    /// migration garde ses montants, et récupère une année fiscale déduite de
+    /// sa date de réception pour entrer dans les agrégations annuelles.
+    #[test]
+    fn v28_preserves_existing_receipts_and_backfills_the_fiscal_year() {
+        let conn = conn_at_v27();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire ACME', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency,
+                                          gross_amount, social_charges_amount)
+             VALUES ('r1', 'inc1', '2025-03-25', 6500.0, 'CHF', 8000.0, 424.0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v28(&conn).unwrap();
+
+        let (amount, gross, avs, year): (f64, f64, f64, i64) = conn
+            .query_row(
+                "SELECT amount, gross_amount, social_charges_amount, fiscal_year
+                 FROM income_receipts WHERE id = 'r1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 6500.0);
+        assert_eq!(gross, 8000.0, "le brut v10 doit rester intact");
+        assert_eq!(avs, 424.0, "social_charges_amount reste l'AVS/AI/APG");
+        assert_eq!(year, 2025, "année fiscale déduite de received_on");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 28);
+    }
+
+    /// Le contrat de travail et le certificat de salaire suivent la
+    /// suppression du revenu (CASCADE), comme les versements.
+    #[test]
+    fn v28_cascades_contract_and_certificate_on_income_delete() {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire ACME', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, employer_name)
+             VALUES ('c1', 'inc1', 'ACME SA')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO annual_salary_certificates (id, income_id, fiscal_year, r8_gross_total)
+             VALUES ('cert1', 'inc1', 2025, 96000.0)",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM incomes WHERE id = 'inc1'", []).unwrap();
+
+        let contracts: i64 = conn
+            .query_row("SELECT count(*) FROM employment_contracts", [], |r| r.get(0))
+            .unwrap();
+        let certs: i64 = conn
+            .query_row("SELECT count(*) FROM annual_salary_certificates", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(contracts, 0);
+        assert_eq!(certs, 0);
+    }
+
+    /// Un seul contrat par revenu : deux employeurs = deux revenus.
+    #[test]
+    fn v28_rejects_a_second_contract_on_the_same_income() {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id) VALUES ('c1', 'inc1')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO employment_contracts (id, income_id) VALUES ('c2', 'inc1')",
+                [],
+            )
+            .is_err()
+        );
+    }
+
+    /// Un certificat par année et par revenu.
+    #[test]
+    fn v28_rejects_two_certificates_for_the_same_year() {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO annual_salary_certificates (id, income_id, fiscal_year)
+             VALUES ('cert1', 'inc1', 2025)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO annual_salary_certificates (id, income_id, fiscal_year)
+                 VALUES ('cert2', 'inc1', 2025)",
+                [],
+            )
+            .is_err()
+        );
+    }
+
+    /// Le rattachement à un membre du ménage existe en base (sans UI) et
+    /// se dénoue proprement quand le membre disparaît.
+    #[test]
+    fn v28_income_member_link_is_nullable_and_set_null_on_delete() {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO household_members (id, name, relation) VALUES ('m1', 'Moi', 'self')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status,
+                                  attributed_to_member_id)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active', 'm1')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM household_members WHERE id = 'm1'", []).unwrap();
+
+        let member: Option<String> = conn
+            .query_row(
+                "SELECT attributed_to_member_id FROM incomes WHERE id = 'inc1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(member.is_none(), "le revenu survit, le lien est dénoué");
     }
 }

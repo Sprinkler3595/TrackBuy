@@ -9,8 +9,8 @@ use crate::db::models::{
 const INCOME_SELECT_COLUMNS: &str =
     "i.id, i.name, i.income_type, i.source_name, i.payment_card_id, i.billing_cycle,
      i.cycle_interval, i.next_expected_date, i.current_amount, i.currency, i.status,
-     i.started_on, i.ended_on, i.notes, i.created_at, i.updated_at,
-     pc.name as card_name";
+     i.started_on, i.ended_on, i.attributed_to_member_id, i.notes,
+     i.created_at, i.updated_at, pc.name as card_name";
 
 fn row_to_income(row: &rusqlite::Row<'_>) -> rusqlite::Result<Income> {
     Ok(Income {
@@ -27,17 +27,26 @@ fn row_to_income(row: &rusqlite::Row<'_>) -> rusqlite::Result<Income> {
         status: row.get(10)?,
         started_on: row.get(11)?,
         ended_on: row.get(12)?,
-        notes: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
-        card_name: row.get(16)?,
+        attributed_to_member_id: row.get(13)?,
+        notes: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        card_name: row.get(17)?,
     })
 }
 
-const RECEIPT_SELECT_COLUMNS: &str =
-    "id, income_id, received_on, amount, currency, period_label,
-     gross_amount, social_charges_amount, pension_amount, tax_at_source_amount,
-     other_deductions_amount, bonus_amount, notes, created_at";
+/// Colonnes d'un versement, dans l'ordre attendu par `row_to_receipt`.
+/// Regroupées comme sur un bulletin : identité, brut, retenues, frais.
+const RECEIPT_SELECT_COLUMNS: &str = "id, income_id, received_on, amount, currency,
+     period_label, period_start, period_end, fiscal_year,
+     gross_amount, base_salary_amount, thirteenth_amount, overtime_amount,
+     overtime_hours, holiday_pay_amount, bonus_amount, benefits_in_kind_amount,
+     company_car_private_amount, family_allowance_amount, other_gross_amount,
+     social_charges_amount, ac_amount, ac_solidarity_amount, pension_amount,
+     laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
+     other_deductions_amount,
+     expense_reimbursement_amount, expense_lump_sum_amount,
+     notes, created_at";
 
 fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeReceipt> {
     Ok(IncomeReceipt {
@@ -47,14 +56,32 @@ fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeReceipt> {
         amount: row.get(3)?,
         currency: row.get(4)?,
         period_label: row.get(5)?,
-        gross_amount: row.get(6)?,
-        social_charges_amount: row.get(7)?,
-        pension_amount: row.get(8)?,
-        tax_at_source_amount: row.get(9)?,
-        other_deductions_amount: row.get(10)?,
-        bonus_amount: row.get(11)?,
-        notes: row.get(12)?,
-        created_at: row.get(13)?,
+        period_start: row.get(6)?,
+        period_end: row.get(7)?,
+        fiscal_year: row.get(8)?,
+        gross_amount: row.get(9)?,
+        base_salary_amount: row.get(10)?,
+        thirteenth_amount: row.get(11)?,
+        overtime_amount: row.get(12)?,
+        overtime_hours: row.get(13)?,
+        holiday_pay_amount: row.get(14)?,
+        bonus_amount: row.get(15)?,
+        benefits_in_kind_amount: row.get(16)?,
+        company_car_private_amount: row.get(17)?,
+        family_allowance_amount: row.get(18)?,
+        other_gross_amount: row.get(19)?,
+        social_charges_amount: row.get(20)?,
+        ac_amount: row.get(21)?,
+        ac_solidarity_amount: row.get(22)?,
+        pension_amount: row.get(23)?,
+        laa_nonoccupational_amount: row.get(24)?,
+        ijm_amount: row.get(25)?,
+        tax_at_source_amount: row.get(26)?,
+        other_deductions_amount: row.get(27)?,
+        expense_reimbursement_amount: row.get(28)?,
+        expense_lump_sum_amount: row.get(29)?,
+        notes: row.get(30)?,
+        created_at: row.get(31)?,
     })
 }
 
@@ -135,8 +162,8 @@ pub fn create_income(
     conn.execute(
         "INSERT INTO incomes (id, name, income_type, source_name, payment_card_id,
          billing_cycle, cycle_interval, next_expected_date, current_amount, currency,
-         status, started_on, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         status, started_on, attributed_to_member_id, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             id,
             income.name,
@@ -150,6 +177,7 @@ pub fn create_income(
             currency,
             status,
             income.started_on,
+            income.attributed_to_member_id,
             income.notes,
         ],
     )
@@ -175,8 +203,9 @@ pub fn update_income(state: State<'_, AppState>, income: Income) -> Result<(), S
         "UPDATE incomes SET name = ?1, income_type = ?2, source_name = ?3,
          payment_card_id = ?4, billing_cycle = ?5, cycle_interval = ?6,
          next_expected_date = ?7, current_amount = ?8, currency = ?9, status = ?10,
-         started_on = ?11, ended_on = ?12, notes = ?13, updated_at = datetime('now')
-         WHERE id = ?14",
+         started_on = ?11, ended_on = ?12, attributed_to_member_id = ?13, notes = ?14,
+         updated_at = datetime('now')
+         WHERE id = ?15",
         rusqlite::params![
             income.name,
             income.income_type,
@@ -190,6 +219,7 @@ pub fn update_income(state: State<'_, AppState>, income: Income) -> Result<(), S
             income.status,
             income.started_on,
             income.ended_on,
+            income.attributed_to_member_id,
             income.notes,
             income.id,
         ],
@@ -265,11 +295,32 @@ pub fn log_income_receipt(
     let id = Uuid::new_v4().to_string();
     let currency = receipt.currency.unwrap_or_else(|| "CHF".to_string());
 
+    // Rattache le versement à une année fiscale : celle de la période
+    // couverte si elle est connue, sinon celle de l'encaissement. Un salaire
+    // de décembre versé en janvier appartient bien à l'année de la période.
+    let fiscal_year = receipt.fiscal_year.or_else(|| {
+        receipt
+            .period_end
+            .as_deref()
+            .or(receipt.period_start.as_deref())
+            .unwrap_or(receipt.received_on.as_str())
+            .get(0..4)
+            .and_then(|y| y.parse::<i32>().ok())
+    });
+
     conn.execute(
         "INSERT INTO income_receipts (id, income_id, received_on, amount, currency,
-         period_label, gross_amount, social_charges_amount, pension_amount,
-         tax_at_source_amount, other_deductions_amount, bonus_amount, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+         period_label, period_start, period_end, fiscal_year,
+         gross_amount, base_salary_amount, thirteenth_amount, overtime_amount,
+         overtime_hours, holiday_pay_amount, bonus_amount, benefits_in_kind_amount,
+         company_car_private_amount, family_allowance_amount, other_gross_amount,
+         social_charges_amount, ac_amount, ac_solidarity_amount, pension_amount,
+         laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
+         other_deductions_amount, expense_reimbursement_amount,
+         expense_lump_sum_amount, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+                 ?29, ?30, ?31)",
         rusqlite::params![
             id,
             receipt.income_id,
@@ -277,12 +328,30 @@ pub fn log_income_receipt(
             receipt.amount,
             currency,
             receipt.period_label,
+            receipt.period_start,
+            receipt.period_end,
+            fiscal_year,
             receipt.gross_amount,
+            receipt.base_salary_amount,
+            receipt.thirteenth_amount,
+            receipt.overtime_amount,
+            receipt.overtime_hours,
+            receipt.holiday_pay_amount,
+            receipt.bonus_amount,
+            receipt.benefits_in_kind_amount,
+            receipt.company_car_private_amount,
+            receipt.family_allowance_amount,
+            receipt.other_gross_amount,
             receipt.social_charges_amount,
+            receipt.ac_amount,
+            receipt.ac_solidarity_amount,
             receipt.pension_amount,
+            receipt.laa_nonoccupational_amount,
+            receipt.ijm_amount,
             receipt.tax_at_source_amount,
             receipt.other_deductions_amount,
-            receipt.bonus_amount,
+            receipt.expense_reimbursement_amount,
+            receipt.expense_lump_sum_amount,
             receipt.notes,
         ],
     )
@@ -307,21 +376,47 @@ pub fn update_income_receipt(
 
     conn.execute(
         "UPDATE income_receipts SET received_on = ?1, amount = ?2, currency = ?3,
-         period_label = ?4, gross_amount = ?5, social_charges_amount = ?6,
-         pension_amount = ?7, tax_at_source_amount = ?8, other_deductions_amount = ?9,
-         bonus_amount = ?10, notes = ?11
-         WHERE id = ?12",
+         period_label = ?4, period_start = ?5, period_end = ?6, fiscal_year = ?7,
+         gross_amount = ?8, base_salary_amount = ?9, thirteenth_amount = ?10,
+         overtime_amount = ?11, overtime_hours = ?12, holiday_pay_amount = ?13,
+         bonus_amount = ?14, benefits_in_kind_amount = ?15,
+         company_car_private_amount = ?16, family_allowance_amount = ?17,
+         other_gross_amount = ?18, social_charges_amount = ?19, ac_amount = ?20,
+         ac_solidarity_amount = ?21, pension_amount = ?22,
+         laa_nonoccupational_amount = ?23, ijm_amount = ?24,
+         tax_at_source_amount = ?25, other_deductions_amount = ?26,
+         expense_reimbursement_amount = ?27, expense_lump_sum_amount = ?28,
+         notes = ?29
+         WHERE id = ?30",
         rusqlite::params![
             receipt.received_on,
             receipt.amount,
             receipt.currency,
             receipt.period_label,
+            receipt.period_start,
+            receipt.period_end,
+            receipt.fiscal_year,
             receipt.gross_amount,
+            receipt.base_salary_amount,
+            receipt.thirteenth_amount,
+            receipt.overtime_amount,
+            receipt.overtime_hours,
+            receipt.holiday_pay_amount,
+            receipt.bonus_amount,
+            receipt.benefits_in_kind_amount,
+            receipt.company_car_private_amount,
+            receipt.family_allowance_amount,
+            receipt.other_gross_amount,
             receipt.social_charges_amount,
+            receipt.ac_amount,
+            receipt.ac_solidarity_amount,
             receipt.pension_amount,
+            receipt.laa_nonoccupational_amount,
+            receipt.ijm_amount,
             receipt.tax_at_source_amount,
             receipt.other_deductions_amount,
-            receipt.bonus_amount,
+            receipt.expense_reimbursement_amount,
+            receipt.expense_lump_sum_amount,
             receipt.notes,
             receipt.id,
         ],

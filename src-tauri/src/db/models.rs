@@ -569,6 +569,10 @@ pub struct Income {
     pub status: String,
     pub started_on: Option<String>,
     pub ended_on: Option<String>,
+    /// Membre du ménage auquel le revenu est rattaché. NULL = le ménage.
+    /// Aucune UI ne l'expose encore : la colonne existe pour qu'un second
+    /// salaire puisse entrer sans migration cassante.
+    pub attributed_to_member_id: Option<String>,
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -589,10 +593,20 @@ pub struct CreateIncomeRequest {
     pub currency: Option<String>,
     pub status: Option<String>,
     pub started_on: Option<String>,
+    pub attributed_to_member_id: Option<String>,
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// Un versement reçu. Pour un salaire, c'est un bulletin de paie complet ;
+/// pour une allocation ou un dividende, seuls `amount` et la date comptent et
+/// tout le détail reste `None`.
+///
+/// Deux distinctions du droit suisse justifient des champs séparés plutôt
+/// qu'un fourre-tout : les allocations familiales transitent par le bulletin
+/// sans être du salaire déterminant AVS (art. 6 RAVS), et les frais remboursés
+/// ne sont ni du salaire ni du revenu imposable (art. 327a CO). Les agréger au
+/// brut fausserait toutes les cotisations.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct IncomeReceipt {
     pub id: String,
     pub income_id: String,
@@ -601,32 +615,186 @@ pub struct IncomeReceipt {
     pub amount: f64,
     pub currency: String,
     pub period_label: Option<String>,
-    // Optional payslip detail — populated for salaries, left NULL for
-    // allocations / dividends / refunds.
+    /// Période couverte par le bulletin, et année fiscale de rattachement —
+    /// qui peut différer de l'année de `received_on` (salaire de décembre
+    /// versé en janvier).
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub fiscal_year: Option<i32>,
+
+    // --- composantes du brut ---
+    /// Brut total tel qu'imprimé sur le bulletin. Fait foi quand il est
+    /// renseigné ; sinon le brut est reconstitué depuis les composantes.
     pub gross_amount: Option<f64>,
+    pub base_salary_amount: Option<f64>,
+    pub thirteenth_amount: Option<f64>,
+    pub overtime_amount: Option<f64>,
+    pub overtime_hours: Option<f64>,
+    pub holiday_pay_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
+    pub benefits_in_kind_amount: Option<f64>,
+    /// Part privée d'un véhicule d'entreprise (ch. 2.2 du certificat).
+    pub company_car_private_amount: Option<f64>,
+    /// Allocations familiales : versées avec le salaire, non soumises AVS.
+    pub family_allowance_amount: Option<f64>,
+    pub other_gross_amount: Option<f64>,
+
+    // --- retenues ---
+    /// AVS / AI / APG. Nom hérité de la v10, conservé pour ne pas casser les
+    /// coffres existants ni l'export CSV.
     pub social_charges_amount: Option<f64>,
+    pub ac_amount: Option<f64>,
+    pub ac_solidarity_amount: Option<f64>,
+    /// 2ᵉ pilier (LPP).
     pub pension_amount: Option<f64>,
+    pub laa_nonoccupational_amount: Option<f64>,
+    pub ijm_amount: Option<f64>,
     pub tax_at_source_amount: Option<f64>,
     pub other_deductions_amount: Option<f64>,
-    pub bonus_amount: Option<f64>,
+
+    // --- frais (art. 327a CO), ch. 13 du certificat ---
+    pub expense_reimbursement_amount: Option<f64>,
+    pub expense_lump_sum_amount: Option<f64>,
+
     pub notes: Option<String>,
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct CreateIncomeReceiptRequest {
     pub income_id: String,
     pub received_on: String,
     pub amount: f64,
     pub currency: Option<String>,
     pub period_label: Option<String>,
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    pub fiscal_year: Option<i32>,
     pub gross_amount: Option<f64>,
+    pub base_salary_amount: Option<f64>,
+    pub thirteenth_amount: Option<f64>,
+    pub overtime_amount: Option<f64>,
+    pub overtime_hours: Option<f64>,
+    pub holiday_pay_amount: Option<f64>,
+    pub bonus_amount: Option<f64>,
+    pub benefits_in_kind_amount: Option<f64>,
+    pub company_car_private_amount: Option<f64>,
+    pub family_allowance_amount: Option<f64>,
+    pub other_gross_amount: Option<f64>,
     pub social_charges_amount: Option<f64>,
+    pub ac_amount: Option<f64>,
+    pub ac_solidarity_amount: Option<f64>,
     pub pension_amount: Option<f64>,
+    pub laa_nonoccupational_amount: Option<f64>,
+    pub ijm_amount: Option<f64>,
     pub tax_at_source_amount: Option<f64>,
     pub other_deductions_amount: Option<f64>,
-    pub bonus_amount: Option<f64>,
+    pub expense_reimbursement_amount: Option<f64>,
+    pub expense_lump_sum_amount: Option<f64>,
     pub notes: Option<String>,
+}
+
+/// Les termes de l'emploi, saisis une fois par employeur.
+///
+/// `lpp_employee_share_pct`, `laa_nonoccupational_pct` et `ijm_employee_pct`
+/// sont contractuels : aucun barème ne permet de les déduire. Sans eux, le
+/// moteur de contrôle annonce qu'il ne peut pas vérifier la retenue
+/// correspondante — il n'invente pas de montant.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct EmploymentContract {
+    pub id: String,
+    pub income_id: String,
+    pub employer_name: Option<String>,
+    /// IDE de l'employeur, format CHE-123.456.789.
+    pub employer_uid: Option<String>,
+    /// N° AVS du salarié, format 756.xxxx.xxxx.xx.
+    pub avs_number: Option<String>,
+    /// Sert uniquement à déterminer la tranche de bonification LPP.
+    pub birth_date: Option<String>,
+    /// Canton de travail : c'est lui qui fixe le barème des allocations
+    /// familiales, pas le canton de domicile.
+    pub work_canton: Option<String>,
+    pub activity_rate_pct: Option<f64>,
+    pub annual_gross_agreed: Option<f64>,
+    /// 12 ou 13 selon que le 13ᵉ salaire est versé séparément.
+    pub salary_periods_per_year: Option<i32>,
+    pub weekly_hours: Option<f64>,
+    pub hourly_paid: bool,
+    pub thirteenth_salary: bool,
+    pub lpp_fund_name: Option<String>,
+    pub lpp_employee_share_pct: Option<f64>,
+    pub laa_insurer: Option<String>,
+    pub laa_nonoccupational_pct: Option<f64>,
+    pub ijm_employee_pct: Option<f64>,
+    pub tax_at_source: bool,
+    pub tax_at_source_scale: Option<String>,
+    /// Prix d'achat HT du véhicule d'entreprise, pour la part privée.
+    pub company_car_purchase_price: Option<f64>,
+    pub subsidized_canteen: bool,
+    pub commute_km_per_day: Option<f64>,
+    pub commute_public_transport_cost_year: Option<f64>,
+    pub started_on: Option<String>,
+    pub ended_on: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Certificat de salaire annuel, rubrique par rubrique (formulaire 11).
+/// L'employeur doit l'établir même sans demande du salarié (art. 127 LIFD).
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SalaryCertificate {
+    pub id: String,
+    pub income_id: String,
+    pub fiscal_year: i32,
+    /// 1. Salaire brut / rente
+    pub r1_salary: Option<f64>,
+    /// 2.1 Prestations en nature (repas, logement)
+    pub r2_1_benefits_in_kind: Option<f64>,
+    /// 2.2 Part privée du véhicule de service
+    pub r2_2_company_car: Option<f64>,
+    /// 2.3 Autres prestations salariales accessoires
+    pub r2_3_other_benefits: Option<f64>,
+    /// 3. Prestations non périodiques
+    pub r3_irregular: Option<f64>,
+    /// 4. Participations de collaborateur
+    pub r4_capital_shares: Option<f64>,
+    /// 5. Indemnités des membres de l'administration
+    pub r5_board_fees: Option<f64>,
+    /// 6. Autres prestations
+    pub r6_other_benefits: Option<f64>,
+    /// 7. Prestations en capital
+    pub r7_other_payments: Option<f64>,
+    /// 8. Salaire brut total
+    pub r8_gross_total: Option<f64>,
+    /// 9. Cotisations AVS/AI/APG/AC/AANP
+    pub r9_social_contributions: Option<f64>,
+    /// 10.1 Cotisations LPP ordinaires
+    pub r10_1_lpp_ordinary: Option<f64>,
+    /// 10.2 Cotisations LPP, rachats
+    pub r10_2_lpp_buyback: Option<f64>,
+    /// 11. Salaire net — c'est ce montant qui part dans la déclaration
+    pub r11_net_salary: Option<f64>,
+    /// 12. Impôt à la source retenu
+    pub r12_tax_at_source: Option<f64>,
+    /// 13.1 Frais effectifs
+    pub r13_1_effective_expenses: Option<f64>,
+    /// 13.2 Frais forfaitaires
+    pub r13_2_lump_sum_expenses: Option<f64>,
+    /// 14. Autres prestations de l'employeur
+    pub r14_other_disclosures: Option<f64>,
+    /// 15. Observations
+    pub r15_remarks: Option<String>,
+    /// Case F : transport domicile-travail payé par l'employeur.
+    pub box_f_employer_transport: bool,
+    /// Case G : repas gratuits (réduit le forfait repas déductible).
+    pub box_g_free_meals: bool,
+    pub received_on: Option<String>,
+    /// 'manual' | 'ai_scan' — d'où viennent les montants.
+    pub origin: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 // =====================================================================
