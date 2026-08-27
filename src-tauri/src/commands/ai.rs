@@ -92,7 +92,7 @@ pub fn get_ai_usage(state: State<'_, AppState>) -> Result<Vec<AiUsageMonth>, Str
 
 const SYSTEM_PROMPT: &str = "Tu es un extracteur de données pour un suivi d'achats. Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour). Si un champ est introuvable, mets null. N'invente AUCUNE valeur — préfère null à une supposition.";
 
-const EXTRACTION_PROMPT: &str = r#"Analyse le texte OCR ci-dessous (reçu ou facture) et extrais les champs structurés.
+const EXTRACTION_PROMPT: &str = r#"Analyse le texte OCR ci-dessous (offre, bon de commande, facture ou ticket de caisse) et extrais les champs structurés.
 
 STRUCTURE TYPIQUE D'UN REÇU/FACTURE :
 - En-tête (haut) : nom commercial du marchand, parfois adresse, téléphone, n° TVA
@@ -120,9 +120,16 @@ RÈGLES STRICTES :
     - `voucher` : bon de réduction, coupon, code promo, remise commerciale, gift card utilisée, escompte, avoir (mots-clés : "remise", "rabais", "discount", "coupon", "bon", "code promo", "avoir", "escompte", "gift card", "carte cadeau"). ⚠️ Le `price` doit être NÉGATIF (ex: -10.00) car ça réduit le total.
     - `other` : ligne qui n'entre dans aucune catégorie ci-dessus
 12. MIXTE : si la facture contient à la fois des achats et des licences (ou bons, ou services), CHACUNE doit apparaître dans `items[]` avec sa propre `category`. Ne JAMAIS regrouper.
+13. `document_kind` = NATURE du document analysé :
+    - `offer` : offre, devis, proposition, estimation, « offre valable jusqu'au », « Angebot », « Offerte », « preventivo », « quote » — le client n'a encore rien commandé ;
+    - `purchase_order` : bon/confirmation de commande, accusé de réception de commande, « Auftragsbestätigung », « order confirmation », « bestellung » — commandé mais pas encore facturé ;
+    - `invoice` : facture, note d'honoraires, « Rechnung », « fattura », « invoice », avec un montant à payer et souvent une échéance ;
+    - `receipt` : ticket de caisse / reçu d'un paiement déjà effectué (mode de paiement imprimé, « merci de votre visite », pas d'échéance).
+    En cas de doute entre facture et ticket, choisis d'après l'échéance : une échéance de paiement ⇒ `invoice`, un paiement déjà encaissé ⇒ `receipt`. Si vraiment indéterminable → null.
 
 FORMAT DE RÉPONSE (JSON strict, sans markdown) :
 {
+  "document_kind": "offer"|"purchase_order"|"invoice"|"receipt"|null,
   "description": string,
   "purchase_date": "YYYY-MM-DD",
   "due_date": "YYYY-MM-DD"|null,
@@ -164,6 +171,10 @@ pub struct AiConfig {
 
 #[derive(Debug, Serialize)]
 pub struct ExtractedReceipt {
+    /// Nature of the scanned document ("offer" | "purchase_order" | "invoice"
+    /// | "receipt"). Drives which attachment type the purchase assistant files
+    /// the document under. None when the model couldn't tell.
+    pub document_kind: Option<String>,
     pub description: Option<String>,
     pub purchase_date: Option<String>,
     /// Payment due date (échéance) for a bill/invoice — distinct from the
@@ -1558,6 +1569,7 @@ fn parse_extracted(v: &Value) -> ExtractedReceipt {
         .unwrap_or_default();
 
     ExtractedReceipt {
+        document_kind: normalize_document_kind(v["document_kind"].as_str()),
         description: as_opt_string(&v["description"]),
         purchase_date: as_opt_string(&v["purchase_date"]),
         due_date: as_opt_string(&v["due_date"]),
@@ -1585,6 +1597,19 @@ fn as_opt_string(v: &Value) -> Option<String> {
 
 fn as_opt_i64(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))
+}
+
+/// Normalise la nature du document renvoyée par l'IA. Tout ce qui n'est pas
+/// reconnu devient None : l'assistant demandera alors à l'utilisateur, plutôt
+/// que de classer le document à tort.
+fn normalize_document_kind(raw: Option<&str>) -> Option<String> {
+    match raw.map(|s| s.trim().to_lowercase()).as_deref() {
+        Some("offer") | Some("offre") | Some("devis") | Some("quote") | Some("angebot") => Some("offer".into()),
+        Some("purchase_order") | Some("order") | Some("commande") | Some("bon_de_commande") => Some("purchase_order".into()),
+        Some("invoice") | Some("facture") | Some("rechnung") | Some("fattura") => Some("invoice".into()),
+        Some("receipt") | Some("ticket") | Some("recu") | Some("reçu") => Some("receipt".into()),
+        _ => None,
+    }
 }
 
 /// Normalise la catégorie renvoyée par l'IA. Tout ce qui n'est pas dans la

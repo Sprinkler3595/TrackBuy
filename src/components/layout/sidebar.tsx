@@ -3,8 +3,6 @@ import {
   Home,
   Inbox,
   FileText,
-  Landmark,
-  Receipt,
   Settings,
   Lock,
   Moon,
@@ -15,8 +13,6 @@ import {
   Ticket,
   HandCoins,
   Undo2,
-  ScanLine,
-  LineChart,
   Car,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -24,8 +20,9 @@ import { useTheme } from "@/hooks/use-theme"
 import { useI18n, type TranslationKeys } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 
-// Three-section navigation. Previously the sidebar exposed only six entries
-// while the app had 30+ pages — most were reachable only via deep links.
+// Two-section navigation. The app deliberately exposes only the flows that are
+// fully built: the daily view + the three guided domains on top, the reference
+// lists below. Anything else is reachable from inside those pages.
 type NavItem = { to: string; icon: typeof Home; labelKey: keyof TranslationKeys }
 type NavSection = { headingKey: keyof TranslationKeys | null; items: NavItem[] }
 
@@ -37,8 +34,6 @@ const navSections: NavSection[] = [
       { to: "/inbox", icon: Inbox, labelKey: "nav.inbox" },
       { to: "/engagements", icon: FileText, labelKey: "nav.engagements" },
       { to: "/vehicules", icon: Car, labelKey: "nav.vehicles" },
-      { to: "/banque", icon: Landmark, labelKey: "nav.bank" },
-      { to: "/impots", icon: Receipt, labelKey: "nav.taxes" },
     ],
   },
   {
@@ -49,14 +44,6 @@ const navSections: NavSection[] = [
       { to: "/tickets", icon: Ticket, labelKey: "nav.tickets" },
       { to: "/incomes", icon: HandCoins, labelKey: "nav.incomes" },
       { to: "/reimbursements", icon: Undo2, labelKey: "nav.reimbursements" },
-    ],
-  },
-  {
-    headingKey: "nav.section.tools",
-    items: [
-      { to: "/scan", icon: ScanLine, labelKey: "nav.scan" },
-      // Dashboard fusionné dans Finances (3.2) : une seule vue d'analyse.
-      { to: "/finances", icon: LineChart, labelKey: "nav.finances" },
     ],
   },
 ]

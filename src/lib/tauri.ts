@@ -488,7 +488,12 @@ export interface ExtractedLineItem {
   category: LineCategory
 }
 
+/// Nature of the scanned document. Drives how the purchase assistant files it
+/// (offre / bon de commande / facture / ticket) — the user can always override.
+export type DocumentKind = "offer" | "purchase_order" | "invoice" | "receipt"
+
 export interface ExtractedReceipt {
+  document_kind: DocumentKind | null
   description: string | null
   purchase_date: string | null
   /// Payment due date (échéance) for a bill — distinct from purchase_date.
@@ -1008,6 +1013,7 @@ export interface VehicleEngagementSummary {
   current_amount: number | null
   currency: string
   billing_cycle: EngagementBillingCycle
+  cycle_interval: number
   status: EngagementStatus
   next_due_date: string | null
   contract_end_date: string | null

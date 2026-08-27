@@ -1,4 +1,4 @@
-import type { ItemKind } from "@/lib/tauri"
+import type { DocumentKind, ItemKind } from "@/lib/tauri"
 import type { PickedFileValue } from "@/components/features/doc-slot"
 
 /**
@@ -75,20 +75,17 @@ export function emptyDraft(currency = "CHF"): ItemDraft {
   }
 }
 
-/** Payload pushed by scan.tsx into sessionStorage; consumed by ScanReviewPage. */
+/** Payload pushed by the purchase scan dialog into sessionStorage; consumed
+ *  by the purchase assistant. */
 export interface PendingReceipt {
   shared: Pick<SharedState, "purchase_date" | "currency" | "invoice_number" | "notes" | "merchantHint" | "discounts">
   drafts: ItemDraft[]
-  /** Original receipt file (attached as the invoice if no override). */
+  /** What the AI thought the scanned document is. The user confirms it on the
+   *  header step; it decides which slot the document is filed under. */
+  document_kind?: DocumentKind | null
+  /** The scanned document (attached on submit under the confirmed kind). */
   attachFile: string
   attachName: string
-  /** When set, the user resumed a pending invoice. The encrypted file is
-   *  promoted from `pending_invoices` to `attachments` once items are
-   *  created — the row is then dropped from the queue atomically. */
-  pending_invoice_id?: string
-  /** Original filename of the pending invoice (used as the harmonization
-   *  fallback). Only meaningful when `pending_invoice_id` is set. */
-  pending_invoice_name?: string
 }
 
 export const PENDING_RECEIPT_KEY = "trackbuy.pendingReceipt"
