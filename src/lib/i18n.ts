@@ -443,6 +443,7 @@ export type TranslationKeys = {
   "incomes.receiptLogged": string
   "incomes.receiptsLogged": string
   "incomes.tabContract": string
+  "incomes.tabFiscalYear": string
   "incomes.payslips": string
   "incomes.logPayslip": string
   "incomes.compliant": string
@@ -939,6 +940,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.receiptLogged": "versement enregistré",
     "incomes.receiptsLogged": "versements enregistrés",
     "incomes.tabContract": "Contrat",
+    "incomes.tabFiscalYear": "Année fiscale",
     "incomes.payslips": "Bulletins",
     "incomes.logPayslip": "Saisir un bulletin",
     "incomes.compliant": "Conforme",
@@ -1432,6 +1434,7 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.receiptLogged": "receipt logged",
     "incomes.receiptsLogged": "receipts logged",
     "incomes.tabContract": "Contract",
+    "incomes.tabFiscalYear": "Tax year",
     "incomes.payslips": "Payslips",
     "incomes.logPayslip": "Add a payslip",
     "incomes.compliant": "Compliant",

@@ -2,7 +2,7 @@ import { useContext, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowLeft, Plus, Trash2, ListChecks, History, Paperclip, Briefcase,
-  Pencil, AlertTriangle, CheckCircle2,
+  Pencil, AlertTriangle, CheckCircle2, FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,6 +19,7 @@ import {
   type PayslipFormState,
 } from "@/components/features/payslip-form-state"
 import { PayslipCheckPanel } from "@/components/features/payslip-check-panel"
+import { SalaryCertificatePanel } from "@/components/features/salary-certificate-panel"
 import { formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
@@ -27,7 +28,7 @@ import * as api from "@/lib/tauri"
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-type Tab = "overview" | "contract" | "receipts" | "attachments"
+type Tab = "overview" | "contract" | "receipts" | "fiscal" | "attachments"
 
 /// Gravité la plus élevée parmi les constats d'un bulletin — c'est elle qui
 /// décide de la pastille affichée sur la ligne.
@@ -62,6 +63,7 @@ export function IncomeDetailPage() {
   /// part des versements pour que la liste s'affiche sans attendre.
   const [checks, setChecks] = useState<Record<string, api.PayslipReport>>({})
   const [expandedCheck, setExpandedCheck] = useState<string | null>(null)
+  const [fiscalYear, setFiscalYear] = useState(() => new Date().getFullYear())
 
   const load = async () => {
     if (!id) return
@@ -241,6 +243,7 @@ export function IncomeDetailPage() {
     ["overview", ListChecks, t("engagements.tabOverview")],
     ...(isSalary ? [["contract", Briefcase, t("incomes.tabContract")] as [Tab, typeof ListChecks, string]] : []),
     ["receipts", History, `${isSalary ? t("incomes.payslips") : t("incomes.receipts")} (${receipts.length})`],
+    ...(isSalary ? [["fiscal", FileText, t("incomes.tabFiscalYear")] as [Tab, typeof ListChecks, string]] : []),
     ["attachments", Paperclip, t("incomes.attachments")],
   ]
 
@@ -517,6 +520,15 @@ export function IncomeDetailPage() {
             )
           })}
         </div>
+      )}
+
+      {tab === "fiscal" && (
+        <SalaryCertificatePanel
+          incomeId={i.id}
+          currency={i.currency}
+          year={fiscalYear}
+          onYearChange={setFiscalYear}
+        />
       )}
 
       {tab === "attachments" && (
