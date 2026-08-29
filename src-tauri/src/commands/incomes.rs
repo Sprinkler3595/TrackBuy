@@ -47,7 +47,7 @@ pub(crate) const RECEIPT_SELECT_COLUMNS: &str = "id, income_id, received_on, amo
      social_charges_amount, ac_amount, ac_solidarity_amount, pension_amount,
      laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
      other_deductions_amount,
-     expense_reimbursement_amount, expense_lump_sum_amount,
+     expense_reimbursement_amount, expense_lump_sum_amount, net_addition_amount,
      notes, created_at";
 
 pub(crate) fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeReceipt> {
@@ -82,8 +82,9 @@ pub(crate) fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<Income
         other_deductions_amount: row.get(27)?,
         expense_reimbursement_amount: row.get(28)?,
         expense_lump_sum_amount: row.get(29)?,
-        notes: row.get(30)?,
-        created_at: row.get(31)?,
+        net_addition_amount: row.get(30)?,
+        notes: row.get(31)?,
+        created_at: row.get(32)?,
     })
 }
 
@@ -329,10 +330,10 @@ pub fn log_income_receipt(
          social_charges_amount, ac_amount, ac_solidarity_amount, pension_amount,
          laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
          other_deductions_amount, expense_reimbursement_amount,
-         expense_lump_sum_amount, notes)
+         expense_lump_sum_amount, net_addition_amount, notes)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                  ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                 ?29, ?30, ?31)",
+                 ?29, ?30, ?31, ?32)",
         rusqlite::params![
             id,
             receipt.income_id,
@@ -364,6 +365,7 @@ pub fn log_income_receipt(
             receipt.other_deductions_amount,
             receipt.expense_reimbursement_amount,
             receipt.expense_lump_sum_amount,
+            receipt.net_addition_amount,
             receipt.notes,
         ],
     )
@@ -562,10 +564,10 @@ fn insert_receipt_row(
          social_charges_amount, ac_amount, ac_solidarity_amount, pension_amount,
          laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
          other_deductions_amount, expense_reimbursement_amount,
-         expense_lump_sum_amount, notes)
+         expense_lump_sum_amount, net_addition_amount, notes)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                  ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                 ?29, ?30, ?31)",
+                 ?29, ?30, ?31, ?32)",
         rusqlite::params![
             id,
             receipt.income_id,
@@ -597,6 +599,7 @@ fn insert_receipt_row(
             receipt.other_deductions_amount,
             receipt.expense_reimbursement_amount,
             receipt.expense_lump_sum_amount,
+            receipt.net_addition_amount,
             receipt.notes,
         ],
     )
@@ -625,8 +628,8 @@ pub fn update_income_receipt(
          laa_nonoccupational_amount = ?23, ijm_amount = ?24,
          tax_at_source_amount = ?25, other_deductions_amount = ?26,
          expense_reimbursement_amount = ?27, expense_lump_sum_amount = ?28,
-         notes = ?29
-         WHERE id = ?30",
+         net_addition_amount = ?29, notes = ?30
+         WHERE id = ?31",
         rusqlite::params![
             receipt.received_on,
             receipt.amount,
@@ -656,6 +659,7 @@ pub fn update_income_receipt(
             receipt.other_deductions_amount,
             receipt.expense_reimbursement_amount,
             receipt.expense_lump_sum_amount,
+            receipt.net_addition_amount,
             receipt.notes,
             receipt.id,
         ],
@@ -743,6 +747,7 @@ mod tests {
             other_deductions_amount: None,
             expense_reimbursement_amount: None,
             expense_lump_sum_amount: None,
+            net_addition_amount: None,
             notes: None,
         }
     }

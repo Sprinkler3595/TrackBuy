@@ -659,6 +659,12 @@ pub struct IncomeReceipt {
     pub expense_reimbursement_amount: Option<f64>,
     pub expense_lump_sum_amount: Option<f64>,
 
+    /// Ce qui s'ajoute au net APRÈS les retenues, sans être un remboursement
+    /// de frais. Hors assiette AVS : le mettre dans une colonne de brut
+    /// ferait réclamer des cotisations que l'employeur a eu raison de ne pas
+    /// prélever.
+    pub net_addition_amount: Option<f64>,
+
     pub notes: Option<String>,
     pub created_at: String,
 }
@@ -694,6 +700,7 @@ pub struct CreateIncomeReceiptRequest {
     pub other_deductions_amount: Option<f64>,
     pub expense_reimbursement_amount: Option<f64>,
     pub expense_lump_sum_amount: Option<f64>,
+    pub net_addition_amount: Option<f64>,
     pub notes: Option<String>,
 }
 

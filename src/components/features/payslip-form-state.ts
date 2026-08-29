@@ -26,9 +26,15 @@ export const DEDUCTION_FIELDS = [
   { key: "other_deductions_amount", label: "Autres retenues" },
 ] as const
 
+/// Ce qui s'ajoute au net APRÈS la barre des retenues. Les frais y sont, mais
+/// tout ce qui suit cette barre n'est pas un remboursement de frais : d'où la
+/// troisième ligne, neutre, plutôt qu'un montant rangé de force en frais
+/// professionnels ou — pire — dans une colonne de brut, où il ferait réclamer
+/// des cotisations qui n'ont pas lieu d'être.
 export const EXPENSE_FIELDS = [
   { key: "expense_reimbursement_amount", label: "Frais effectifs remboursés" },
   { key: "expense_lump_sum_amount", label: "Frais forfaitaires" },
+  { key: "net_addition_amount", label: "Autre versement (après retenues)" },
 ] as const
 
 export type MoneyKey =

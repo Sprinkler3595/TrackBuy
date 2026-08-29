@@ -476,8 +476,8 @@ export function PayslipForm({
       </Section>
 
       <Section
-        title="Frais remboursés"
-        subtitle="Ni salaire, ni revenu imposable (art. 327a CO) — rubrique 13 du certificat."
+        title="Après les retenues"
+        subtitle="Ce qui rejoint le net sans passer par les cotisations. Les frais remboursés ne sont ni salaire ni revenu imposable (art. 327a CO) — rubrique 13 du certificat."
         open={openSections.expenses}
         onToggle={() => setOpenSections((s) => ({ ...s, expenses: !s.expenses }))}
       >

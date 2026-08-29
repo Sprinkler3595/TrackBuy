@@ -111,6 +111,12 @@ pub struct PayslipInput {
     // --- frais (art. 327a CO) : remboursés, donc NON soumis et non imposables ---
     pub expense_reimbursement: Option<f64>,
     pub expense_lump_sum: Option<f64>,
+
+    /// Tout autre versement qui rejoint le net APRÈS les retenues. Hors
+    /// assiette AVS, comme les frais — mais ce n'en est pas un, et les
+    /// confondre reviendrait à ranger en frais professionnels un montant qui
+    /// n'a rien à y faire.
+    pub net_addition: Option<f64>,
 }
 
 /// Cumul de l'année AVANT la période contrôlée. Indispensable pour l'AC,
@@ -213,11 +219,12 @@ pub fn total_deductions(p: &PayslipInput) -> f64 {
     .sum()
 }
 
-/// Net attendu = brut − retenues + frais remboursés.
+/// Net attendu = brut − retenues + ce qui s'ajoute après la barre.
 pub fn expected_net(p: &PayslipInput) -> f64 {
     total_gross(p) - total_deductions(p)
         + p.expense_reimbursement.unwrap_or(0.0)
         + p.expense_lump_sum.unwrap_or(0.0)
+        + p.net_addition.unwrap_or(0.0)
 }
 
 /// Salaire coordonné LPP annuel (art. 8 LPP).
@@ -952,6 +959,41 @@ mod tests {
             finding(&fs, "net_reconciliation").unwrap().severity,
             Severity::Ok
         );
+    }
+
+    /// Un versement qui suit la barre des retenues rejoint le net sans passer
+    /// par les cotisations — et sans gonfler l'assiette AVS, faute de quoi le
+    /// contrôle réclamerait des retenues sur un montant qui n'y est pas soumis.
+    #[test]
+    fn a_payment_after_the_deductions_reaches_the_net_untouched() {
+        let p = p2026();
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(8_000.0),
+            avs_ai_apg: Some(424.0),
+            ac: Some(88.0),
+            lpp: Some(187.43),
+            net_addition: Some(250.0),
+            net_paid: 8_000.0 - 424.0 - 88.0 - 187.43 + 250.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            avs_subject_gross(&input),
+            8_000.0,
+            "hors assiette AVS, comme les frais"
+        );
+        let fs = check_payslip(&input, &terms(), &ytd(0.0), &p);
+        assert_eq!(
+            finding(&fs, "net_reconciliation").unwrap().severity,
+            Severity::Ok
+        );
+
+        // Oublier ce versement laisserait un écart de son montant exact.
+        let without = PayslipInput { net_addition: None, ..input };
+        let fs = check_payslip(&without, &terms(), &ytd(0.0), &p);
+        let gap = finding(&fs, "net_reconciliation").unwrap();
+        assert_ne!(gap.severity, Severity::Ok);
+        assert!((gap.actual.unwrap() - gap.expected.unwrap() - 250.0).abs() < 0.01);
     }
 
     #[test]

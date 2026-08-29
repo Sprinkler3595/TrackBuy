@@ -951,6 +951,7 @@ fn to_payslip_input(r: &IncomeReceipt) -> PayslipInput {
         other_deductions: r.other_deductions_amount,
         expense_reimbursement: r.expense_reimbursement_amount,
         expense_lump_sum: r.expense_lump_sum_amount,
+        net_addition: r.net_addition_amount,
     }
 }
 

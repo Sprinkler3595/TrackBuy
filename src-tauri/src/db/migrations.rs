@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 32;
+pub const CURRENT_SCHEMA_VERSION: i64 = 33;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -126,6 +126,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 32 {
         migrate_v32(conn)?;
+    }
+    if current_version < 33 {
+        migrate_v33(conn)?;
     }
 
     Ok(())
@@ -2212,6 +2215,30 @@ fn migrate_v32(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v33 — le versement qui s'ajoute APRÈS les retenues.
+///
+/// Un bulletin suisse ne s'arrête pas au total des déductions : viennent
+/// ensuite des montants qui rejoignent le net sans passer par les cotisations.
+/// Deux d'entre eux existaient déjà, tous deux nommés « frais »
+/// (`expense_reimbursement_amount`, `expense_lump_sum_amount`) — or tout ce qui
+/// suit la barre des retenues n'est pas un remboursement de frais.
+///
+/// Faute d'un casier neutre, ces versements finissaient dans une colonne de
+/// brut, où ils faisaient gonfler l'assiette AVS d'un montant qui n'y est pas
+/// soumis : le contrôle de conformité réclamait alors des cotisations que
+/// l'employeur avait eu raison de ne pas prélever.
+fn migrate_v33(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE income_receipts ADD COLUMN net_addition_amount REAL;
+
+        INSERT INTO schema_version (version) VALUES (33);
+        "
+    ).map_err(|e| format!("Migration v33 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2902,5 +2929,54 @@ mod tests {
             .unwrap();
         assert_eq!(rates, 0);
         assert_eq!(quantities, 0);
+    }
+    /// La v33 ajoute le casier des versements qui suivent la barre des
+    /// retenues. Une fiche déjà saisie doit le traverser sans rien perdre, et
+    /// s'y retrouver à `NULL` — inconnu, pas zéro.
+    #[test]
+    fn v33_adds_the_after_deductions_slot_without_touching_existing_rows() {
+        let conn = conn_at_v31();
+        migrate_v32(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency,
+                 expense_reimbursement_amount)
+             VALUES ('r1', 'inc1', '2020-03-25', 4000.0, 'CHF', 120.0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v33(&conn).unwrap();
+
+        let (amount, expenses, addition): (f64, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT amount, expense_reimbursement_amount, net_addition_amount
+                 FROM income_receipts WHERE id = 'r1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 4000.0);
+        assert_eq!(expenses, Some(120.0), "les frais déjà saisis survivent");
+        assert_eq!(addition, None, "inconnu, et surtout pas zéro");
+
+        conn.execute(
+            "UPDATE income_receipts SET net_addition_amount = 250.0 WHERE id = 'r1'",
+            [],
+        )
+        .unwrap();
+        let stored: Option<f64> = conn
+            .query_row(
+                "SELECT net_addition_amount FROM income_receipts WHERE id = 'r1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, Some(250.0));
     }
 }

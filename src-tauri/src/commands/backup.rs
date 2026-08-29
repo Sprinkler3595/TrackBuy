@@ -695,7 +695,7 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
                     r.pension_amount, r.laa_nonoccupational_amount, r.ijm_amount,
                     r.tax_at_source_amount, r.other_deductions_amount,
                     r.expense_reimbursement_amount, r.expense_lump_sum_amount,
-                    r.notes
+                    r.net_addition_amount, r.notes
              FROM income_receipts r
              JOIN incomes i ON r.income_id = i.id
              ORDER BY r.received_on DESC",
@@ -710,12 +710,12 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
          Indemnité vacances,Bonus,Prestations en nature,Part privée véhicule,\
          Allocations familiales,Autre brut,AVS/AI/APG,AC,Solidarité AC,2e pilier,\
          LAA AANP,IJM,Impôt source,Autres retenues,Frais effectifs,Frais forfaitaires,\
-         Notes\n",
+         Autre versement,Notes\n",
     );
 
     let rows = stmt
         .query_map([], |row| {
-            // 30 colonnes : au-delà de 12, les tuples Rust deviennent
+            // 31 colonnes : au-delà de 12, les tuples Rust deviennent
             // illisibles, donc on formate la ligne directement ici.
             let text = |i: usize| -> rusqlite::Result<String> {
                 Ok(row.get::<_, Option<String>>(i)?.unwrap_or_default())
@@ -728,7 +728,7 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
             };
             Ok(format!(
                 "{},{},{},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},\
-                 {},{},{},{},{},{},{},{},{},{},{}\n",
+                 {},{},{},{},{},{},{},{},{},{},{},{}\n",
                 row.get::<_, String>(0)?,
                 escape_csv(&row.get::<_, String>(1)?),
                 row.get::<_, String>(2)?,
@@ -759,7 +759,8 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
                 num(27)?,
                 num(28)?,
                 num(29)?,
-                escape_csv(&text(30)?),
+                num(30)?,
+                escape_csv(&text(31)?),
             ))
         })
         .map_err(|e| e.to_string())?;

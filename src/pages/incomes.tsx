@@ -13,7 +13,6 @@ import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
 import { IncomeWizard } from "@/components/features/income-wizard"
-import { IncomeTaxSummaryPanel } from "@/components/features/income-tax-summary-panel"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
@@ -435,8 +434,6 @@ export function IncomesPage() {
           </CardContent>
         </Card>
       )}
-
-      <IncomeTaxSummaryPanel amountsVisible={amountsVisible} />
 
       <div className="grid gap-3">
         {filtered.length === 0 ? (

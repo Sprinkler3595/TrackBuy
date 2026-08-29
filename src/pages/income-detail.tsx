@@ -2,7 +2,7 @@ import { useContext, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowLeft, Plus, Trash2, ListChecks, History, Paperclip, Briefcase,
-  Pencil, AlertTriangle, CheckCircle2, FileText, Upload,
+  Pencil, AlertTriangle, CheckCircle2, Upload, Check,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,7 @@ import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { EmploymentContractForm } from "@/components/features/employment-contract-form"
 import { GrossToNetPanel } from "@/components/features/gross-to-net-panel"
 import { PayslipForm } from "@/components/features/payslip-form"
+import { PayslipConfirm } from "@/components/features/payslip-confirm"
 import { SupplementYearSummary } from "@/components/features/supplement-year-summary"
 import { PayslipBatchImport } from "@/components/features/payslip-batch-import"
 import {
@@ -23,7 +24,7 @@ import {
   type PayslipFormState,
 } from "@/components/features/payslip-form-state"
 import { PayslipCheckPanel } from "@/components/features/payslip-check-panel"
-import { SalaryCertificatePanel } from "@/components/features/salary-certificate-panel"
+import { ReceiptBreakdown } from "@/components/features/receipt-breakdown"
 import { formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent, receiptYear } from "@/lib/finance"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
@@ -32,7 +33,11 @@ import * as api from "@/lib/tauri"
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-type Tab = "overview" | "contract" | "receipts" | "fiscal" | "attachments"
+/// Pas d'onglet fiscal ici. Le certificat de salaire et la synthèse d'impôt
+/// répondent à une question posée une fois l'an ; les faire cohabiter avec le
+/// suivi des cotisations obligeait à trancher chaque mois entre deux univers.
+/// Les données et les commandes restent en place — seul l'écran disparaît.
+type Tab = "overview" | "contract" | "receipts" | "attachments"
 
 /// Gravité la plus élevée parmi les constats d'un bulletin — c'est elle qui
 /// décide de la pastille affichée sur la ligne.
@@ -73,7 +78,6 @@ export function IncomeDetailPage() {
   /// part des versements pour que la liste s'affiche sans attendre.
   const [checks, setChecks] = useState<Record<string, api.PayslipReport>>({})
   const [expandedCheck, setExpandedCheck] = useState<string | null>(null)
-  const [fiscalYear, setFiscalYear] = useState(() => new Date().getFullYear())
 
   const load = async () => {
     if (!id) return
@@ -130,6 +134,9 @@ export function IncomeDetailPage() {
   /// Import en lot : c'est le chemin d'une reprise d'historique, distinct
   /// de la saisie d'un bulletin du mois.
   const [batchOpen, setBatchOpen] = useState(false)
+
+  /// « J'ai reçu mon salaire » : le geste mensuel, celui qui doit être court.
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   /// Date proposée pour clore l'emploi : le dernier versement connu, sinon
   /// aujourd'hui. Sur un employeur quitté il y a des années, proposer la date
@@ -280,6 +287,7 @@ export function IncomeDetailPage() {
           other_deductions_amount: receipt.other_deductions_amount,
           expense_reimbursement_amount: receipt.expense_reimbursement_amount,
           expense_lump_sum_amount: receipt.expense_lump_sum_amount,
+          net_addition_amount: receipt.net_addition_amount,
           notes: receipt.notes,
         })
         receiptId = created.id
@@ -316,7 +324,6 @@ export function IncomeDetailPage() {
     ["overview", ListChecks, t("engagements.tabOverview")],
     ...(isSalary ? [["contract", Briefcase, t("incomes.tabContract")] as [Tab, typeof ListChecks, string]] : []),
     ["receipts", History, `${isSalary ? t("incomes.payslips") : t("incomes.receipts")} (${receipts.length})`],
-    ...(isSalary ? [["fiscal", FileText, t("incomes.tabFiscalYear")] as [Tab, typeof ListChecks, string]] : []),
     ["attachments", Paperclip, t("incomes.attachments")],
   ]
 
@@ -517,7 +524,11 @@ export function IncomeDetailPage() {
 
       {tab === "receipts" && (
         <div className="space-y-3">
-          <div className="flex justify-end gap-2">
+          {/* Confirmer le salaire du mois est le geste courant : il mérite le
+              bouton principal. Le formulaire détaillé reste accessible pour les
+              bulletins qui sortent de l'ordinaire, et l'import en lot pour la
+              reprise d'un historique. */}
+          <div className="flex flex-wrap justify-end gap-2">
             {isSalary && (
               <Button size="sm" variant="outline" onClick={() => setBatchOpen(true)}>
                 <Upload className="h-4 w-4" />
@@ -526,11 +537,18 @@ export function IncomeDetailPage() {
             )}
             <Button
               size="sm"
+              variant={isSalary ? "outline" : "default"}
               onClick={() => (showForm ? setShowForm(false) : openNewForm())}
             >
               <Plus className="h-4 w-4" />
-              {isSalary ? t("incomes.logPayslip") : t("incomes.logReceipt")}
+              {isSalary ? "Saisir en détail" : t("incomes.logReceipt")}
             </Button>
+            {isSalary && (
+              <Button size="sm" onClick={() => setConfirmOpen(true)}>
+                <Check className="h-4 w-4" />
+                J'ai reçu mon salaire
+              </Button>
+            )}
           </div>
 
           {showForm && formState && (
@@ -585,9 +603,16 @@ export function IncomeDetailPage() {
               <Card key={r.id}>
                 <CardContent className="p-3 space-y-3">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="font-medium">{formatDate(r.received_on)}</p>
+                    {/* Toute la ligne ouvre le détail : chercher le petit
+                        bouton « voir le contrôle » pour savoir d'où sort un
+                        montant n'était pas un réflexe naturel. */}
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => setExpandedCheck(expanded ? null : r.id)}
+                    >
+                      <span className="flex items-center gap-2 flex-wrap">
+                        <span className="font-medium">{formatDate(r.received_on)}</span>
                         {r.period_label && <Badge variant="secondary">{r.period_label}</Badge>}
                         {severity === "error" && (
                           <Badge variant="destructive" className="gap-1">
@@ -607,15 +632,15 @@ export function IncomeDetailPage() {
                             {t("incomes.compliant")}
                           </Badge>
                         )}
-                      </div>
+                      </span>
                       {r.gross_amount != null && (
-                        <p className="text-xs text-muted-foreground mt-1">
+                        <span className="block text-xs text-muted-foreground mt-1">
                           {t("incomes.grossAmount")}{" "}
                           <MaskedAmount amount={r.gross_amount} currency={r.currency} visible={amountsVisible} />
-                        </p>
+                        </span>
                       )}
-                      {r.notes && <p className="text-xs text-muted-foreground mt-1">{r.notes}</p>}
-                    </div>
+                      {r.notes && <span className="block text-xs text-muted-foreground mt-1">{r.notes}</span>}
+                    </button>
                     <p className="font-semibold shrink-0">
                       <MaskedAmount amount={r.amount} currency={r.currency} visible={amountsVisible} />
                     </p>
@@ -637,6 +662,10 @@ export function IncomeDetailPage() {
                   </div>
                   {expanded && (
                     <div className="space-y-3">
+                      {/* D'abord le décompte : c'est la question qu'on se pose
+                          en rouvrant un mois — d'où vient ce chiffre. Le
+                          contrôle vient après, il commente ce décompte. */}
+                      <ReceiptBreakdown receipt={r} />
                       {report && <PayslipCheckPanel report={report} currency={r.currency} />}
                       {/* Le PDF du bulletin se consulte ici, à côté du contrôle
                           qu'il justifie — pas dans une pile commune au revenu où
@@ -654,15 +683,6 @@ export function IncomeDetailPage() {
           </>
           )}
         </div>
-      )}
-
-      {tab === "fiscal" && (
-        <SalaryCertificatePanel
-          incomeId={i.id}
-          currency={i.currency}
-          year={fiscalYear}
-          onYearChange={setFiscalYear}
-        />
       )}
 
       {tab === "attachments" && (
@@ -695,6 +715,15 @@ export function IncomeDetailPage() {
         onConfirm={handleDeleteReceipt}
         onCancel={() => setDeleteReceiptTarget(null)}
       />
+
+      {confirmOpen && (
+        <PayslipConfirm
+          income={i}
+          contracts={contractVersions}
+          onClose={() => setConfirmOpen(false)}
+          onSaved={load}
+        />
+      )}
 
       {batchOpen && (
         <PayslipBatchImport

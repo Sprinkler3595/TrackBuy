@@ -1292,6 +1292,11 @@ export interface IncomeReceipt {
   expense_reimbursement_amount: number | null
   expense_lump_sum_amount: number | null
 
+  /// Ce qui s'ajoute au net APRÈS les retenues sans être un remboursement de
+  /// frais. Hors assiette AVS : le ranger dans une colonne de brut ferait
+  /// réclamer des cotisations que l'employeur a eu raison de ne pas prélever.
+  net_addition_amount: number | null
+
   notes: string | null
   created_at: string
 }
@@ -1875,6 +1880,7 @@ export type CreateIncomeReceipt = {
     | "other_deductions_amount"
     | "expense_reimbursement_amount"
     | "expense_lump_sum_amount"
+    | "net_addition_amount"
     | "notes"
   >
 >
