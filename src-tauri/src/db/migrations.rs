@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 29;
+pub const CURRENT_SCHEMA_VERSION: i64 = 30;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -117,6 +117,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 29 {
         migrate_v29(conn)?;
+    }
+    if current_version < 30 {
+        migrate_v30(conn)?;
     }
 
     Ok(())
@@ -1977,6 +1980,31 @@ fn migrate_v29(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v30 — une année de barème peut être déclarée vérifiée.
+///
+/// Contrôler une fiche de 2012 suppose les barèmes de 2012. L'application n'en
+/// publie que cinq (2022-2026) : pour tout le reste, les chiffres viennent de
+/// l'utilisateur, et rien ne dit s'il les a recopiés d'une source officielle
+/// ou saisis de mémoire.
+///
+/// La différence est lourde de conséquences. Sur un barème incertain, un écart
+/// constaté ne prouve pas une erreur de l'employeur — il peut tout aussi bien
+/// venir du barème. Tant qu'une année n'est pas confirmée, les constats
+/// plafonnent donc en avertissement ; cocher cette case, source officielle
+/// sous les yeux, leur rend leur gravité.
+fn migrate_v30(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE payroll_param_overrides
+            ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (30);
+        "
+    ).map_err(|e| format!("Migration v30 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2394,5 +2422,36 @@ mod tests {
             [],
         );
         assert!(dup_import.is_err(), "un canton-année ne s'importe qu'une fois");
+    }
+
+
+    /// La v30 n'ajoute qu'un drapeau, et il naît à faux : une année déjà
+    /// saisie n'est pas pour autant vérifiée.
+    #[test]
+    fn v30_adds_an_unconfirmed_flag_to_existing_overrides() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2012, 126000.0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v30(&conn).unwrap();
+
+        let (ceiling, confirmed): (f64, i64) = conn
+            .query_row(
+                "SELECT ac_ceiling, confirmed FROM payroll_param_overrides WHERE year = 2012",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ceiling, 126_000.0, "la saisie existante survit");
+        assert_eq!(confirmed, 0, "saisi ne vaut pas vérifié");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 30);
     }
 }

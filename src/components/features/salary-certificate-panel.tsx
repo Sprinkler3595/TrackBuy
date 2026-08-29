@@ -90,7 +90,7 @@ export function SalaryCertificatePanel({
 }) {
   const { toast } = useToast()
   const [reconciliation, setReconciliation] = useState<api.CertificateReconciliation | null>(null)
-  const [params, setParams] = useState<api.PayrollParams | null>(null)
+  const [params, setParams] = useState<api.PayrollParamsResponse | null>(null)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState(false)
   const [loading, setLoading] = useState(true)

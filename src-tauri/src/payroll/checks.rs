@@ -554,3 +554,30 @@ pub fn check_payslip(
 
     out
 }
+
+/// Rabat les constats produits avec un barème non confirmé.
+///
+/// Contrôler une fiche ancienne suppose les barèmes de son année. Quand ceux-ci
+/// viennent d'une saisie que personne n'a vérifiée contre une source
+/// officielle, un écart ne prouve RIEN sur l'employeur : il peut tout aussi
+/// bien venir du barème. Annoncer une anomalie serait alors une accusation
+/// fabriquée — la pire sortie possible pour cet écran.
+///
+/// L'écart reste montré, à sa valeur près ; seule sa gravité est ramenée à un
+/// avertissement, et la raison est dite. Confirmer l'année dans
+/// Paramètres → Barèmes lève le plafond.
+pub fn soften_unconfirmed(findings: Vec<Finding>, year: i32) -> Vec<Finding> {
+    findings
+        .into_iter()
+        .map(|mut f| {
+            if f.severity == Severity::Error {
+                f.severity = Severity::Warn;
+                f.message = format!(
+                    "{} À vérifier : le barème {} n'a pas été confirmé, l'écart peut venir de lui.",
+                    f.message, year
+                );
+            }
+            f
+        })
+        .collect()
+}

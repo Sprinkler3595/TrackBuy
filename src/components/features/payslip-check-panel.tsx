@@ -121,6 +121,19 @@ export function PayslipCheckPanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {report.params_provisional && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+            <p className="font-medium">Barème {report.params.year} non confirmé</p>
+            <p className="text-muted-foreground mt-1">
+              Les barèmes de cette année ne sont pas livrés avec l'application. Les écarts
+              ci-dessous sont donc signalés en avertissement et non en anomalie : ils pourraient
+              venir du barème autant que de votre employeur. Vérifiez les taux dans
+              Paramètres → Barèmes et cochez « J'ai vérifié ces chiffres » pour que le contrôle
+              redevienne opposable.
+            </p>
+          </div>
+        )}
+
         {!report.has_contract && (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
             <p className="font-medium">Contrat de travail non renseigné</p>

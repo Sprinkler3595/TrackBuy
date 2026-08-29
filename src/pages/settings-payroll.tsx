@@ -142,7 +142,7 @@ export function PayrollSettings() {
   const currentYear = new Date().getFullYear()
 
   const [year, setYear] = useState(currentYear)
-  const [params, setParams] = useState<api.PayrollParams | null>(null)
+  const [params, setParams] = useState<api.PayrollParamsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -153,6 +153,12 @@ export function PayrollSettings() {
   /// qui permet de dire, champ par champ, d'où vient le chiffre.
   const [edited, setEdited] = useState<Record<string, string>>({})
 
+  /// « J'ai vérifié ces chiffres. » Tant que ce n'est pas coché sur une année
+  /// non livrée avec l'application, les contrôles de bulletins plafonnent en
+  /// avertissement : un écart pourrait venir du barème et non de l'employeur.
+  const [confirmed, setConfirmed] = useState(false)
+  const [inferred, setInferred] = useState<api.InferredParams | null>(null)
+
   const [imports, setImports] = useState<api.TariffImport[]>([])
   const [importCanton, setImportCanton] = useState("")
   const [importing, setImporting] = useState(false)
@@ -160,12 +166,17 @@ export function PayrollSettings() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [p, list] = await Promise.all([
+      const [p, list, guess] = await Promise.all([
         api.getPayrollParams(year),
         api.listTaxAtSourceImports(),
+        // Les bulletins de l'année révèlent les taux réellement appliqués.
+        // Sur une année ancienne, c'est souvent la seule source disponible.
+        api.inferPayrollParams(year).catch(() => null),
       ])
       setParams(p)
       setImports(list)
+      setConfirmed(p.confirmed)
+      setInferred(guess)
       // Repartir de ce qui est déjà surchargé : sans cela, un simple
       // enregistrement effacerait les corrections précédentes.
       const restored: Record<string, string> = {}
@@ -233,8 +244,10 @@ export function PayrollSettings() {
         // livrée, donc on ne l'envoie pas.
         if (n != null) (values as Record<string, number>)[k] = n
       }
+      values.confirmed = confirmed
       const p = await api.upsertPayrollOverrides(year, values)
       setParams(p)
+      setConfirmed(p.confirmed)
       toast(`Barèmes ${year} enregistrés.`, "success")
     } catch (e) {
       toast(`Erreur : ${e}`, "error")
@@ -249,6 +262,7 @@ export function PayrollSettings() {
       const p = await api.resetPayrollOverrides(year)
       setParams(p)
       setEdited({})
+      setConfirmed(p.confirmed)
       toast(`Barèmes ${year} revenus aux valeurs livrées.`, "success")
     } catch (e) {
       toast(`Erreur : ${e}`, "error")
@@ -364,6 +378,64 @@ export function PayrollSettings() {
               appliqués en attendant. Dupliquez l'année précédente puis corrigez les chiffres
               parus, et cet avertissement disparaîtra.
             </p>
+          )}
+
+          {params && !params.published && (
+            <div className="space-y-2 rounded-md border p-3">
+              <label className="flex items-start gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-input accent-primary"
+                  checked={confirmed}
+                  onChange={(e) => setConfirmed(e.target.checked)}
+                />
+                J'ai vérifié ces chiffres auprès d'une source officielle
+              </label>
+              <p className="pl-6 text-xs text-muted-foreground">
+                {confirmed
+                  ? "Les contrôles de bulletins de cette année peuvent signaler une anomalie."
+                  : "Tant que ce n'est pas coché, les contrôles de bulletins de " +
+                    `${params.year} plafonnent en avertissement : un écart pourrait venir du ` +
+                    "barème et non de votre employeur. Pensez à enregistrer après avoir coché."}
+              </p>
+            </div>
+          )}
+
+          {inferred && inferred.rates.length > 0 && (
+            <div className="space-y-2 rounded-md border border-primary/40 bg-primary/5 p-3">
+              <p className="text-sm font-medium">
+                Vos bulletins de {inferred.year} révèlent ces taux
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Déduits de {inferred.receipt_count} bulletin
+                {inferred.receipt_count > 1 ? "s" : ""}. Cela ne prouve pas que votre employeur
+                avait raison — cela montre qu'il a été cohérent, et désigne le mois qui sort du
+                lot.
+              </p>
+              <ul className="space-y-1.5">
+                {inferred.rates.map((r) => (
+                  <li key={r.field} className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium">{r.label}</span>
+                    <span className="tabular-nums">{r.value} %</span>
+                    <span className="text-xs text-muted-foreground">
+                      {r.agreeing}/{r.total} bulletins
+                    </span>
+                    {r.outliers.length > 0 && (
+                      <Badge variant="warning">
+                        écart : {r.outliers.join(", ")}
+                      </Badge>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setValue(r.field, String(r.value))}
+                    >
+                      Reprendre
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </CardContent>
       </Card>

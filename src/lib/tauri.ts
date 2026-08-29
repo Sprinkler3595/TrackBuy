@@ -1415,6 +1415,15 @@ export interface PayrollParams {
   private_car_monthly_min: number
   family_allowance_min_child: number
   family_allowance_min_training: number
+}
+
+/// Ce que rend `getPayrollParams` : le barème, plus de quoi le situer.
+///
+/// Distinct de `PayrollParams` parce que le contrôle d'un bulletin ne reçoit
+/// que le barème nu (`PayslipReport.params`) : déclarer ces champs sur le type
+/// de base ferait croire à leur présence là où ils n'existent pas.
+export interface PayrollParamsResponse extends PayrollParams {
+  /// Années publiées dans le code.
   known_years: number[]
   /// Champs que l'utilisateur a redéfinis pour cette année dans
   /// Paramètres → Barèmes. Le reste vient des valeurs livrées.
@@ -1425,6 +1434,31 @@ export interface PayrollParams {
   /// Années où des bulletins ou des certificats existent réellement. C'est ce
   /// qui rend une carrière ancienne atteignable dans les sélecteurs d'année.
   data_years: number[]
+  /// L'utilisateur a déclaré avoir vérifié cette année auprès d'une source.
+  confirmed: boolean
+  /// L'année est livrée avec l'application.
+  published: boolean
+  /// Ni publiée ni confirmée : les contrôles de conformité plafonnent en
+  /// avertissement, car un écart pourrait venir du barème lui-même.
+  provisional: boolean
+}
+
+/// Un taux tel que les bulletins d'une année le révèlent.
+export interface InferredRate {
+  field: string
+  label: string
+  value: number
+  /// Bulletins qui appliquent ce taux.
+  agreeing: number
+  total: number
+  /// Périodes qui s'en écartent — le mois à regarder de près.
+  outliers: string[]
+}
+
+export interface InferredParams {
+  year: number
+  rates: InferredRate[]
+  receipt_count: number
 }
 
 /// Valeurs surchargeables d'une année. `null` = « garder la valeur livrée ».
@@ -1446,6 +1480,8 @@ export type PayrollOverrideInput = Partial<
 > & {
   lpp_credit_brackets?: Array<[number, number, number]> | null
   note?: string | null
+  /// « J'ai vérifié ces chiffres auprès de la source. »
+  confirmed?: boolean | null
 }
 
 /// Termes de l'emploi tels que le moteur de paie les attend.
@@ -1622,6 +1658,9 @@ export interface PayslipReport {
   /// Cumul annuel avant cette période, utilisé pour le plafond AC.
   ytd_before: number
   has_contract: boolean
+  /// Barème ni livré ni confirmé : les constats ont été rabattus en
+  /// avertissements, car un écart pourrait venir du barème lui-même.
+  params_provisional: boolean
 }
 
 export interface CertificateDiff {
@@ -1668,7 +1707,8 @@ export interface SalarySource {
 
 export interface IncomeTaxSummary {
   year: number
-  params: PayrollParams
+  /// Le barème de l'année, et de quoi alimenter le sélecteur d'année.
+  params: PayrollParamsResponse
   gross_total: number
   social_contributions: number
   lpp_contributions: number
@@ -1794,21 +1834,27 @@ export const deleteIncomeReceipt = (id: string) =>
 
 /// Barèmes légaux de l'année. Le front ne code aucun taux : il les lit ici.
 export const getPayrollParams = (year: number) =>
-  invoke<PayrollParams>("get_payroll_params", { year })
+  invoke<PayrollParamsResponse>("get_payroll_params", { year })
 
 /// Enregistre les corrections de barème d'une année. L'envoi est un
 /// remplacement complet : un champ omis redevient la valeur livrée.
 export const upsertPayrollOverrides = (year: number, values: PayrollOverrideInput) =>
-  invoke<PayrollParams>("upsert_payroll_overrides", { year, values })
+  invoke<PayrollParamsResponse>("upsert_payroll_overrides", { year, values })
 
 /// Rend une année à ses valeurs livrées.
 export const resetPayrollOverrides = (year: number) =>
-  invoke<PayrollParams>("reset_payroll_overrides", { year })
+  invoke<PayrollParamsResponse>("reset_payroll_overrides", { year })
 
 /// Recopie une année sur une autre, corrections comprises — le geste du
 /// 1er janvier.
 export const duplicatePayrollYear = (fromYear: number, toYear: number) =>
-  invoke<PayrollParams>("duplicate_payroll_year", { fromYear, toYear })
+  invoke<PayrollParamsResponse>("duplicate_payroll_year", { fromYear, toYear })
+
+/// Propose les taux que les bulletins d'une année révèlent. Ne démontre pas
+/// que l'employeur avait raison — démontre qu'il a été cohérent, et désigne le
+/// mois qui sort du lot.
+export const inferPayrollParams = (year: number) =>
+  invoke<InferredParams>("infer_payroll_params", { year })
 
 /// Projette une année de paie à partir d'un brut par période.
 export const computeNetFromGross = (req: NetFromGrossRequest) =>

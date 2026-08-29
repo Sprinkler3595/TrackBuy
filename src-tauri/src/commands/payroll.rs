@@ -54,6 +54,13 @@ pub struct PayrollParamsResponse {
     /// dans le code (2022-2026) : une carrière commencée en 2008 était
     /// littéralement inatteignable à l'écran.
     pub data_years: Vec<i32>,
+    /// L'utilisateur a déclaré avoir vérifié cette année.
+    pub confirmed: bool,
+    /// L'année est livrée avec l'application.
+    pub published: bool,
+    /// Ni publiée ni confirmée : les contrôles de conformité plafonnent en
+    /// avertissement tant que c'est le cas.
+    pub provisional: bool,
 }
 
 /// Années présentes dans les données, du plus récent au plus ancien.
@@ -96,6 +103,9 @@ fn params_response(
 ) -> Result<PayrollParamsResponse, String> {
     let resolved = resolve_params(conn, year)?;
     Ok(PayrollParamsResponse {
+        confirmed: resolved.confirmed,
+        published: resolved.published,
+        provisional: resolved.provisional(),
         params: resolved.params,
         known_years: known_years(),
         overridden_fields: resolved.overridden,
@@ -173,6 +183,20 @@ pub struct ResolvedParams {
     /// Champs que l'utilisateur a effectivement redéfinis, pour que l'écran
     /// puisse afficher « modifié » sans redemander la valeur livrée.
     pub overridden: Vec<String>,
+    /// L'utilisateur a déclaré avoir vérifié cette année auprès d'une source
+    /// officielle.
+    pub confirmed: bool,
+    /// L'année est publiée dans le code, donc vérifiée à la livraison.
+    pub published: bool,
+}
+
+impl ResolvedParams {
+    /// Barème sur lequel on ne peut pas fonder une accusation : ni publié avec
+    /// l'application, ni confirmé par l'utilisateur. Un écart constaté peut
+    /// alors venir du barème autant que de l'employeur.
+    pub fn provisional(&self) -> bool {
+        !self.published && !self.confirmed
+    }
 }
 
 /// Barème applicable à une année : les valeurs livrées avec l'application,
@@ -184,6 +208,7 @@ pub struct ResolvedParams {
 pub fn resolve_params(conn: &rusqlite::Connection, year: i32) -> Result<ResolvedParams, String> {
     let mut params = params_for_year(year);
     let mut overridden: Vec<String> = Vec::new();
+    let mut confirmed = false;
 
     let found = conn.query_row(
         "SELECT * FROM payroll_param_overrides WHERE year = ?1",
@@ -225,6 +250,8 @@ pub fn resolve_params(conn: &rusqlite::Connection, year: i32) -> Result<Resolved
             // Les tranches de bonification LPP sont une liste, pas un nombre :
             // elles voyagent en JSON. Une liste illisible est ignorée plutôt
             // que fatale — mieux vaut le barème livré qu'un écran en erreur.
+            confirmed = row.get::<_, i64>("confirmed")? != 0;
+
             if let Some(json) = row.get::<_, Option<String>>("lpp_credit_brackets")? {
                 if let Ok(brackets) = serde_json::from_str::<Vec<LppCreditBracket>>(&json) {
                     if !brackets.is_empty() {
@@ -255,7 +282,12 @@ pub fn resolve_params(conn: &rusqlite::Connection, year: i32) -> Result<Resolved
         params.effective_year = year;
     }
 
-    Ok(ResolvedParams { params, overridden })
+    Ok(ResolvedParams {
+        params,
+        overridden,
+        confirmed,
+        published: known_years().contains(&year),
+    })
 }
 
 /// Valeurs d'une année telles qu'elles doivent être écrites en surcharge.
@@ -292,6 +324,10 @@ pub struct PayrollOverrideInput {
     pub family_allowance_min_child: Option<f64>,
     pub family_allowance_min_training: Option<f64>,
     pub note: Option<String>,
+    /// « J'ai vérifié ces chiffres auprès de la source. » C'est ce qui rend à
+    /// une année ancienne le droit de produire des anomalies, et non de
+    /// simples avertissements.
+    pub confirmed: Option<bool>,
 }
 
 /// Écrit (ou remplace) les surcharges d'une année.
@@ -322,9 +358,9 @@ fn upsert_overrides_inner(
             pro_lump_sum_max, meals_full_year, meals_subsidized_year, meals_full_day,
             meals_subsidized_day, commute_cap_ifd, commute_private_car_per_km,
             private_car_monthly_pct, private_car_monthly_min,
-            family_allowance_min_child, family_allowance_min_training, note)
+            family_allowance_min_child, family_allowance_min_training, note, confirmed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
          ON CONFLICT(year) DO UPDATE SET
             avs_ai_apg_employee_pct = excluded.avs_ai_apg_employee_pct,
             avs_ai_apg_employer_pct = excluded.avs_ai_apg_employer_pct,
@@ -355,6 +391,7 @@ fn upsert_overrides_inner(
             family_allowance_min_child = excluded.family_allowance_min_child,
             family_allowance_min_training = excluded.family_allowance_min_training,
             note = excluded.note,
+            confirmed = excluded.confirmed,
             updated_at = datetime('now')",
         rusqlite::params![
             year,
@@ -387,6 +424,7 @@ fn upsert_overrides_inner(
             v.family_allowance_min_child,
             v.family_allowance_min_training,
             v.note,
+            v.confirmed.unwrap_or(false) as i64,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -466,6 +504,10 @@ fn duplicate_year_inner(
         family_allowance_min_child: Some(p.family_allowance_min_child),
         family_allowance_min_training: Some(p.family_allowance_min_training),
         note: Some(format!("Repris de {}", from_year)),
+        // Recopier des chiffres ne les vérifie pas : l'année cible naît non
+        // confirmée, même si la source l'était. Les montants changent d'une
+        // année à l'autre, c'est précisément pourquoi on duplique.
+        confirmed: Some(false),
     };
     upsert_overrides_inner(conn, to_year, &values)
 }
@@ -1198,6 +1240,10 @@ pub struct PayslipReport {
     /// `false` quand aucun contrat n'est enregistré : plusieurs contrôles
     /// sont alors impossibles, et l'UI doit inviter à le remplir.
     pub has_contract: bool,
+    /// Le barème de l'année n'est ni livré avec l'application ni confirmé par
+    /// l'utilisateur : les constats ont été rabattus en avertissements, et
+    /// l'écran doit dire pourquoi.
+    pub params_provisional: bool,
 }
 
 fn build_report(
@@ -1222,9 +1268,16 @@ fn build_report(
         periods_per_year: periods,
     };
 
-    let params = resolve_params(conn, input.fiscal_year)?.params;
+    let resolved = resolve_params(conn, input.fiscal_year)?;
+    let params = resolved.params.clone();
     let expected = payroll::expected_deductions(&input, &terms, &ctx, &params);
-    let findings = check_payslip(&input, &terms, &ctx, &params);
+    let mut findings = check_payslip(&input, &terms, &ctx, &params);
+    // Sur une année dont le barème n'est ni publié ni confirmé, un écart ne
+    // démontre rien : il peut venir du barème. On montre l'écart, on ne
+    // l'impute pas.
+    if resolved.provisional() {
+        findings = payroll::checks::soften_unconfirmed(findings, input.fiscal_year);
+    }
 
     Ok(PayslipReport {
         findings,
@@ -1232,6 +1285,7 @@ fn build_report(
         params,
         ytd_before: ytd,
         has_contract: contract.is_some(),
+        params_provisional: resolved.provisional(),
     })
 }
 
@@ -1731,7 +1785,10 @@ pub struct ProfessionalExpenses {
 #[derive(Debug, Serialize)]
 pub struct IncomeTaxSummary {
     pub year: i32,
-    pub params: PayrollParams,
+    /// Le barème de l'année, ET de quoi alimenter le sélecteur d'année.
+    /// C'était un `PayrollParams` nu : le front y lisait `known_years`,
+    /// absent à l'exécution, ce qui faisait échouer le rendu du panneau.
+    pub params: PayrollParamsResponse,
     /// Rubrique 8 cumulée sur tous les salaires.
     pub gross_total: f64,
     /// Rubrique 9 cumulée.
@@ -1801,7 +1858,8 @@ fn income_tax_summary_inner(
     year: i32,
     working_days: f64,
 ) -> Result<IncomeTaxSummary, String> {
-    let params = resolve_params(conn, year)?.params;
+    let params_full = params_response(conn, year)?;
+    let params = params_full.params.clone();
 
     // --- salaires ---
     let mut stmt = conn
@@ -1956,7 +2014,7 @@ fn income_tax_summary_inner(
 
     Ok(IncomeTaxSummary {
         year,
-        params,
+        params: params_full,
         gross_total,
         social_contributions,
         lpp_contributions,
@@ -2259,6 +2317,143 @@ fn certificate_years(
         .collect::<Result<Vec<i32>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(years)
+}
+
+// ===========================================================================
+// Déduire un barème depuis les fiches
+// ===========================================================================
+
+/// Un taux tel que les bulletins de l'année le révèlent.
+#[derive(Debug, Serialize)]
+pub struct InferredRate {
+    /// Champ de `PayrollParams` concerné.
+    pub field: &'static str,
+    pub label: &'static str,
+    /// Taux dominant, en pourcent.
+    pub value: f64,
+    /// Bulletins qui l'appliquent.
+    pub agreeing: usize,
+    pub total: usize,
+    /// Périodes qui s'en écartent — le mois à regarder de près.
+    pub outliers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InferredParams {
+    pub year: i32,
+    pub rates: Vec<InferredRate>,
+    pub receipt_count: usize,
+}
+
+/// Taux dominant d'une série d'observations, au centième près.
+///
+/// La valeur la plus fréquente, et non la moyenne : le plafond annuel de
+/// l'assurance-chômage fait chuter le taux des derniers mois d'un haut
+/// salaire, et une moyenne rendrait un taux qui n'a jamais été appliqué. Le
+/// mode, lui, tient bon et relègue ces mois en écarts — ce qui est exact.
+fn dominant_rate(samples: &[(String, f64)]) -> Option<(f64, usize, Vec<String>)> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut buckets: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for (_, rate) in samples {
+        *buckets.entry((rate * 100.0).round() as i64).or_insert(0) += 1;
+    }
+    let (&key, &count) = buckets.iter().max_by_key(|(_, c)| **c)?;
+    let value = key as f64 / 100.0;
+    let outliers = samples
+        .iter()
+        .filter(|(_, r)| ((r * 100.0).round() as i64) != key)
+        .map(|(period, _)| period.clone())
+        .collect();
+    Some((value, count, outliers))
+}
+
+/// Propose les taux que les bulletins d'une année révèlent.
+///
+/// Ne prouve pas que l'employeur avait raison — c'est circulaire. Prouve qu'il
+/// a été COHÉRENT, et fait ressortir le mois qui sort du lot : c'est le cas
+/// d'erreur réaliste, et le seul contrôle honnête quand les chiffres officiels
+/// de l'année sont hors de portée. Rien n'est enregistré : l'écran propose,
+/// l'utilisateur confirme.
+#[tauri::command]
+pub fn infer_payroll_params(
+    state: State<'_, AppState>,
+    year: i32,
+) -> Result<InferredParams, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    infer_params_inner(&conn, year)
+}
+
+fn infer_params_inner(
+    conn: &rusqlite::Connection,
+    year: i32,
+) -> Result<InferredParams, String> {
+    let sql = format!(
+        "SELECT {} FROM income_receipts",
+        crate::commands::incomes::RECEIPT_SELECT_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let all = stmt
+        .query_map([], crate::commands::incomes::row_to_receipt)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let of_year: Vec<&IncomeReceipt> =
+        all.iter().filter(|r| receipt_year(r) == year).collect();
+
+    let period_of = |r: &IncomeReceipt| -> String {
+        r.period_label
+            .clone()
+            .or_else(|| r.period_end.clone())
+            .unwrap_or_else(|| r.received_on.clone())
+    };
+
+    let mut avs = Vec::new();
+    let mut ac = Vec::new();
+    for r in &of_year {
+        let base = payroll::avs_subject_gross(&to_payslip_input(r));
+        if base <= 0.0 {
+            continue;
+        }
+        if let Some(v) = r.social_charges_amount.filter(|v| *v > 0.0) {
+            avs.push((period_of(r), v / base * 100.0));
+        }
+        if let Some(v) = r.ac_amount.filter(|v| *v > 0.0) {
+            ac.push((period_of(r), v / base * 100.0));
+        }
+    }
+
+    let mut rates = Vec::new();
+    if let Some((value, agreeing, outliers)) = dominant_rate(&avs) {
+        rates.push(InferredRate {
+            field: "avs_ai_apg_employee_pct",
+            label: "AVS / AI / APG",
+            value,
+            agreeing,
+            total: avs.len(),
+            outliers,
+        });
+    }
+    if let Some((value, agreeing, outliers)) = dominant_rate(&ac) {
+        rates.push(InferredRate {
+            field: "ac_employee_pct",
+            label: "Assurance-chômage",
+            value,
+            agreeing,
+            total: ac.len(),
+            outliers,
+        });
+    }
+
+    Ok(InferredParams {
+        year,
+        rates,
+        receipt_count: of_year.len(),
+    })
 }
 
 #[cfg(test)]
@@ -3175,5 +3370,139 @@ mod tests {
         let h = contributions_history_inner(&conn).unwrap();
         assert_eq!(h.rows.len(), 1);
         assert_eq!(h.rows[0].year, 2016);
+    }
+
+
+    // --- barèmes anciens ---
+
+    /// Une année ancienne n'est ni publiée ni confirmée : elle est provisoire,
+    /// et ses constats ne peuvent pas monter en anomalie.
+    #[test]
+    fn an_old_year_is_provisional_until_it_is_confirmed() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+
+        let r = resolve_params(&conn, 2012).unwrap();
+        assert!(!r.published, "2012 n'est pas livrée avec l'application");
+        assert!(!r.confirmed);
+        assert!(r.provisional());
+
+        upsert_overrides_inner(
+            &conn,
+            2012,
+            &PayrollOverrideInput {
+                ac_ceiling: Some(126_000.0),
+                confirmed: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let r = resolve_params(&conn, 2012).unwrap();
+        assert!(r.confirmed);
+        assert!(!r.provisional(), "vérifiée, donc opposable");
+        assert_eq!(r.params.ac_ceiling, 126_000.0);
+    }
+
+    /// Une année publiée avec l'application reste opposable sans rien cocher.
+    #[test]
+    fn a_published_year_needs_no_confirmation() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        let r = resolve_params(&conn, 2026).unwrap();
+        assert!(r.published);
+        assert!(!r.provisional());
+    }
+
+    /// Le plafond de gravité : sur un barème incertain, l'écart reste visible
+    /// mais cesse d'accuser.
+    #[test]
+    fn findings_are_softened_while_the_year_is_unconfirmed() {
+        let findings = vec![Finding {
+            id: "avs_rate",
+            severity: Severity::Error,
+            label: "AVS / AI / APG",
+            message: "Retenue de 480.00 au lieu de 424.00.".into(),
+            legal_ref: "art. 5 LAVS",
+            expected: Some(424.0),
+            actual: Some(480.0),
+        }];
+        let softened = payroll::checks::soften_unconfirmed(findings, 2012);
+        assert_eq!(softened[0].severity, Severity::Warn);
+        assert!(softened[0].message.contains("2012"));
+        assert_eq!(softened[0].actual, Some(480.0), "le chiffre ne bouge pas");
+    }
+
+    /// Dupliquer une année n'en vérifie pas les chiffres : ce sont justement
+    /// ceux qui changent d'une année à l'autre.
+    #[test]
+    fn duplicating_a_year_does_not_carry_its_confirmation() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_overrides_inner(
+            &conn,
+            2026,
+            &PayrollOverrideInput { confirmed: Some(true), ..Default::default() },
+        )
+        .unwrap();
+
+        duplicate_year_inner(&conn, 2026, 2027).unwrap();
+        assert!(!resolve_params(&conn, 2027).unwrap().confirmed);
+    }
+
+    /// Les fiches d'une année révèlent le taux réellement appliqué. On ne
+    /// prouve pas que l'employeur avait raison — on montre qu'il a été
+    /// cohérent, et on désigne le mois qui sort du lot.
+    #[test]
+    fn the_dominant_rate_is_inferred_and_the_odd_month_is_named() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        // Onze mois à 5.15 %, un à 6 %.
+        for m in 1..=12 {
+            let avs = if m == 7 { 480.0 } else { 412.0 };
+            conn.execute(
+                "INSERT INTO income_receipts
+                    (id, income_id, received_on, amount, currency, period_start, period_end,
+                     period_label, base_salary_amount, social_charges_amount, ac_amount)
+                 VALUES (?1, 'inc1', ?2, 7000.0, 'CHF', ?3, ?4, ?5, 8000.0, ?6, 88.0)",
+                rusqlite::params![
+                    format!("r{m}"),
+                    format!("2012-{m:02}-25"),
+                    format!("2012-{m:02}-01"),
+                    format!("2012-{m:02}-28"),
+                    format!("2012-{m:02}"),
+                    avs,
+                ],
+            )
+            .unwrap();
+        }
+
+        let inferred = infer_params_inner(&conn, 2012).unwrap();
+        assert_eq!(inferred.receipt_count, 12);
+        let avs = inferred
+            .rates
+            .iter()
+            .find(|r| r.field == "avs_ai_apg_employee_pct")
+            .unwrap();
+        assert!((avs.value - 5.15).abs() < 0.001, "taux obtenu : {}", avs.value);
+        assert_eq!(avs.agreeing, 11);
+        assert_eq!(avs.outliers, vec!["2012-07"], "le mois divergent est nommé");
+
+        let ac = inferred.rates.iter().find(|r| r.field == "ac_employee_pct").unwrap();
+        assert!((ac.value - 1.1).abs() < 0.001);
+        assert!(ac.outliers.is_empty());
+    }
+
+    /// Sans bulletin, rien n'est proposé : mieux vaut une page vide qu'un taux
+    /// tiré d'un seul mois.
+    #[test]
+    fn a_year_without_payslips_infers_nothing() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        let inferred = infer_params_inner(&conn, 2012).unwrap();
+        assert_eq!(inferred.receipt_count, 0);
+        assert!(inferred.rates.is_empty());
     }
 }

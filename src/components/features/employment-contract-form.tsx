@@ -200,7 +200,7 @@ export function EmploymentContractForm({
 }) {
   const { toast } = useToast()
   const [form, setForm] = useState<FormState>(() => emptyForm(incomeId))
-  const [params, setParams] = useState<api.PayrollParams | null>(null)
+  const [params, setParams] = useState<api.PayrollParamsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   /// Erreur de chargement affichée en place. Elle ne passe pas par un toast :
