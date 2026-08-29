@@ -20,7 +20,9 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::commands::auth::AppState;
-use crate::db::models::{EmploymentContract, IncomeReceipt, SalaryCertificate};
+use crate::db::models::{
+    EmploymentContract, IncomeReceipt, ReceiptSupplement, SalaryCertificate, SupplementRate,
+};
 use crate::payroll::tax_at_source::{
     children_from_code, parse_tariff_file, tax_for_base, uses_annual_model, TariffRow,
 };
@@ -737,10 +739,18 @@ fn upsert_contract_inner(
     conn: &rusqlite::Connection,
     contract: &EmploymentContract,
 ) -> Result<EmploymentContract, String> {
-    let id = if contract.id.is_empty() {
+    let is_new_version = contract.id.is_empty();
+    let id = if is_new_version {
         Uuid::new_v4().to_string()
     } else {
         contract.id.clone()
+    };
+    // La version qu'on est en train de remplacer, pour lui reprendre son
+    // barème de suppléments.
+    let previous = if is_new_version {
+        load_contract(conn, &contract.income_id)?.map(|c| c.id)
+    } else {
+        None
     };
 
     // Une version sans date d'effet couvrirait « depuis quand ? ». On ne force
@@ -849,6 +859,16 @@ fn upsert_contract_inner(
     )
     .map_err(|e| e.to_string())?;
 
+    // Un avenant reprend le barème de suppléments de la version qu'il
+    // remplace : les tarifs d'entreprise changent rarement en même temps que le
+    // salaire, et les redemander à chaque renégociation ferait sortir des
+    // barèmes incomplets.
+    if let Some(previous_id) = previous {
+        if previous_id != id {
+            copy_rates(conn, &previous_id, &id)?;
+        }
+    }
+
     let sql = format!(
         "SELECT {} FROM employment_contracts WHERE id = ?1",
         CONTRACT_COLUMNS
@@ -871,6 +891,7 @@ impl From<&EmploymentContract> for EmploymentTerms {
             salary_periods_per_year: c.salary_periods_per_year,
             hourly_paid: c.hourly_paid,
             lpp_employee_share_pct: c.lpp_employee_share_pct,
+            lpp_insured_scope: Some(c.lpp_insured_scope.clone()),
             laa_nonoccupational_pct: c.laa_nonoccupational_pct,
             ijm_employee_pct: c.ijm_employee_pct,
             tax_at_source: c.tax_at_source,
@@ -1228,6 +1249,9 @@ pub struct NetFromGrossRequest {
     /// Allocations familiales du mois : versées avec le salaire, hors
     /// assiette AVS (art. 6 RAVS).
     pub family_allowance: Option<f64>,
+    /// Suppléments d'une période type — astreinte, week-ends. Du salaire
+    /// déterminant comme le reste, mais qui n'est pas au contrat.
+    pub supplements_per_period: Option<f64>,
     pub terms: EmploymentTerms,
     /// Canton de travail et code de barème : hors de `EmploymentTerms`, qui ne
     /// connaît que le droit fédéral.
@@ -1369,14 +1393,15 @@ fn net_from_gross_inner(
         TaxSource::Unavailable
     };
 
-    let lookup = |base: f64| -> Option<f64> {
+    let lookup = |base: f64, annualised: f64| -> Option<f64> {
         if !rows.is_empty() {
             // Modèle annuel (FR, GE, TI, VD, VS) : le barème s'applique au
-            // revenu annualisé, et l'impôt trouvé se répartit sur les
-            // périodes. Interroger le barème annuel avec un salaire mensuel
-            // rendrait un impôt très inférieur au dû.
+            // revenu ANNUALISÉ — la moyenne des salaires déjà versés ramenée à
+            // l'année — et l'impôt trouvé se répartit sur les périodes.
+            // Interroger un barème annuel avec un salaire mensuel rendrait un
+            // impôt très inférieur au dû.
             return if annual_model {
-                tax_for_base(&rows, base * periods).map(|t| t / periods)
+                tax_for_base(&rows, annualised).map(|t| t / periods)
             } else {
                 tax_for_base(&rows, base)
             };
@@ -1386,6 +1411,7 @@ fn net_from_gross_inner(
 
     let projection = project_net(
         req.gross_per_period,
+        req.supplements_per_period.unwrap_or(0.0),
         req.family_allowance,
         &terms,
         &resolved.params,
@@ -1548,6 +1574,339 @@ fn upsert_cantonal_inner(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ===========================================================================
+// Barème d'entreprise des suppléments
+// ===========================================================================
+
+const RATE_COLUMNS: &str = "id, contract_id, code, label, unit, amount, sort_order";
+
+fn row_to_rate(row: &rusqlite::Row<'_>) -> rusqlite::Result<SupplementRate> {
+    Ok(SupplementRate {
+        id: row.get(0)?,
+        contract_id: row.get(1)?,
+        code: row.get(2)?,
+        label: row.get(3)?,
+        unit: row.get(4)?,
+        amount: row.get(5)?,
+        sort_order: row.get(6)?,
+    })
+}
+
+fn load_rates(
+    conn: &rusqlite::Connection,
+    contract_id: &str,
+) -> Result<Vec<SupplementRate>, String> {
+    let sql = format!(
+        "SELECT {RATE_COLUMNS} FROM salary_supplement_rates
+         WHERE contract_id = ?1 ORDER BY sort_order, label"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([contract_id], row_to_rate)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_supplement_rates(
+    state: State<'_, AppState>,
+    contract_id: String,
+) -> Result<Vec<SupplementRate>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    load_rates(&conn, &contract_id)
+}
+
+#[tauri::command]
+pub fn upsert_supplement_rate(
+    state: State<'_, AppState>,
+    rate: SupplementRate,
+) -> Result<Vec<SupplementRate>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_rate_inner(&conn, &rate)?;
+    load_rates(&conn, &rate.contract_id)
+}
+
+fn upsert_rate_inner(
+    conn: &rusqlite::Connection,
+    r: &SupplementRate,
+) -> Result<String, String> {
+    if r.label.trim().is_empty() {
+        return Err("Donnez un nom à ce supplément.".into());
+    }
+    let id = if r.id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        r.id.clone()
+    };
+    // Le code identifie la ligne dans le barème et relie une quantité saisie au
+    // bon tarif. Le dériver du libellé évite de le demander à l'utilisateur,
+    // qui n'a aucune raison de s'en soucier.
+    let code = if r.code.trim().is_empty() {
+        slugify(&r.label)
+    } else {
+        r.code.trim().to_string()
+    };
+    conn.execute(
+        "INSERT INTO salary_supplement_rates
+            (id, contract_id, code, label, unit, amount, sort_order)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+            code = excluded.code,
+            label = excluded.label,
+            unit = excluded.unit,
+            amount = excluded.amount,
+            sort_order = excluded.sort_order",
+        rusqlite::params![
+            id,
+            r.contract_id,
+            code,
+            r.label.trim(),
+            r.unit,
+            r.amount,
+            r.sort_order
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Code stable tiré d'un libellé : « Dimanche travaillé » → `dimanche-travaille`.
+fn slugify(label: &str) -> String {
+    let mut out = String::new();
+    for c in label.trim().to_lowercase().chars() {
+        let mapped = match c {
+            'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' => 'i',
+            'ô' | 'ö' => 'o',
+            'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c if c.is_ascii_alphanumeric() => c,
+            _ => '-',
+        };
+        if mapped == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(mapped);
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        trimmed
+    }
+}
+
+#[tauri::command]
+pub fn delete_supplement_rate(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute("DELETE FROM salary_supplement_rates WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Recopie le barème d'une version de contrat sur une autre.
+///
+/// Appelé à la création d'un avenant : les tarifs d'entreprise changent
+/// rarement en même temps que le salaire, et les redemander à chaque
+/// renégociation serait une corvée dont on sortirait avec un barème incomplet.
+fn copy_rates(
+    conn: &rusqlite::Connection,
+    from_contract: &str,
+    to_contract: &str,
+) -> Result<(), String> {
+    for r in load_rates(conn, from_contract)? {
+        upsert_rate_inner(
+            conn,
+            &SupplementRate {
+                id: String::new(),
+                contract_id: to_contract.to_string(),
+                ..r
+            },
+        )?;
+    }
+    Ok(())
+}
+
+// ===========================================================================
+// Suppléments d'un bulletin
+// ===========================================================================
+
+#[tauri::command]
+pub fn get_receipt_supplements(
+    state: State<'_, AppState>,
+    receipt_id: String,
+) -> Result<Vec<ReceiptSupplement>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    load_receipt_supplements(&conn, &receipt_id)
+}
+
+fn load_receipt_supplements(
+    conn: &rusqlite::Connection,
+    receipt_id: &str,
+) -> Result<Vec<ReceiptSupplement>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, receipt_id, code, label, quantity, unit_amount, amount
+             FROM income_receipt_supplements WHERE receipt_id = ?1 ORDER BY label",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([receipt_id], |r| {
+            Ok(ReceiptSupplement {
+                id: r.get(0)?,
+                receipt_id: r.get(1)?,
+                code: r.get(2)?,
+                label: r.get(3)?,
+                quantity: r.get(4)?,
+                unit_amount: r.get(5)?,
+                amount: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Remplace les suppléments d'un bulletin, et renseigne `other_gross_amount`
+/// s'il était inconnu.
+///
+/// Le montant doit vivre dans une colonne que le moteur connaît, sans quoi il
+/// serait saisi mais invisible des cotisations. `other_gross_amount` est le bon
+/// casier : soumise à l'AVS, rangée en rubrique 1 du certificat — celle des
+/// prestations PÉRIODIQUES, ce qu'une astreinte mensuelle est bel et bien.
+///
+/// En revanche cette colonne porte ce qui a été **réellement versé**, et les
+/// suppléments l'expliquent sans le dicter : sur une fiche où l'employeur a
+/// payé 480 au lieu des 500 du barème, l'écraser effacerait précisément l'écart
+/// qu'on cherche à voir. Seul un montant inconnu est donc rempli.
+#[tauri::command]
+pub fn set_receipt_supplements(
+    state: State<'_, AppState>,
+    receipt_id: String,
+    items: Vec<ReceiptSupplement>,
+) -> Result<f64, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let mut conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    set_receipt_supplements_inner(&mut conn, &receipt_id, &items)
+}
+
+pub(crate) fn set_receipt_supplements_inner(
+    conn: &mut rusqlite::Connection,
+    receipt_id: &str,
+    items: &[ReceiptSupplement],
+) -> Result<f64, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM income_receipt_supplements WHERE receipt_id = ?1",
+        [receipt_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut total = 0.0;
+    for item in items {
+        // Une quantité nulle n'est pas un supplément : la garder polluerait le
+        // décompte annuel « combien d'astreintes cette année ».
+        if item.quantity <= 0.0 {
+            continue;
+        }
+        let amount = item.quantity * item.unit_amount;
+        total += amount;
+        tx.execute(
+            "INSERT INTO income_receipt_supplements
+                (id, receipt_id, code, label, quantity, unit_amount, amount)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                Uuid::new_v4().to_string(),
+                receipt_id,
+                item.code,
+                item.label,
+                item.quantity,
+                item.unit_amount,
+                amount,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if total > 0.0 {
+        tx.execute(
+            "UPDATE income_receipts SET other_gross_amount = ?2
+             WHERE id = ?1 AND other_gross_amount IS NULL",
+            rusqlite::params![receipt_id, total],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(total)
+}
+
+/// Combien de fois chaque supplément a été touché dans une année, et pour quel
+/// montant. Répond à une question qu'aucun écran ne savait traiter.
+#[derive(Debug, Serialize)]
+pub struct SupplementYearTotal {
+    pub code: String,
+    pub label: String,
+    pub quantity: f64,
+    pub amount: f64,
+}
+
+#[tauri::command]
+pub fn get_supplement_totals(
+    state: State<'_, AppState>,
+    income_id: String,
+    year: i32,
+) -> Result<Vec<SupplementYearTotal>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    supplement_totals_inner(&conn, &income_id, year)
+}
+
+pub(crate) fn supplement_totals_inner(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+    year: i32,
+) -> Result<Vec<SupplementYearTotal>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.code, s.label, SUM(s.quantity), SUM(s.amount)
+             FROM income_receipt_supplements s
+             JOIN income_receipts r ON r.id = s.receipt_id
+             WHERE r.income_id = ?1
+               AND COALESCE(r.fiscal_year, CAST(substr(
+                   COALESCE(r.period_end, r.period_start, r.received_on), 1, 4) AS INTEGER)) = ?2
+             GROUP BY s.code, s.label
+             ORDER BY SUM(s.amount) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![income_id, year], |r| {
+            Ok(SupplementYearTotal {
+                code: r.get(0)?,
+                label: r.get(1)?,
+                quantity: r.get(2)?,
+                amount: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
 }
 
 // ===========================================================================
@@ -3284,6 +3643,7 @@ mod tests {
             year: 2026,
             gross_per_period: gross,
             family_allowance: None,
+            supplements_per_period: None,
             terms: EmploymentTerms {
                 birth_date: Some("1985-06-15".into()),
                 weekly_hours: Some(42.0),
@@ -4232,5 +4592,211 @@ mod tests {
 
         assert!(load_contract_at(&conn, "inc1", "1999-01-31").unwrap().is_some());
         assert!(load_contract_at(&conn, "inc1", "2026-01-31").unwrap().is_some());
+    }
+
+    // =======================================================================
+    // Barème d'entreprise et suppléments d'un bulletin
+    // =======================================================================
+
+    fn rate(contract_id: &str, label: &str, unit: &str, amount: f64) -> SupplementRate {
+        SupplementRate {
+            id: String::new(),
+            contract_id: contract_id.into(),
+            code: String::new(),
+            label: label.into(),
+            unit: unit.into(),
+            amount,
+            sort_order: 0,
+        }
+    }
+
+    fn done(code: &str, label: &str, quantity: f64, unit_amount: f64) -> ReceiptSupplement {
+        ReceiptSupplement {
+            id: String::new(),
+            receipt_id: String::new(),
+            code: code.into(),
+            label: label.into(),
+            quantity,
+            unit_amount,
+            amount: 0.0,
+        }
+    }
+
+    /// Une semaine d'astreinte et deux dimanches composent bien le brut
+    /// attendu, et le montant atterrit dans la colonne que le moteur soumet à
+    /// l'AVS — pas dans un tiroir que les cotisations ignoreraient.
+    #[test]
+    fn a_week_of_on_call_and_two_sundays_make_up_the_gross() {
+        let (_tmp, db) = open_db();
+        let mut conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "rec1", "inc1", 3);
+
+        let total = set_receipt_supplements_inner(
+            &mut conn,
+            "rec1",
+            &[
+                done("astreinte", "Astreinte", 1.0, 500.0),
+                done("dimanche-travaille", "Dimanche travaillé", 2.0, 140.0),
+            ],
+        )
+        .unwrap();
+        assert_eq!(total, 780.0);
+
+        let other: Option<f64> = conn
+            .query_row(
+                "SELECT other_gross_amount FROM income_receipts WHERE id = 'rec1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, Some(780.0));
+
+        let saved = load_receipt_supplements(&conn, "rec1").unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[0].label, "Astreinte");
+        assert_eq!(saved[0].amount, 500.0);
+    }
+
+    /// Le cas du contrôle : l'employeur a versé 700 là où le barème en promet
+    /// 780. Enregistrer les quantités ne doit surtout pas écraser le montant
+    /// réellement versé — c'est précisément l'écart qu'on cherche à voir.
+    #[test]
+    fn recording_quantities_never_overwrites_an_amount_already_paid() {
+        let (_tmp, db) = open_db();
+        let mut conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "rec1", "inc1", 3);
+        conn.execute(
+            "UPDATE income_receipts SET other_gross_amount = 700.0 WHERE id = 'rec1'",
+            [],
+        )
+        .unwrap();
+
+        set_receipt_supplements_inner(
+            &mut conn,
+            "rec1",
+            &[
+                done("astreinte", "Astreinte", 1.0, 500.0),
+                done("dimanche-travaille", "Dimanche travaillé", 2.0, 140.0),
+            ],
+        )
+        .unwrap();
+
+        let other: Option<f64> = conn
+            .query_row(
+                "SELECT other_gross_amount FROM income_receipts WHERE id = 'rec1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, Some(700.0), "le montant versé fait foi");
+    }
+
+    /// Une quantité nulle n'est pas un supplément : la garder polluerait le
+    /// décompte annuel « combien d'astreintes cette année ».
+    #[test]
+    fn zero_quantities_are_not_recorded() {
+        let (_tmp, db) = open_db();
+        let mut conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_receipt(&conn, "rec1", "inc1", 3);
+
+        let total = set_receipt_supplements_inner(
+            &mut conn,
+            "rec1",
+            &[done("astreinte", "Astreinte", 0.0, 500.0)],
+        )
+        .unwrap();
+        assert_eq!(total, 0.0);
+        assert!(load_receipt_supplements(&conn, "rec1").unwrap().is_empty());
+    }
+
+    /// « Combien d'astreintes en 2026, et combien m'ont-elles rapporté ? » —
+    /// la question à laquelle aucun écran ne savait répondre.
+    #[test]
+    fn the_year_tallies_how_many_and_how_much() {
+        let (_tmp, db) = open_db();
+        let mut conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        for (idx, month) in [1u32, 2, 3].iter().enumerate() {
+            insert_receipt(&conn, &format!("rec{idx}"), "inc1", *month);
+            set_receipt_supplements_inner(
+                &mut conn,
+                &format!("rec{idx}"),
+                &[
+                    done("astreinte", "Astreinte", 1.0, 500.0),
+                    done("dimanche-travaille", "Dimanche travaillé", 2.0, 140.0),
+                ],
+            )
+            .unwrap();
+        }
+
+        let totals = supplement_totals_inner(&conn, "inc1", 2026).unwrap();
+        assert_eq!(totals.len(), 2);
+        // Trié par montant décroissant : l'astreinte domine.
+        assert_eq!(totals[0].code, "astreinte");
+        assert_eq!(totals[0].quantity, 3.0);
+        assert_eq!(totals[0].amount, 1_500.0);
+        assert_eq!(totals[1].quantity, 6.0);
+        assert_eq!(totals[1].amount, 840.0);
+
+        // Une autre année ne doit rien voir.
+        assert!(supplement_totals_inner(&conn, "inc1", 2025).unwrap().is_empty());
+    }
+
+    /// Le barème suit la version de contrat : celui de 2019 ne s'applique pas
+    /// à 2021, et un avenant hérite du barème plutôt que de repartir de zéro.
+    #[test]
+    fn the_rate_card_follows_the_contract_version() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        let v2019 =
+            upsert_contract_inner(&conn, &version("inc1", "2019-01-01", None, 48_000.0)).unwrap();
+        upsert_rate_inner(&conn, &rate(&v2019.id, "Dimanche travaillé", "day", 120.0)).unwrap();
+
+        // L'avenant de 2021 recopie le barème…
+        let v2021 =
+            upsert_contract_inner(&conn, &version("inc1", "2021-01-01", None, 52_000.0)).unwrap();
+        assert_ne!(v2021.id, v2019.id);
+        let mut copied = load_rates(&conn, &v2021.id).unwrap();
+        assert_eq!(copied.len(), 1);
+        assert_eq!(copied[0].amount, 120.0);
+        assert_eq!(copied[0].code, "dimanche-travaille");
+
+        // …puis le tarif monte, sans toucher au passé.
+        copied[0].amount = 140.0;
+        upsert_rate_inner(&conn, &copied[0]).unwrap();
+
+        let then = load_contract_at(&conn, "inc1", "2019-06-30").unwrap().unwrap();
+        let now = load_contract_at(&conn, "inc1", "2021-06-30").unwrap().unwrap();
+        assert_eq!(load_rates(&conn, &then.id).unwrap()[0].amount, 120.0);
+        assert_eq!(load_rates(&conn, &now.id).unwrap()[0].amount, 140.0);
+    }
+
+    /// Supprimer une version emporte son barème : une ligne orpheline
+    /// resurgirait dans le décompte sans contrat pour l'expliquer.
+    #[test]
+    fn deleting_a_version_takes_its_rate_card_with_it() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let v = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+        upsert_rate_inner(&conn, &rate(&v.id, "Astreinte", "week", 500.0)).unwrap();
+
+        conn.execute("DELETE FROM employment_contracts WHERE id = ?1", [&v.id])
+            .unwrap();
+        assert!(load_rates(&conn, &v.id).unwrap().is_empty());
+    }
+
+    /// Le libellé fait le code : l'utilisateur n'a aucune raison de s'en
+    /// soucier, mais c'est lui qui relie une quantité au bon tarif.
+    #[test]
+    fn the_code_is_derived_from_the_label() {
+        assert_eq!(slugify("Dimanche travaillé"), "dimanche-travaille");
+        assert_eq!(slugify("  Piquet de nuit  "), "piquet-de-nuit");
+        assert_eq!(slugify("Astreinte (7 j)"), "astreinte-7-j");
     }
 }

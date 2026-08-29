@@ -15,6 +15,7 @@ import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { EmploymentContractForm } from "@/components/features/employment-contract-form"
 import { GrossToNetPanel } from "@/components/features/gross-to-net-panel"
 import { PayslipForm } from "@/components/features/payslip-form"
+import { SupplementYearSummary } from "@/components/features/supplement-year-summary"
 import { PayslipBatchImport } from "@/components/features/payslip-batch-import"
 import {
   emptyPayslipForm,
@@ -51,6 +52,12 @@ export function IncomeDetailPage() {
   const [income, setIncome] = useState<api.Income | null>(null)
   const [receipts, setReceipts] = useState<api.IncomeReceipt[]>([])
   const [contract, setContract] = useState<api.EmploymentContract | null>(null)
+  /// Toutes les versions du contrat : le formulaire de bulletin y prend le
+  /// barème de suppléments en vigueur à la date de la fiche.
+  const [contractVersions, setContractVersions] = useState<api.EmploymentContract[]>([])
+  /// Incrémenté à chaque rechargement : les panneaux qui interrogent la base
+  /// eux-mêmes (le décompte annuel des suppléments) s'y raccrochent.
+  const [dataVersion, setDataVersion] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>("overview")
@@ -72,14 +79,17 @@ export function IncomeDetailPage() {
     if (!id) return
     setLoading(true)
     try {
-      const [inc, recs, ctr] = await Promise.all([
+      const [inc, recs, ctr, versions] = await Promise.all([
         api.getIncome(id),
         api.getIncomeReceipts(id),
         api.getEmploymentContract(id),
+        api.getEmploymentContractVersions(id),
       ])
       setIncome(inc)
       setReceipts(recs)
       setContract(ctr)
+      setContractVersions(versions)
+      setDataVersion((v) => v + 1)
       setError(null)
     } catch (err) {
       const msg = String(err)
@@ -227,14 +237,20 @@ export function IncomeDetailPage() {
     setShowForm(true)
   }
 
-  const submitReceipt = async (receipt: api.IncomeReceipt) => {
+  const submitReceipt = async (
+    receipt: api.IncomeReceipt,
+    supplements: api.ReceiptSupplement[],
+  ) => {
     setSubmitting(true)
     try {
+      // L'identifiant du bulletin est ce qui rattache les quantités : à la
+      // création il n'existe qu'une fois la ligne écrite, d'où le second appel.
+      let receiptId = receipt.id
       if (receipt.id) {
         await api.updateIncomeReceipt(receipt)
         toast(t("incomes.receiptUpdated"), "success")
       } else {
-        await api.logIncomeReceipt({
+        const created = await api.logIncomeReceipt({
           income_id: i.id,
           received_on: receipt.received_on,
           amount: receipt.amount,
@@ -266,7 +282,13 @@ export function IncomeDetailPage() {
           expense_lump_sum_amount: receipt.expense_lump_sum_amount,
           notes: receipt.notes,
         })
+        receiptId = created.id
         toast(t("incomes.receiptSaved"), "success")
+      }
+      // Toujours appelé, y compris à vide : c'est ce qui efface les quantités
+      // d'un bulletin dont on vient de retirer les astreintes.
+      if (receiptId && isSalary) {
+        await api.setReceiptSupplements(receiptId, supplements)
       }
       setShowForm(false)
       setFormState(null)
@@ -485,6 +507,9 @@ export function IncomeDetailPage() {
               // Les taux du contrat changent les montants attendus : les
               // contrôles déjà calculés sont périmés.
               setChecks({})
+              // Un avenant ajoute une version, et avec elle un barème de
+              // suppléments : le formulaire de bulletin doit le voir.
+              api.getEmploymentContractVersions(i.id).then(setContractVersions).catch(() => {})
             }}
           />
         </div>
@@ -512,6 +537,7 @@ export function IncomeDetailPage() {
             <PayslipForm
               incomeId={i.id}
               currency={i.currency}
+              contracts={contractVersions}
               initial={formState}
               onSubmit={submitReceipt}
               onCancel={() => { setShowForm(false); setFormState(null) }}
@@ -542,6 +568,14 @@ export function IncomeDetailPage() {
                 </Button>
               ))}
             </div>
+          )}
+          {isSalary && shownYear != null && (
+            <SupplementYearSummary
+              incomeId={i.id}
+              year={shownYear}
+              currency={i.currency}
+              reloadKey={dataVersion}
+            />
           )}
           {receipts.filter((r) => receiptYear(r) === shownYear).map((r) => {
             const report = checks[r.id]

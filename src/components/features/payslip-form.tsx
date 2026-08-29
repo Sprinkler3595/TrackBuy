@@ -6,7 +6,9 @@ import { Card, CardContent } from "@/components/ui/card"
 import { cn, formatPrice } from "@/lib/utils"
 import { PayslipCheckPanel } from "@/components/features/payslip-check-panel"
 import { AiScanPanel } from "@/components/features/ai-scan-panel"
+import { ReceiptSupplements } from "@/components/features/receipt-supplements"
 import { getAiSettings } from "@/lib/ai-settings"
+import { contractInForce } from "@/lib/contracts"
 import {
   DEDUCTION_FIELDS,
   EXPENSE_FIELDS,
@@ -81,6 +83,7 @@ function MoneyInput({
 export function PayslipForm({
   incomeId,
   currency,
+  contracts = [],
   initial,
   onSubmit,
   onCancel,
@@ -88,14 +91,22 @@ export function PayslipForm({
 }: {
   incomeId: string
   currency: string
+  /// Toutes les versions du contrat. La version en vigueur à la date du
+  /// bulletin fournit le barème des suppléments — celui de 2019 sur un
+  /// bulletin de 2019, pas celui d'aujourd'hui.
+  contracts?: api.EmploymentContract[]
   initial?: PayslipFormState
-  onSubmit: (receipt: api.IncomeReceipt) => Promise<void>
+  onSubmit: (
+    receipt: api.IncomeReceipt,
+    supplements: api.ReceiptSupplement[],
+  ) => Promise<void>
   onCancel: () => void
   submitting?: boolean
 }) {
   const [form, setForm] = useState<PayslipFormState>(() => initial ?? emptyPayslipForm())
   const [openSections, setOpenSections] = useState({
     gross: true,
+    supplements: true,
     deductions: true,
     expenses: false,
   })
@@ -108,6 +119,120 @@ export function PayslipForm({
   const receipt = useMemo(
     () => formToReceipt(form, incomeId, currency),
     [form, incomeId, currency],
+  )
+
+  /// Astreintes et week-ends du mois. La date du bulletin choisit la version
+  /// de contrat, donc le barème : changer « fin de période » recharge le tarif
+  /// applicable, ce qui est exactement ce qu'on veut en reprenant un historique.
+  const periodDate = form.period_end || form.period_start || form.received_on
+  const activeContract = useMemo(
+    () => contractInForce(contracts, periodDate),
+    [contracts, periodDate],
+  )
+  const [rates, setRates] = useState<api.SupplementRate[]>([])
+  const [saved, setSaved] = useState<api.ReceiptSupplement[]>([])
+  const [quantities, setQuantities] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    const contractId = activeContract?.id
+    if (!contractId) {
+      setRates([])
+      return
+    }
+    ;(async () => {
+      try {
+        const list = await api.getSupplementRates(contractId)
+        if (!cancelled) setRates(list)
+      } catch {
+        if (!cancelled) setRates([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [activeContract?.id])
+
+  // Quantités déjà enregistrées, à la réouverture d'un bulletin.
+  useEffect(() => {
+    let cancelled = false
+    const receiptId = initial?.id
+    if (!receiptId) {
+      setSaved([])
+      setQuantities({})
+      return
+    }
+    ;(async () => {
+      try {
+        const list = await api.getReceiptSupplements(receiptId)
+        if (cancelled) return
+        setSaved(list)
+        setQuantities(Object.fromEntries(list.map((s) => [s.code, String(s.quantity)])))
+      } catch {
+        if (!cancelled) setSaved([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [initial?.id])
+
+  /// Le barème affiché, augmenté des postes déjà saisis qui n'y figurent plus.
+  /// Supprimer une ligne du barème ne doit pas faire disparaître les astreintes
+  /// de 2019 d'un bulletin déjà enregistré.
+  const supplementRates = useMemo(() => {
+    const extra = saved
+      .filter((s) => !rates.some((r) => r.code === s.code))
+      .map((s, idx) => ({
+        id: `saved-${s.code}`,
+        contract_id: activeContract?.id ?? "",
+        code: s.code,
+        label: s.label,
+        unit: "",
+        amount: s.unit_amount,
+        sort_order: rates.length + idx,
+      }))
+    return [...rates, ...extra]
+  }, [rates, saved, activeContract?.id])
+
+  const supplementTotal = (q: Record<string, string>): number =>
+    supplementRates.reduce((sum, r) => {
+      const n = parseFloat(q[r.code] ?? "")
+      return sum + (Number.isNaN(n) || n <= 0 ? 0 : n * r.amount)
+    }, 0)
+
+  const round2 = (n: number) => Math.round(n * 100) / 100
+
+  /// Le montant suit le barème tant que l'utilisateur ne l'a pas corrigé à la
+  /// main. Sur une fiche importée où l'employeur a versé autre chose, écraser
+  /// ce qui a été lu détruirait la seule information qui compte : l'écart.
+  const setQuantity = (code: string, value: string) => {
+    const next = { ...quantities, [code]: value }
+    const before = round2(supplementTotal(quantities))
+    const after = round2(supplementTotal(next))
+    setQuantities(next)
+    setForm((f) => {
+      const current = parseMoney(f.other_gross_amount)
+      const follows = current == null || Math.abs(current - before) < 0.005
+      if (!follows || after === before) return f
+      return { ...f, other_gross_amount: after > 0 ? String(after) : "" }
+    })
+  }
+
+  const supplementItems = useMemo(
+    () =>
+      supplementRates
+        .map((r) => {
+          const n = parseFloat(quantities[r.code] ?? "")
+          const quantity = Number.isNaN(n) || n <= 0 ? 0 : n
+          return {
+            id: "",
+            receipt_id: form.id,
+            code: r.code,
+            label: r.label,
+            quantity,
+            unit_amount: r.amount,
+            amount: quantity * r.amount,
+          }
+        })
+        .filter((x) => x.quantity > 0),
+    [supplementRates, quantities, form.id],
   )
 
   const runCheck = useCallback(async () => {
@@ -165,14 +290,14 @@ export function PayslipForm({
       return applied.form
     })
     // Les sections repliées cacheraient les champs remplis.
-    setOpenSections({ gross: true, deductions: true, expenses: true })
+    setOpenSections({ gross: true, supplements: true, deductions: true, expenses: true })
     return extractionSummary(filled)
   }
 
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
     if (!form.received_on || parseMoney(form.amount) == null) return
-    await onSubmit(receipt)
+    await onSubmit(receipt, supplementItems)
   }
 
   return (
@@ -288,6 +413,11 @@ export function PayslipForm({
             label={f.label}
             value={form[f.key]}
             onChange={(v) => set(f.key, v)}
+            hint={
+              f.key === "other_gross_amount" && supplementRates.length > 0
+                ? "Rempli par les suppléments ci-dessous ; corrigez-le si votre bulletin porte autre chose."
+                : undefined
+            }
           />
         ))}
         <MoneyInput
@@ -309,6 +439,25 @@ export function PayslipForm({
           </p>
         </div>
       </Section>
+
+      {supplementRates.length > 0 && (
+        <Section
+          title="Astreintes, week-ends et autres suppléments"
+          subtitle="Indiquez les quantités : le montant se calcule au barème de votre contrat et alimente « Autre élément de salaire »."
+          open={openSections.supplements}
+          onToggle={() => setOpenSections((s) => ({ ...s, supplements: !s.supplements }))}
+        >
+          <ReceiptSupplements
+            rates={supplementRates}
+            quantities={quantities}
+            onQuantity={setQuantity}
+            paidAmount={parseMoney(form.other_gross_amount)}
+            onUseComputed={(amount) => set("other_gross_amount", String(amount))}
+            currency={currency}
+            contractLabel={contracts.length > 1 ? activeContract?.label ?? null : null}
+          />
+        </Section>
+      )}
 
       <Section
         title="Retenues"

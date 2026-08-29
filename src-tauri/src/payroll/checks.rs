@@ -442,10 +442,18 @@ pub fn check_payslip(
         input.base_salary,
         terms.weekly_hours,
     ) {
-        if hours > 0.0 && weekly > 0.0 && base > 0.0 {
-            // Heures mensuelles moyennes = heures/semaine × 52 / 12.
-            let monthly_hours = weekly * 52.0 / 12.0;
-            let hourly = base / monthly_hours;
+        // Sur un contrat à l'heure, le salaire de base mesure les heures
+        // accomplies : le tarif horaire ne s'en déduit pas, et l'inventer
+        // reviendrait à reprocher une majoration manquante sur un chiffre
+        // fabriqué. Le contrôle ne s'applique simplement pas.
+        if hours > 0.0 && weekly > 0.0 && base > 0.0 && !terms.hourly_paid {
+            // Tarif horaire = salaire ANNUEL ÷ heures annuelles. Passer par
+            // des « heures mensuelles moyennes » suppose douze paies : sur
+            // treize, le salaire de base d'une paie est plus petit d'un
+            // treizième, et le tarif horaire — donc la majoration de 25 %
+            // attendue — était sous-estimé d'autant.
+            let periods = terms.salary_periods_per_year.unwrap_or(12).max(1) as f64;
+            let hourly = base * periods / (weekly * 52.0);
             let expected_paid = hours * hourly * 1.25;
             if paid < expected_paid - tolerance(expected_paid) {
                 out.push(Finding {

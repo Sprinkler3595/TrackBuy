@@ -995,3 +995,40 @@ pub struct CreateBankMatchRuleRequest {
     pub learned: Option<bool>,
     pub notes: Option<String>,
 }
+
+/// Une ligne du barème de suppléments d'une entreprise : astreinte à la
+/// semaine, samedi travaillé, dimanche travaillé…
+///
+/// Rattachée à UNE version de contrat, parce qu'un avenant peut changer le
+/// tarif du dimanche et que l'historique doit pouvoir dire ce qu'il valait en
+/// 2019.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SupplementRate {
+    pub id: String,
+    pub contract_id: String,
+    /// Identifiant stable dans le barème — c'est lui qui relie une quantité
+    /// saisie sur un bulletin au tarif qui lui était applicable.
+    pub code: String,
+    pub label: String,
+    /// `week` | `day` | `hour` | `flat`
+    pub unit: String,
+    pub amount: f64,
+    pub sort_order: i32,
+}
+
+/// Ce qui a réellement été accompli sur un mois : 1 semaine d'astreinte,
+/// 2 dimanches. Le MONTANT, lui, vit dans `income_receipts.other_gross_amount`,
+/// colonne que le moteur sait déjà soumettre à l'AVS et ranger en rubrique 1
+/// du certificat de salaire. Cette table ne fait qu'expliquer ce montant.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ReceiptSupplement {
+    pub id: String,
+    pub receipt_id: String,
+    pub code: String,
+    pub label: String,
+    pub quantity: f64,
+    /// Tarif appliqué, figé au moment de la saisie : un changement de barème
+    /// ne doit pas réécrire le passé.
+    pub unit_amount: f64,
+    pub amount: f64,
+}

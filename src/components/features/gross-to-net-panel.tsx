@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ArrowRight, Calculator } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/toast"
 import { GrossToNetSummary } from "@/components/features/gross-to-net-summary"
 import { useNetFromGross } from "@/hooks/use-net-from-gross"
+import { unitLabel } from "@/lib/supplements"
 import { formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
 
@@ -46,6 +47,38 @@ export function GrossToNetPanel({
     }
   }, [contract?.annual_gross_agreed, periods])
 
+  /// Combien de fois chaque supplément dans un mois type. C'est la question
+  /// que se pose vraiment quelqu'un dont le brut varie : « si je fais une
+  /// semaine d'astreinte et deux dimanches, il me reste combien ? »
+  const [rates, setRates] = useState<api.SupplementRate[]>([])
+  const [quantities, setQuantities] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    if (!contract?.id) {
+      setRates([])
+      return
+    }
+    ;(async () => {
+      try {
+        const list = await api.getSupplementRates(contract.id)
+        if (!cancelled) setRates(list)
+      } catch {
+        if (!cancelled) setRates([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [contract?.id])
+
+  const supplements = useMemo(
+    () =>
+      rates.reduce((sum, r) => {
+        const q = parseFloat(quantities[r.id] ?? "")
+        return sum + (Number.isNaN(q) || q <= 0 ? 0 : q * r.amount)
+      }, 0),
+    [rates, quantities],
+  )
+
   const grossValue = parseFloat(gross)
   const grossValid = !Number.isNaN(grossValue) && grossValue > 0
 
@@ -61,6 +94,7 @@ export function GrossToNetPanel({
       ? {
           year,
           gross_per_period: grossValue,
+          supplements_per_period: supplements,
           income_id: income.id,
           terms: {
             birth_date: contract?.birth_date ?? null,
@@ -71,6 +105,7 @@ export function GrossToNetPanel({
             lpp_employee_share_pct: contract?.lpp_employee_share_pct ?? null,
             laa_nonoccupational_pct: contract?.laa_nonoccupational_pct ?? null,
             ijm_employee_pct: contract?.ijm_employee_pct ?? null,
+            lpp_insured_scope: contract?.lpp_insured_scope ?? null,
             tax_at_source: contract?.tax_at_source ?? false,
           },
           work_canton: contract?.work_canton ?? null,
@@ -162,6 +197,48 @@ export function GrossToNetPanel({
             )}
           </div>
         </div>
+
+        {rates.length > 0 && (
+          <div className="space-y-3 rounded-lg border p-4">
+            <div>
+              <p className="text-sm font-medium">Un mois type</p>
+              <p className="text-xs text-muted-foreground">
+                Indiquez ce que vous faites habituellement : le brut et le net s'ajustent.
+                Laissez à zéro pour un mois sans supplément.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {rates.map((r) => (
+                <div key={r.id} className="space-y-1.5">
+                  <label className="text-xs font-medium">
+                    {r.label}{" "}
+                    <span className="text-muted-foreground">
+                      {formatPrice(r.amount, income.currency)} {unitLabel(r.unit)}
+                    </span>
+                  </label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={quantities[r.id] ?? ""}
+                    onChange={(e) =>
+                      setQuantities((q) => ({ ...q, [r.id]: e.target.value }))
+                    }
+                    placeholder="0"
+                  />
+                </div>
+              ))}
+            </div>
+            {supplements > 0 && (
+              <p className="text-sm">
+                Suppléments du mois :{" "}
+                <span className="font-medium tabular-nums">
+                  {formatPrice(supplements, income.currency)}
+                </span>
+              </p>
+            )}
+          </div>
+        )}
 
         <GrossToNetSummary
           result={result}

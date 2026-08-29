@@ -1526,6 +1526,8 @@ export interface EmploymentTerms {
   lpp_employee_share_pct?: number | null
   laa_nonoccupational_pct?: number | null
   ijm_employee_pct?: number | null
+  /// `base` = seul le salaire contractuel est assuré ; sinon tout le brut.
+  lpp_insured_scope?: string | null
   tax_at_source?: boolean
   company_car_purchase_price?: number | null
   subsidized_canteen?: boolean
@@ -1571,6 +1573,8 @@ export interface NetFromGrossRequest {
   year: number
   gross_per_period: number
   family_allowance?: number | null
+  /// Suppléments d'une période type — astreinte, week-ends.
+  supplements_per_period?: number | null
   terms: EmploymentTerms
   work_canton?: string | null
   residence_canton?: string | null
@@ -1658,6 +1662,45 @@ export interface ContributionsHistory {
   first_year: number | null
   last_year: number | null
   totals: ContributionTotals
+}
+
+/// Une ligne du barème de suppléments d'une entreprise : astreinte à la
+/// semaine, samedi travaillé, dimanche travaillé…
+///
+/// Rattachée à UNE version de contrat : un avenant peut changer le tarif du
+/// dimanche, et l'historique doit dire ce qu'il valait en 2019.
+export interface SupplementRate {
+  id: string
+  contract_id: string
+  /// Identifiant stable dans le barème, dérivé du libellé si on ne le fournit
+  /// pas. C'est lui qui relie une quantité saisie au tarif applicable.
+  code: string
+  label: string
+  /// `week` | `day` | `hour` | `flat`
+  unit: string
+  amount: number
+  sort_order: number
+}
+
+/// Ce qui a réellement été accompli sur un mois : 1 semaine d'astreinte,
+/// 2 dimanches. Le montant, lui, est reporté dans `other_gross_amount`.
+export interface ReceiptSupplement {
+  id: string
+  receipt_id: string
+  code: string
+  label: string
+  quantity: number
+  /// Tarif figé au moment de la saisie : changer le barème ne réécrit pas le
+  /// passé.
+  unit_amount: number
+  amount: number
+}
+
+export interface SupplementYearTotal {
+  code: string
+  label: string
+  quantity: number
+  amount: number
 }
 
 export type FindingSeverity = "ok" | "info" | "warn" | "error"
@@ -1931,6 +1974,29 @@ export const getEmploymentContractVersions = (incomeId: string) =>
 
 export const deleteEmploymentContractVersion = (id: string) =>
   invoke<void>("delete_employment_contract_version", { id })
+
+/// Barème de suppléments d'une version de contrat.
+export const getSupplementRates = (contractId: string) =>
+  invoke<SupplementRate[]>("get_supplement_rates", { contractId })
+
+export const upsertSupplementRate = (rate: SupplementRate) =>
+  invoke<SupplementRate[]>("upsert_supplement_rate", { rate })
+
+export const deleteSupplementRate = (id: string) =>
+  invoke<void>("delete_supplement_rate", { id })
+
+/// Ce qui a été accompli sur un bulletin donné.
+export const getReceiptSupplements = (receiptId: string) =>
+  invoke<ReceiptSupplement[]>("get_receipt_supplements", { receiptId })
+
+/// Remplace les suppléments d'un bulletin et reporte leur total dans le brut.
+/// Rend le total enregistré.
+export const setReceiptSupplements = (receiptId: string, items: ReceiptSupplement[]) =>
+  invoke<number>("set_receipt_supplements", { receiptId, items })
+
+/// Combien d'astreintes cette année, et pour quel montant.
+export const getSupplementTotals = (incomeId: string, year: number) =>
+  invoke<SupplementYearTotal[]>("get_supplement_totals", { incomeId, year })
 
 /// Contrôle un bulletin déjà enregistré.
 export const checkIncomeReceipt = (receiptId: string) =>

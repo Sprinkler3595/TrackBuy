@@ -536,6 +536,7 @@ export function EmploymentContractForm({
               label="Payé à l'heure"
               checked={form.hourly_paid === true}
               onChange={(v) => set("hourly_paid", v)}
+              hint="Votre salaire de base dépend des heures faites : le contrôle de la majoration de 25 % sur les heures supplémentaires est alors écarté, faute de tarif horaire fixe auquel le comparer."
             />
           </div>
         </CardContent>
@@ -555,6 +556,19 @@ export function EmploymentContractForm({
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Caisse de pension (LPP)">
             <Input value={str("lpp_fund_name")} onChange={(e) => set("lpp_fund_name", e.target.value)} />
+          </Field>
+          <Field
+            label="Salaire assuré au 2ᵉ pilier"
+            hint="Vos suppléments comptent-ils dans le salaire assuré ? Le signe est simple : si votre retenue LPP est identique tous les mois, seul le salaire de base l'est."
+          >
+            <select
+              className={inputCls}
+              value={str("lpp_insured_scope")}
+              onChange={(e) => set("lpp_insured_scope", e.target.value)}
+            >
+              <option value="total">Tout le brut, suppléments compris</option>
+              <option value="base">Seulement le salaire de base</option>
+            </select>
           </Field>
           <Field
             label="Part employé LPP (%)"

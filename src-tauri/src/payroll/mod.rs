@@ -43,10 +43,25 @@ pub struct EmploymentTerms {
     pub annual_gross_agreed: Option<f64>,
     /// 12 ou 13 selon que le 13ᵉ salaire est versé en une fois ou mensualisé.
     pub salary_periods_per_year: Option<i32>,
+    /// Payé à l'heure : le salaire de base d'une paie mesure les heures
+    /// accomplies, pas un montant convenu.
+    ///
+    /// Conséquence pratique : le tarif horaire ne peut PAS s'en déduire
+    /// (`base × périodes ÷ heures annuelles` supposerait un mois plein), donc
+    /// le contrôle de la majoration de 25 % sur les heures supplémentaires est
+    /// écarté. Reprocher une majoration manquante sur un tarif inventé serait
+    /// une accusation sans fondement.
     pub hourly_paid: bool,
     /// Taux employé du règlement de la caisse de pension, en % du salaire
     /// coordonné. Contractuel : jamais déduit d'un barème.
     pub lpp_employee_share_pct: Option<f64>,
+    /// `base` = seul le salaire contractuel est assuré ; toute autre valeur,
+    /// dont l'absence, vaut `total` — le brut entier, suppléments compris.
+    ///
+    /// La réponse tient au règlement de la caisse de pension et ne se devine
+    /// pas. Le signe est pourtant simple à lire sur une fiche : une retenue LPP
+    /// identique tous les mois trahit un salaire assuré fixe.
+    pub lpp_insured_scope: Option<String>,
     /// Prime AANP à charge de l'employé, en % du salaire assuré. Contractuel.
     pub laa_nonoccupational_pct: Option<f64>,
     /// Part employé de l'assurance indemnités journalières maladie. Contractuel.
@@ -424,23 +439,38 @@ impl NetProjection {
 /// sait où sont rangés les tarifs cantonaux.
 pub fn project_net(
     gross_per_period: f64,
+    supplements_per_period: f64,
     family_allowance: Option<f64>,
     terms: &EmploymentTerms,
     p: &PayrollParams,
     fiscal_year: i32,
-    tax_at_source: &dyn Fn(f64) -> Option<f64>,
+    tax_at_source: &dyn Fn(f64, f64) -> Option<f64>,
 ) -> NetProjection {
     let periods = terms.salary_periods_per_year.unwrap_or(12).clamp(1, 53);
+    let supplements = supplements_per_period.max(0.0);
     // Une allocation à zéro n'est pas une allocation : la laisser à `None`
     // évite d'afficher une ligne vide sur le récapitulatif.
     let family_allowance = family_allowance.filter(|v| *v > 0.0);
 
-    // Le salaire coordonné LPP se calcule sur l'année. On l'ancre sur le brut
-    // qu'on est en train de projeter, et non sur `annual_gross_agreed` : la
-    // question posée est « si mon brut devient X, quel est mon net ? », donc
-    // un montant convenu périmé fausserait la réponse.
+    // Le salaire coordonné LPP se calcule sur l'ANNÉE, et l'ancrer sur le mois
+    // courant × le nombre de périodes est un piège : un mois chargé
+    // d'astreintes projetterait une retenue LPP de moitié supérieure à la
+    // réalité, alors qu'aucune caisse ne recalcule le salaire assuré chaque
+    // mois. Deux régimes, selon le règlement de la caisse :
+    //
+    //   - `base`  : seul le salaire contractuel est assuré. On garde le montant
+    //               convenu, insensible aux suppléments ;
+    //   - `total` : tout le brut l'est. On prend alors le total ANNUEL projeté,
+    //               suppléments compris — et non le mois extrapolé.
+    let insures_only_base = terms.lpp_insured_scope.as_deref() == Some("base");
     let mut terms = terms.clone();
-    terms.annual_gross_agreed = Some(gross_per_period * periods as f64);
+    terms.annual_gross_agreed = if insures_only_base {
+        terms
+            .annual_gross_agreed
+            .or(Some(gross_per_period * periods as f64))
+    } else {
+        Some((gross_per_period + supplements) * periods as f64)
+    };
     terms.salary_periods_per_year = Some(periods);
 
     let mut projected = Vec::with_capacity(periods as usize);
@@ -451,6 +481,9 @@ pub fn project_net(
             fiscal_year,
             net_paid: 0.0,
             base_salary: Some(gross_per_period),
+            // Astreintes et week-ends : du salaire déterminant comme le reste,
+            // et une prestation PÉRIODIQUE — pas un bonus.
+            other_gross: (supplements > 0.0).then_some(supplements),
             family_allowance,
             ..Default::default()
         };
@@ -462,10 +495,17 @@ pub fn project_net(
 
         let gross = total_gross(&input);
 
+        // En modèle annuel (FR, GE, TI, VD, VS), le salaire qui détermine le
+        // TAUX est la moyenne des salaires DÉJÀ VERSÉS dans l'année, ramenée à
+        // l'année entière — pas le mois courant multiplié par le nombre de
+        // périodes. Sur un salaire plat les deux coïncident ; dès que les mois
+        // varient, non. La fermeture reçoit donc les deux.
+        let annualised = (avs_cumulative + e.avs_subject_gross) / index as f64 * periods as f64;
+
         // Pas d'imposition à la source : le poste existe et vaut zéro, ce qui
         // n'est pas la même chose qu'un barème introuvable.
         let tax = if terms.tax_at_source {
-            tax_at_source(gross)
+            tax_at_source(gross, annualised)
         } else {
             Some(0.0)
         };
@@ -965,7 +1005,7 @@ mod tests {
     }
 
     fn project(gross: f64, terms: &EmploymentTerms) -> NetProjection {
-        project_net(gross, None, terms, &p2026(), 2026, &|b| no_tax(b))
+        project_net(gross, 0.0, None, terms, &p2026(), 2026, &|b, _| no_tax(b))
     }
 
     /// Le brut → net doit retomber exactement sur le bulletin que le
@@ -1055,7 +1095,7 @@ mod tests {
     #[test]
     fn family_allowances_reach_the_net_untouched_by_contributions() {
         let plain = project(8_000.0, &terms());
-        let withkids = project_net(8_000.0, Some(430.0), &terms(), &p2026(), 2026, &|b| no_tax(b));
+        let withkids = project_net(8_000.0, 0.0, Some(430.0), &terms(), &p2026(), 2026, &|b, _| no_tax(b));
         let a = &plain.periods[0];
         let b = &withkids.periods[0];
         assert_eq!(b.avs_subject_gross, a.avs_subject_gross, "assiette inchangée");
@@ -1070,7 +1110,7 @@ mod tests {
     #[test]
     fn tax_at_source_applies_to_the_total_gross_and_only_when_subject() {
         let taxed = EmploymentTerms { tax_at_source: true, ..terms() };
-        let pr = project_net(8_000.0, Some(430.0), &taxed, &p2026(), 2026, &|base| {
+        let pr = project_net(8_000.0, 0.0, Some(430.0), &taxed, &p2026(), 2026, &|base, _| {
             Some(base * 10.0 / 100.0)
         });
         let m = &pr.periods[0];
@@ -1087,7 +1127,7 @@ mod tests {
     #[test]
     fn a_subject_employee_without_any_tariff_leaves_the_tax_unknown() {
         let taxed = EmploymentTerms { tax_at_source: true, ..terms() };
-        let pr = project_net(8_000.0, None, &taxed, &p2026(), 2026, &|_| None);
+        let pr = project_net(8_000.0, 0.0, None, &taxed, &p2026(), 2026, &|_, _| None);
         assert!(pr.periods[0].tax_at_source.is_none());
         assert!(pr.uncomputable.contains(&"tax_at_source"));
     }
@@ -1111,5 +1151,157 @@ mod tests {
         assert_eq!(p.effective_year, 2023);
         assert_eq!(p.lpp_entry_threshold, 22_050.0);
         assert_eq!(p.ac_solidarity_employee_pct, 0.0, "aboli au 1.1.2023");
+    }
+
+
+    // --- suppléments et salaire assuré ---
+
+    fn project_with(gross: f64, supplements: f64, terms: &EmploymentTerms) -> NetProjection {
+        project_net(gross, supplements, None, terms, &p2026(), 2026, &|b, _| no_tax(b))
+    }
+
+    /// Astreintes et week-ends sont du salaire déterminant comme le reste :
+    /// l'AVS et l'AC les frappent, et ils gonflent le net d'autant moins.
+    #[test]
+    fn supplements_are_subject_to_contributions_like_any_salary() {
+        let plain = project_with(8_000.0, 0.0, &terms());
+        let busy = project_with(8_000.0, 500.0, &terms());
+
+        assert!((busy.periods[0].gross - 8_500.0).abs() < 0.01);
+        assert!((busy.periods[0].avs_ai_apg - 450.5).abs() < 0.01, "8'500 × 5.3 %");
+        assert!((busy.periods[0].ac - 93.5).abs() < 0.01, "8'500 × 1.1 %");
+        assert!(busy.periods[0].net > plain.periods[0].net);
+    }
+
+    /// Le vrai défaut corrigé : avec un salaire assuré limité au contrat, la
+    /// retenue LPP ne bouge pas d'un mois chargé à l'autre. Aucune caisse ne
+    /// recalcule le salaire coordonné chaque mois.
+    #[test]
+    fn a_base_only_pension_plan_ignores_the_supplements() {
+        let base_only = EmploymentTerms {
+            lpp_insured_scope: Some("base".into()),
+            annual_gross_agreed: Some(50_000.0),
+            salary_periods_per_year: Some(13),
+            ..terms()
+        };
+        let quiet = project_with(3_846.15, 0.0, &base_only);
+        let busy = project_with(3_846.15, 500.0, &base_only);
+        assert!(
+            (quiet.periods[0].lpp_employee.unwrap() - busy.periods[0].lpp_employee.unwrap()).abs()
+                < 0.01,
+            "le salaire assuré reste celui du contrat"
+        );
+    }
+
+    /// Avec un salaire assuré portant sur tout le brut, la retenue suit — mais
+    /// sur le total ANNUEL projeté, pas sur le mois extrapolé.
+    #[test]
+    fn a_total_pension_plan_follows_the_projected_annual_gross() {
+        let total = EmploymentTerms {
+            lpp_insured_scope: Some("total".into()),
+            annual_gross_agreed: Some(50_000.0),
+            salary_periods_per_year: Some(13),
+            ..terms()
+        };
+        let quiet = project_with(3_846.15, 0.0, &total);
+        let busy = project_with(3_846.15, 500.0, &total);
+        assert!(
+            busy.periods[0].lpp_employee.unwrap() > quiet.periods[0].lpp_employee.unwrap(),
+            "les suppléments entrent dans le salaire assuré"
+        );
+
+        // 3'846.15 + 500 = 4'346.15 × 13 = 56'500 annuels.
+        // Coordonné = 56'500 − 26'460 = 30'040 ; × 3.5 % = 1'051.40 par an,
+        // soit 80.88 par paie. Sans les suppléments : 23'540 coordonnés, 63.38.
+        assert!((quiet.periods[0].lpp_employee.unwrap() - 63.38).abs() < 0.01);
+        assert!((busy.periods[0].lpp_employee.unwrap() - 80.88).abs() < 0.01);
+    }
+
+    /// En modèle annuel, le taux se prend sur la moyenne des salaires DÉJÀ
+    /// versés ramenée à l'année, pas sur le mois courant × le nombre de
+    /// périodes. Sur un salaire plat les deux coïncident ; c'est un mois
+    /// inégal qui les sépare.
+    #[test]
+    fn the_annual_tax_base_is_the_running_average_not_the_current_month() {
+        let taxed = EmploymentTerms { tax_at_source: true, ..terms() };
+        let seen = std::cell::RefCell::new(Vec::new());
+        let pr = project_net(8_000.0, 1_200.0, None, &taxed, &p2026(), 2026, &|_, annualised| {
+            seen.borrow_mut().push(annualised);
+            Some(0.0)
+        });
+        assert_eq!(pr.periods.len(), 12);
+
+        // Chaque période vaut 9'200 : la moyenne cumulée reste 110'400 tout au
+        // long de l'année, et c'est bien elle qui est interrogée.
+        for v in seen.borrow().iter() {
+            assert!((v - 110_400.0).abs() < 0.01, "base annualisée : {v}");
+        }
+    }
+
+    /// Sur treize paies, le salaire d'une paie est plus petit d'un treizième :
+    /// déduire le tarif horaire de « heures mensuelles moyennes » le
+    /// sous-estimait d'autant, et la majoration de 25 % avec lui.
+    #[test]
+    fn the_hourly_rate_accounts_for_thirteen_pay_periods() {
+        let p = p2026();
+        let thirteen = EmploymentTerms {
+            weekly_hours: Some(40.0),
+            salary_periods_per_year: Some(13),
+            ..terms()
+        };
+        // 4'000 × 13 = 52'000 par an, 40 h × 52 = 2'080 h → 25.00/h.
+        // Dix heures majorées valent donc 312.50, pas 288.46.
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(4_000.0),
+            overtime_hours: Some(10.0),
+            overtime: Some(300.0),
+            net_paid: 0.0,
+            ..Default::default()
+        };
+        let fs = check_payslip(&input, &thirteen, &ytd(0.0), &p);
+        let f = finding(&fs, "overtime_no_premium").unwrap();
+        assert!(
+            (f.expected.unwrap() - 312.5).abs() < 0.5,
+            "attendu obtenu : {:?}",
+            f.expected
+        );
+    }
+
+    /// Payé à l'heure, le salaire de base d'une paie mesure les heures
+    /// accomplies : en déduire un tarif horaire reviendrait à reprocher une
+    /// majoration manquante sur un chiffre fabriqué.
+    #[test]
+    fn an_hourly_contract_does_not_get_a_fabricated_hourly_rate() {
+        let p = p2026();
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(4_000.0),
+            overtime_hours: Some(10.0),
+            // 4'000 × 12 ÷ 2'080 h = 23.08/h, majorés : 288.46 attendus.
+            overtime: Some(250.0),
+            net_paid: 0.0,
+            ..Default::default()
+        };
+
+        let monthly = EmploymentTerms {
+            weekly_hours: Some(40.0),
+            ..terms()
+        };
+        assert!(
+            finding(&check_payslip(&input, &monthly, &ytd(0.0), &p), "overtime_no_premium")
+                .is_some(),
+            "sur un salaire mensuel le contrôle a bien lieu"
+        );
+
+        let hourly = EmploymentTerms {
+            hourly_paid: true,
+            ..monthly
+        };
+        assert!(
+            finding(&check_payslip(&input, &hourly, &ytd(0.0), &p), "overtime_no_premium")
+                .is_none(),
+            "sur un contrat à l'heure il est écarté"
+        );
     }
 }
