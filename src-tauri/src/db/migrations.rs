@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 30;
+pub const CURRENT_SCHEMA_VERSION: i64 = 31;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -120,6 +120,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 30 {
         migrate_v30(conn)?;
+    }
+    if current_version < 31 {
+        migrate_v31(conn)?;
     }
 
     Ok(())
@@ -2005,6 +2008,47 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v31 — les retenues salariales propres à un canton.
+///
+/// Le moteur ne connaissait que le droit fédéral. Or deux prélèvements
+/// cantonaux tombent bel et bien sur la fiche de paie du salarié :
+///
+///   - **Vaud et Valais** font cotiser l'employé aux allocations familiales,
+///     là où les autres cantons ne chargent que l'employeur ;
+///   - **Genève** prélève l'assurance maternité cantonale (AMat), pour moitié
+///     à charge de l'employé.
+///
+/// Sans eux, le net d'un salarié vaudois ou genevois est faux de quelques
+/// francs par mois, et surtout le contrôle de bulletin signale un écart qui
+/// n'en est pas un — il prend une cotisation légitime pour une anomalie.
+///
+/// La table naît VIDE, et c'est délibéré : ces taux changent chaque année et
+/// dépendent de la caisse de compensation. Les inscrire en dur reviendrait à
+/// livrer des chiffres que personne n'a vérifiés. L'écran des barèmes les
+/// demande, en indiquant où les trouver.
+fn migrate_v31(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE cantonal_payroll_params (
+            canton TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            -- Cotisation SALARIÉE aux allocations familiales (VD, VS).
+            family_allowance_employee_pct REAL,
+            -- Assurance maternité cantonale, part employé (GE).
+            maternity_employee_pct REAL,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (canton, year)
+        );
+
+        INSERT INTO schema_version (version) VALUES (31);
+        "
+    ).map_err(|e| format!("Migration v31 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2453,5 +2497,41 @@ mod tests {
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, 30);
+    }
+
+
+    /// La v31 ajoute une table vide : les taux cantonaux changent chaque année
+    /// et dépendent de la caisse, les livrer en dur serait livrer des chiffres
+    /// non vérifiés.
+    #[test]
+    fn v31_creates_an_empty_cantonal_table_keyed_by_canton_and_year() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+        migrate_v30(&conn).unwrap();
+        migrate_v31(&conn).unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cantonal_payroll_params", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "aucun taux n'est livré en dur");
+
+        conn.execute(
+            "INSERT INTO cantonal_payroll_params (canton, year, family_allowance_employee_pct)
+             VALUES ('VD', 2026, 0.131)",
+            [],
+        )
+        .unwrap();
+        // Un canton et une année : une seule ligne, qui se met à jour.
+        let dup = conn.execute(
+            "INSERT INTO cantonal_payroll_params (canton, year, maternity_employee_pct)
+             VALUES ('VD', 2026, 0.05)",
+            [],
+        );
+        assert!(dup.is_err());
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 31);
     }
 }

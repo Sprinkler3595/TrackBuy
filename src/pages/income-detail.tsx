@@ -91,28 +91,31 @@ export function IncomeDetailPage() {
   }
   useEffect(() => { void load() }, [id])
 
+  /// Année dépliée dans l'onglet des bulletins. Sur une carrière reprise, les
+  /// bulletins se comptent par centaines : les afficher à plat, et surtout
+  /// tous les contrôler, rendait l'onglet inutilisable.
+  const [openReceiptYear, setOpenReceiptYear] = useState<number | null>(null)
+
   // Les contrôles sont chargés quand l'onglet des bulletins s'ouvre, et
   // rechargés après chaque écriture : un bulletin ajouté change le cumul
-  // annuel, donc le contrôle AC des bulletins suivants.
+  // annuel, donc le contrôle AC des bulletins suivants. Seule l'année dépliée
+  // est contrôlée, en UN aller-retour.
   useEffect(() => {
     if (tab !== "receipts" || receipts.length === 0) return
     let cancelled = false
     const run = async () => {
-      const entries = await Promise.all(
-        receipts.map(async (r) => {
-          try {
-            return [r.id, await api.checkIncomeReceipt(r.id)] as const
-          } catch {
-            return null
-          }
-        }),
-      )
-      if (cancelled) return
-      setChecks(Object.fromEntries(entries.filter((e) => e !== null)))
+      try {
+        const year = openReceiptYear ?? [...new Set(receipts.map(receiptYear))].sort((a, b) => b - a)[0]
+        if (year == null) return
+        const reports = await api.checkIncomeReceipts(id as string, year)
+        if (!cancelled) setChecks((prev) => ({ ...prev, ...reports }))
+      } catch {
+        // Le contrôle est un confort : son échec ne doit pas vider la liste.
+      }
     }
     void run()
     return () => { cancelled = true }
-  }, [tab, receipts])
+  }, [tab, receipts, openReceiptYear, id])
 
   /// Import en lot : c'est le chemin d'une reprise d'historique, distinct
   /// de la saisie d'un bulletin du mois.
@@ -168,6 +171,10 @@ export function IncomeDetailPage() {
     if (years.includes(thisYear)) return thisYear
     return years.length > 0 ? Math.max(...years) : thisYear
   })()
+
+  /// Bulletins regroupés par année, de la plus récente à la plus ancienne.
+  const receiptYears = [...new Set(receipts.map(receiptYear))].sort((a, b) => b - a)
+  const shownYear = openReceiptYear ?? receiptYears[0] ?? null
 
   const yearReceipts = receipts.filter((r) => receiptYear(r) === summaryYear)
   const totalYTD = yearReceipts.reduce((acc, r) => acc + r.amount, 0)
@@ -514,7 +521,29 @@ export function IncomeDetailPage() {
 
           {receipts.length === 0 ? (
             <Card><CardContent className="py-8 text-center text-muted-foreground">{t("incomes.noReceipts")}</CardContent></Card>
-          ) : receipts.map((r) => {
+          ) : (
+          <>
+          {/* Une carrière reprise se compte en centaines de bulletins : les
+              grouper par année évite une liste à plat interminable, et surtout
+              ne contrôle que l'année ouverte. */}
+          {receiptYears.length > 1 && (
+            <div className="flex flex-wrap gap-1">
+              {receiptYears.map((y) => (
+                <Button
+                  key={y}
+                  variant={y === shownYear ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setOpenReceiptYear(y)}
+                >
+                  {y}
+                  <span className="ml-1.5 text-xs opacity-70">
+                    {receipts.filter((r) => receiptYear(r) === y).length}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          )}
+          {receipts.filter((r) => receiptYear(r) === shownYear).map((r) => {
             const report = checks[r.id]
             const severity = worstSeverity(report)
             const expanded = expandedCheck === r.id
@@ -588,6 +617,8 @@ export function IncomeDetailPage() {
               </Card>
             )
           })}
+          </>
+          )}
         </div>
       )}
 

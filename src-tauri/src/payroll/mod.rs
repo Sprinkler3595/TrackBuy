@@ -23,7 +23,9 @@ pub mod params;
 pub mod tax_at_source;
 
 pub use checks::{check_payslip, Finding};
-pub use params::{known_years, params_for_year, LppCreditBracket, PayrollParams};
+pub use params::{
+    known_years, params_for_year, CantonalParams, LppCreditBracket, PayrollParams,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +141,11 @@ pub struct ExpectedDeductions {
     /// Plafond légal de la part employé sur la période : l'employeur doit
     /// financer au moins la moitié de la bonification (art. 66 al. 1 LPP).
     pub lpp_employee_legal_cap: f64,
+    /// Cotisation salariée aux allocations familiales (VD, VS). Zéro partout
+    /// ailleurs, et zéro tant que le taux du canton n'est pas renseigné.
+    pub cantonal_family_allowance: f64,
+    /// Assurance maternité cantonale, part employé (GE).
+    pub cantonal_maternity: f64,
 }
 
 /// Salaire déterminant AVS d'une période.
@@ -313,6 +320,12 @@ pub fn expected_deductions(
         .map(|rate| coordinated * rate / 100.0 / periods);
     let lpp_employee_legal_cap = minimum_annual_credit / 2.0 / periods;
 
+    // Prélèvements cantonaux : même assiette que l'AVS. Ils valent zéro dans
+    // la plupart des cantons, mais les ignorer là où ils existent fait
+    // prendre une cotisation légitime pour une anomalie.
+    let cantonal_family_allowance = subject * p.cantonal.family_allowance_employee_pct / 100.0;
+    let cantonal_maternity = subject * p.cantonal.maternity_employee_pct / 100.0;
+
     ExpectedDeductions {
         avs_subject_gross: subject,
         avs_ai_apg: avs,
@@ -325,6 +338,8 @@ pub fn expected_deductions(
         lpp_minimum_annual_credit: minimum_annual_credit,
         lpp_employee,
         lpp_employee_legal_cap,
+        cantonal_family_allowance,
+        cantonal_maternity,
     }
 }
 
@@ -352,6 +367,9 @@ pub struct ProjectedPeriod {
     pub ijm: Option<f64>,
     pub lpp_employee: Option<f64>,
     pub tax_at_source: Option<f64>,
+    /// Prélèvements propres au canton de travail (allocations familiales en
+    /// VD/VS, assurance maternité en GE). Zéro ailleurs.
+    pub cantonal: f64,
     /// Somme des seuls postes calculables.
     pub total_deductions: f64,
     pub net: f64,
@@ -452,12 +470,14 @@ pub fn project_net(
             Some(0.0)
         };
 
+        let cantonal = e.cantonal_family_allowance + e.cantonal_maternity;
         let total_deductions = e.avs_ai_apg
             + e.ac
             + e.ac_solidarity
             + e.laa_nonoccupational.unwrap_or(0.0)
             + e.ijm.unwrap_or(0.0)
             + e.lpp_employee.unwrap_or(0.0)
+            + cantonal
             + tax.unwrap_or(0.0);
 
         projected.push(ProjectedPeriod {
@@ -471,6 +491,7 @@ pub fn project_net(
             ijm: e.ijm,
             lpp_employee: e.lpp_employee,
             tax_at_source: tax,
+            cantonal,
             total_deductions,
             net: gross - total_deductions,
         });

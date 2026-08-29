@@ -22,6 +22,12 @@ const LINES = [
   { key: "laa_nonoccupational", label: "LAA — accidents non prof.", rate: () => null },
   { key: "ijm", label: "Indemnités journalières maladie", rate: () => null },
   { key: "tax_at_source", label: "Impôt à la source", rate: () => null },
+  {
+    key: "cantonal",
+    label: "Retenues cantonales",
+    rate: (p: api.PayrollParams) =>
+      p.cantonal.family_allowance_employee_pct + p.cantonal.maternity_employee_pct || null,
+  },
 ] as const
 
 type LineKey = (typeof LINES)[number]["key"]

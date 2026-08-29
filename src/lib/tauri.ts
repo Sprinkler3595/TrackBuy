@@ -1415,6 +1415,24 @@ export interface PayrollParams {
   private_car_monthly_min: number
   family_allowance_min_child: number
   family_allowance_min_training: number
+  /// Retenues propres au canton de travail. Vides tant qu'aucun taux n'est
+  /// saisi — ce qui est exact dans la plupart des cantons.
+  cantonal: {
+    canton: string | null
+    /// Cotisation salariée aux allocations familiales (VD, VS).
+    family_allowance_employee_pct: number
+    /// Assurance maternité cantonale, part employé (GE).
+    maternity_employee_pct: number
+  }
+}
+
+/// Taux salariés d'un canton pour une année.
+export interface CantonalRates {
+  canton: string
+  year: number
+  family_allowance_employee_pct: number | null
+  maternity_employee_pct: number | null
+  note: string | null
 }
 
 /// Ce que rend `getPayrollParams` : le barème, plus de quoi le situer.
@@ -1515,6 +1533,9 @@ export interface ProjectedPeriod {
   ijm: number | null
   lpp_employee: number | null
   tax_at_source: number | null
+  /// Prélèvements propres au canton de travail (allocations familiales en
+  /// VD/VS, assurance maternité en GE). Zéro ailleurs.
+  cantonal: number
   total_deductions: number
   net: number
 }
@@ -1649,6 +1670,8 @@ export interface ExpectedDeductions {
   lpp_employee: number | null
   /// L'employeur doit financer au moins la moitié de la bonification.
   lpp_employee_legal_cap: number
+  cantonal_family_allowance: number
+  cantonal_maternity: number
 }
 
 export interface PayslipReport {
@@ -1853,6 +1876,14 @@ export const duplicatePayrollYear = (fromYear: number, toYear: number) =>
 /// Propose les taux que les bulletins d'une année révèlent. Ne démontre pas
 /// que l'employeur avait raison — démontre qu'il a été cohérent, et désigne le
 /// mois qui sort du lot.
+/// Taux salariés cantonaux saisis pour une année.
+export const getCantonalRates = (year: number) =>
+  invoke<CantonalRates[]>("get_cantonal_rates", { year })
+
+/// Enregistre les taux d'un canton. Deux taux vides retirent le canton.
+export const upsertCantonalRates = (rates: CantonalRates) =>
+  invoke<CantonalRates[]>("upsert_cantonal_rates", { rates })
+
 export const inferPayrollParams = (year: number) =>
   invoke<InferredParams>("infer_payroll_params", { year })
 
@@ -1879,6 +1910,14 @@ export const upsertEmploymentContract = (contract: EmploymentContract) =>
 /// Contrôle un bulletin déjà enregistré.
 export const checkIncomeReceipt = (receiptId: string) =>
   invoke<PayslipReport>("check_income_receipt", { receiptId })
+
+/// Contrôle tous les bulletins d'une année en un seul aller-retour. Un appel
+/// par bulletin rendait l'onglet inutilisable sur une carrière reprise.
+export const checkIncomeReceipts = (incomeId: string, year?: number) =>
+  invoke<Record<string, PayslipReport>>("check_income_receipts", {
+    incomeId,
+    year: year ?? null,
+  })
 
 /// Contrôle un bulletin en cours de saisie, avant enregistrement.
 export const previewPayslipCheck = (incomeId: string, draft: IncomeReceipt) =>

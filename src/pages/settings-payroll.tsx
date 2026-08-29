@@ -159,6 +159,11 @@ export function PayrollSettings() {
   const [confirmed, setConfirmed] = useState(false)
   const [inferred, setInferred] = useState<api.InferredParams | null>(null)
 
+  /// Taux salariés cantonaux. Aucun n'est livré avec l'application : ils
+  /// changent chaque année et dépendent de la caisse de compensation.
+  const [cantonal, setCantonal] = useState<api.CantonalRates[]>([])
+  const [cantonalDraft, setCantonalDraft] = useState({ canton: "", af: "", amat: "" })
+
   const [imports, setImports] = useState<api.TariffImport[]>([])
   const [importCanton, setImportCanton] = useState("")
   const [importing, setImporting] = useState(false)
@@ -166,13 +171,15 @@ export function PayrollSettings() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [p, list, guess] = await Promise.all([
+      const [p, list, guess, cantons] = await Promise.all([
         api.getPayrollParams(year),
         api.listTaxAtSourceImports(),
         // Les bulletins de l'année révèlent les taux réellement appliqués.
         // Sur une année ancienne, c'est souvent la seule source disponible.
         api.inferPayrollParams(year).catch(() => null),
+        api.getCantonalRates(year),
       ])
+      setCantonal(cantons)
       setParams(p)
       setImports(list)
       setConfirmed(p.confirmed)
@@ -282,6 +289,46 @@ export function PayrollSettings() {
       toast(`Erreur : ${e}`, "error")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const saveCantonal = async () => {
+    const canton = cantonalDraft.canton.trim().toUpperCase()
+    if (canton.length !== 2) {
+      toast("Choisissez un canton.", "error")
+      return
+    }
+    try {
+      setCantonal(
+        await api.upsertCantonalRates({
+          canton,
+          year,
+          family_allowance_employee_pct: parseRate(cantonalDraft.af),
+          maternity_employee_pct: parseRate(cantonalDraft.amat),
+          note: null,
+        }),
+      )
+      setCantonalDraft({ canton: "", af: "", amat: "" })
+      toast(`Taux ${canton} ${year} enregistrés.`, "success")
+    } catch (e) {
+      toast(`Erreur : ${e}`, "error")
+    }
+  }
+
+  const removeCantonal = async (canton: string) => {
+    try {
+      setCantonal(
+        await api.upsertCantonalRates({
+          canton,
+          year,
+          family_allowance_employee_pct: null,
+          maternity_employee_pct: null,
+          note: null,
+        }),
+      )
+      toast(`Taux ${canton} retirés.`, "success")
+    } catch (e) {
+      toast(`Erreur : ${e}`, "error")
     }
   }
 
@@ -484,6 +531,99 @@ export function PayrollSettings() {
           </CardContent>
         </Card>
       ))}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Retenues cantonales sur le salaire</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            La plupart des cantons ne font cotiser que l'employeur. Trois font exception, et ces
+            retenues figurent bien sur votre fiche : <strong>Vaud</strong> et{" "}
+            <strong>Valais</strong> font cotiser l'employé aux allocations familiales,{" "}
+            <strong>Genève</strong> prélève l'assurance maternité cantonale. Ces taux changent
+            chaque année et dépendent de votre caisse de compensation : ils ne sont pas livrés
+            avec l'application, votre décompte annuel de caisse ou votre fiche de salaire les
+            porte.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Canton</label>
+              <select
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                value={cantonalDraft.canton}
+                onChange={(e) => setCantonalDraft((d) => ({ ...d, canton: e.target.value }))}
+              >
+                <option value="">—</option>
+                {CANTONS.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Allocations familiales (%)</label>
+              <Input
+                type="number"
+                step="0.001"
+                min="0"
+                className="w-48"
+                placeholder="ex. 0.131"
+                value={cantonalDraft.af}
+                onChange={(e) => setCantonalDraft((d) => ({ ...d, af: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Assurance maternité (%)</label>
+              <Input
+                type="number"
+                step="0.001"
+                min="0"
+                className="w-48"
+                placeholder="ex. 0.043"
+                value={cantonalDraft.amat}
+                onChange={(e) => setCantonalDraft((d) => ({ ...d, amat: e.target.value }))}
+              />
+            </div>
+            <Button variant="outline" onClick={saveCantonal} disabled={!cantonalDraft.canton}>
+              Enregistrer
+            </Button>
+          </div>
+
+          {cantonal.length === 0 ? (
+            <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+              Aucune retenue cantonale pour {year}. Si vous travaillez hors de VD, VS ou GE,
+              c'est normal — il n'y en a pas.
+            </p>
+          ) : (
+            <ul className="divide-y rounded-md border">
+              {cantonal.map((c) => (
+                <li key={c.canton} className="flex items-center justify-between gap-3 p-3">
+                  <div>
+                    <p className="text-sm font-medium">{c.canton}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {c.family_allowance_employee_pct != null &&
+                        `allocations familiales ${c.family_allowance_employee_pct} %`}
+                      {c.family_allowance_employee_pct != null &&
+                        c.maternity_employee_pct != null &&
+                        " · "}
+                      {c.maternity_employee_pct != null &&
+                        `maternité ${c.maternity_employee_pct} %`}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeCantonal(c.canton)}
+                    aria-label={`Retirer ${c.canton}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-3">

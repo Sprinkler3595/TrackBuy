@@ -91,6 +91,36 @@ pub struct PayrollParams {
     // --- Allocations familiales (LAFam), minimums fédéraux ---
     pub family_allowance_min_child: f64,
     pub family_allowance_min_training: f64,
+
+    /// Retenues salariales propres au canton de travail. Vides par défaut :
+    /// le droit fédéral ne les connaît pas, elles se renseignent par canton et
+    /// par année dans Paramètres → Barèmes.
+    pub cantonal: CantonalParams,
+}
+
+/// Les prélèvements cantonaux qui tombent sur la fiche du SALARIÉ.
+///
+/// La plupart des cantons ne chargent que l'employeur. Trois font exception, et
+/// les ignorer fausse deux fois : le net annoncé est trop élevé, et le contrôle
+/// de bulletin prend une cotisation légitime pour une anomalie.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CantonalParams {
+    /// Canton de travail auquel ces taux se rapportent.
+    pub canton: Option<String>,
+    /// Cotisation salariée aux allocations familiales — Vaud et Valais.
+    pub family_allowance_employee_pct: f64,
+    /// Assurance maternité cantonale, part employé — Genève.
+    pub maternity_employee_pct: f64,
+}
+
+impl CantonalParams {
+    /// Aucun prélèvement cantonal. Utilisable en contexte `const`, ce que
+    /// `Default::default()` ne permet pas dans la table des années.
+    pub const EMPTY: CantonalParams = CantonalParams {
+        canton: None,
+        family_allowance_employee_pct: 0.0,
+        maternity_employee_pct: 0.0,
+    };
 }
 
 /// Tranches de bonification LPP — inchangées depuis l'entrée en vigueur de
@@ -140,6 +170,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2025,
@@ -175,6 +206,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2024,
@@ -210,6 +242,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2023,
@@ -246,6 +279,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2022,
@@ -283,6 +317,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 200.0,
         family_allowance_min_training: 250.0,
+        cantonal: CantonalParams::EMPTY,
     },
 ];
 

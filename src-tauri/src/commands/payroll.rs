@@ -14,6 +14,7 @@
 //! (art. 327a CO). Les cotisations se calculent donc sur une base plus
 //! étroite que le salaire brut du certificat.
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
@@ -24,7 +25,8 @@ use crate::payroll::tax_at_source::{
     children_from_code, parse_tariff_file, tax_for_base, uses_annual_model, TariffRow,
 };
 use crate::payroll::{
-    self, check_payslip, known_years, params_for_year, project_net, EmploymentTerms,
+    self, check_payslip, known_years, params_for_year, project_net, CantonalParams,
+    EmploymentTerms,
     ExpectedDeductions, Finding, LppCreditBracket, NetProjection, PayrollParams, PayslipInput,
     YtdContext,
 };
@@ -1133,7 +1135,8 @@ fn net_from_gross_inner(
     conn: &rusqlite::Connection,
     req: NetFromGrossRequest,
 ) -> Result<NetFromGrossResponse, String> {
-    let resolved = resolve_params(conn, req.year)?;
+    // Le canton est résolu plus bas ; on part du barème fédéral.
+    let mut resolved = resolve_params(conn, req.year)?;
 
     // Le contrat enregistré complète ce que la requête ne dit pas — jamais
     // l'inverse : ce que l'utilisateur vient de taper à l'écran prime.
@@ -1163,6 +1166,11 @@ fn net_from_gross_inner(
         .tax_at_source_rate_pct
         .or_else(|| contract.as_ref().and_then(|c| c.tax_at_source_rate_pct))
         .filter(|r| *r > 0.0);
+
+    // Les retenues cantonales tombent sur la fiche du salarié en VD, VS et GE.
+    if let Some(c) = canton.as_deref() {
+        resolved.params.cantonal = load_cantonal(conn, c, req.year)?;
+    }
 
     let periods = terms.salary_periods_per_year.unwrap_or(12).clamp(1, 53) as f64;
     let annual_model = canton.as_deref().map(uses_annual_model).unwrap_or(false);
@@ -1224,6 +1232,150 @@ fn net_from_gross_inner(
 }
 
 // ===========================================================================
+// Retenues cantonales
+// ===========================================================================
+
+/// Taux salariés d'un canton pour une année.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CantonalRates {
+    pub canton: String,
+    pub year: i32,
+    pub family_allowance_employee_pct: Option<f64>,
+    pub maternity_employee_pct: Option<f64>,
+    pub note: Option<String>,
+}
+
+/// Charge les taux d'un canton pour une année, s'ils ont été renseignés.
+///
+/// Aucun taux n'est livré avec l'application : ils changent chaque année et
+/// dépendent de la caisse de compensation. En leur absence, les prélèvements
+/// cantonaux valent zéro — ce qui est exact dans la majorité des cantons.
+fn load_cantonal(
+    conn: &rusqlite::Connection,
+    canton: &str,
+    year: i32,
+) -> Result<CantonalParams, String> {
+    let canton = canton.trim().to_uppercase();
+    let row = conn
+        .query_row(
+            "SELECT family_allowance_employee_pct, maternity_employee_pct
+             FROM cantonal_payroll_params WHERE canton = ?1 AND year = ?2",
+            rusqlite::params![canton, year],
+            |r| Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<f64>>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (family, maternity) = row.unwrap_or((None, None));
+    Ok(CantonalParams {
+        canton: Some(canton),
+        family_allowance_employee_pct: family.unwrap_or(0.0),
+        maternity_employee_pct: maternity.unwrap_or(0.0),
+    })
+}
+
+/// Barème d'une année pour un canton de travail donné.
+///
+/// Séparé de `resolve_params` parce que la plupart des appelants n'ont pas de
+/// canton sous la main — l'écran des barèmes, par exemple, décrit le droit
+/// fédéral. Ceux qui en ont un (contrôle de bulletin, calcul du net) passent
+/// par ici.
+pub fn resolve_params_for_canton(
+    conn: &rusqlite::Connection,
+    year: i32,
+    canton: Option<&str>,
+) -> Result<ResolvedParams, String> {
+    let mut resolved = resolve_params(conn, year)?;
+    if let Some(c) = canton.map(str::trim).filter(|c| c.len() == 2) {
+        resolved.params.cantonal = load_cantonal(conn, c, year)?;
+    }
+    Ok(resolved)
+}
+
+#[tauri::command]
+pub fn get_cantonal_rates(
+    state: State<'_, AppState>,
+    year: i32,
+) -> Result<Vec<CantonalRates>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT canton, year, family_allowance_employee_pct, maternity_employee_pct, note
+             FROM cantonal_payroll_params WHERE year = ?1 ORDER BY canton",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([year], |r| {
+            Ok(CantonalRates {
+                canton: r.get(0)?,
+                year: r.get(1)?,
+                family_allowance_employee_pct: r.get(2)?,
+                maternity_employee_pct: r.get(3)?,
+                note: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn upsert_cantonal_rates(
+    state: State<'_, AppState>,
+    rates: CantonalRates,
+) -> Result<Vec<CantonalRates>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_cantonal_inner(&conn, &rates)?;
+    drop(conn);
+    drop(db_guard);
+    get_cantonal_rates(state, rates.year)
+}
+
+fn upsert_cantonal_inner(
+    conn: &rusqlite::Connection,
+    r: &CantonalRates,
+) -> Result<(), String> {
+    let canton = r.canton.trim().to_uppercase();
+    if canton.len() != 2 {
+        return Err("Canton invalide.".into());
+    }
+    // Deux taux vides valent suppression : c'est ainsi qu'on retire un canton
+    // saisi par erreur, sans commande dédiée.
+    if r.family_allowance_employee_pct.is_none() && r.maternity_employee_pct.is_none() {
+        conn.execute(
+            "DELETE FROM cantonal_payroll_params WHERE canton = ?1 AND year = ?2",
+            rusqlite::params![canton, r.year],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO cantonal_payroll_params
+            (canton, year, family_allowance_employee_pct, maternity_employee_pct, note)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(canton, year) DO UPDATE SET
+            family_allowance_employee_pct = excluded.family_allowance_employee_pct,
+            maternity_employee_pct = excluded.maternity_employee_pct,
+            note = excluded.note,
+            updated_at = datetime('now')",
+        rusqlite::params![
+            canton,
+            r.year,
+            r.family_allowance_employee_pct,
+            r.maternity_employee_pct,
+            r.note,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ===========================================================================
 // Contrôle d'un bulletin
 // ===========================================================================
 
@@ -1268,7 +1420,11 @@ fn build_report(
         periods_per_year: periods,
     };
 
-    let resolved = resolve_params(conn, input.fiscal_year)?;
+    let resolved = resolve_params_for_canton(
+        conn,
+        input.fiscal_year,
+        contract.as_ref().and_then(|c| c.work_canton.as_deref()),
+    )?;
     let params = resolved.params.clone();
     let expected = payroll::expected_deductions(&input, &terms, &ctx, &params);
     let mut findings = check_payslip(&input, &terms, &ctx, &params);
@@ -1316,6 +1472,37 @@ pub fn check_income_receipt(
         &sort_key,
         &receipt.id,
     )
+}
+
+/// Contrôle tous les bulletins d'une année en un seul aller-retour.
+///
+/// Le front appelait `check_income_receipt` par bulletin : sur douze c'est
+/// invisible, sur les deux cents d'une carrière reprise, l'onglet devenait
+/// inutilisable. Ici le contrat, les barèmes et l'ensemble des versements ne
+/// sont chargés qu'une fois, quel que soit le nombre de bulletins.
+#[tauri::command]
+pub fn check_income_receipts(
+    state: State<'_, AppState>,
+    income_id: String,
+    year: Option<i32>,
+) -> Result<std::collections::HashMap<String, PayslipReport>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+
+    let receipts = load_receipts(&conn, &income_id)?;
+    let wanted: Vec<&IncomeReceipt> = match year {
+        Some(y) => receipts.iter().filter(|r| receipt_year(r) == y).collect(),
+        None => receipts.iter().collect(),
+    };
+
+    let mut out = std::collections::HashMap::with_capacity(wanted.len());
+    for r in wanted {
+        let sort_key = receipt_sort_key(r);
+        let report = build_report(&conn, &income_id, to_payslip_input(r), &sort_key, &r.id)?;
+        out.insert(r.id.clone(), report);
+    }
+    Ok(out)
 }
 
 /// Contrôle un bulletin en cours de saisie, avant enregistrement. Le front
@@ -3504,5 +3691,136 @@ mod tests {
         let inferred = infer_params_inner(&conn, 2012).unwrap();
         assert_eq!(inferred.receipt_count, 0);
         assert!(inferred.rates.is_empty());
+    }
+
+
+    // --- retenues cantonales ---
+
+    /// Sans taux renseigné, aucun prélèvement cantonal : c'est le cas de la
+    /// majorité des cantons, et le comportement d'avant.
+    #[test]
+    fn no_cantonal_rate_means_no_cantonal_deduction() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        let mut req = request(8_000.0);
+        req.work_canton = Some("ZH".into());
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.projection.periods[0].cantonal, 0.0);
+    }
+
+    /// Vaud fait cotiser l'employé aux allocations familiales. L'ignorer
+    /// annonçait un net trop élevé, et faisait passer une cotisation légitime
+    /// pour une anomalie au contrôle du bulletin.
+    #[test]
+    fn a_vaud_employee_pays_the_cantonal_family_allowance() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "vd".into(),
+                year: 2026,
+                family_allowance_employee_pct: Some(0.131),
+                maternity_employee_pct: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let plain = net_from_gross_inner(&conn, request(8_000.0)).unwrap();
+        let mut req = request(8_000.0);
+        req.work_canton = Some("VD".into());
+        let vaud = net_from_gross_inner(&conn, req).unwrap();
+
+        // 8'000 × 0.131 % = 10.48
+        assert!((vaud.projection.periods[0].cantonal - 10.48).abs() < 0.01);
+        assert!(
+            (plain.net_per_period - vaud.net_per_period - 10.48).abs() < 0.01,
+            "le net baisse d'autant"
+        );
+    }
+
+    /// Genève prélève l'assurance maternité cantonale sur la part employé.
+    #[test]
+    fn a_geneva_employee_pays_the_cantonal_maternity_insurance() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "GE".into(),
+                year: 2026,
+                family_allowance_employee_pct: None,
+                maternity_employee_pct: Some(0.043),
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let mut req = request(8_000.0);
+        req.work_canton = Some("GE".into());
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        // 8'000 × 0.043 % = 3.44
+        assert!((r.projection.periods[0].cantonal - 3.44).abs() < 0.01);
+    }
+
+    /// Vider les deux taux retire le canton : pas besoin d'une commande de
+    /// suppression pour corriger une saisie erronée.
+    #[test]
+    fn clearing_both_rates_removes_the_canton() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "VS".into(),
+                year: 2026,
+                family_allowance_employee_pct: Some(0.3),
+                maternity_employee_pct: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "VS".into(),
+                year: 2026,
+                family_allowance_employee_pct: None,
+                maternity_employee_pct: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cantonal_payroll_params", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Les taux sont propres à une ANNÉE : celui de 2026 ne doit pas
+    /// s'appliquer à 2025, ils changent chaque 1er janvier.
+    #[test]
+    fn cantonal_rates_do_not_leak_across_years() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "VD".into(),
+                year: 2026,
+                family_allowance_employee_pct: Some(0.131),
+                maternity_employee_pct: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let mut req = request(8_000.0);
+        req.year = 2025;
+        req.work_canton = Some("VD".into());
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.projection.periods[0].cantonal, 0.0);
     }
 }
