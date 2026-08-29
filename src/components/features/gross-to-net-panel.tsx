@@ -102,6 +102,7 @@ export function GrossToNetPanel({
             weekly_hours: contract?.weekly_hours ?? null,
             salary_periods_per_year: periods,
             thirteenth_salary: contract?.thirteenth_salary ?? false,
+            hourly_paid: contract?.hourly_paid ?? false,
             lpp_employee_share_pct: contract?.lpp_employee_share_pct ?? null,
             laa_nonoccupational_pct: contract?.laa_nonoccupational_pct ?? null,
             ijm_employee_pct: contract?.ijm_employee_pct ?? null,

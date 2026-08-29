@@ -7,6 +7,7 @@ import { useToast } from "@/components/ui/toast"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { ContractVersions } from "@/components/features/contract-versions"
 import * as api from "@/lib/tauri"
+import { RateField } from "@/components/features/rate-field"
 import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
 
 type FormState = Record<string, string | boolean>
@@ -570,39 +571,27 @@ export function EmploymentContractForm({
               <option value="base">Seulement le salaire de base</option>
             </select>
           </Field>
-          <Field
-            label="Part employé LPP (%)"
-            hint="En % du salaire coordonné. L'employeur doit financer au moins autant que vous (art. 66 al. 1 LPP)."
-          >
-            <Input
-              type="number" step="0.01" min="0"
-              value={str("lpp_employee_share_pct")}
-              onChange={(e) => set("lpp_employee_share_pct", e.target.value)}
-            />
-          </Field>
+          {/* Ces trois taux tendent tous le même piège : « 50/50 » décrit le
+              partage de la prime, pas son taux. `RateField` le dit, et le
+              signale quand la valeur saisie ressemble à une répartition. */}
+          <RateField
+            kind="lpp"
+            value={str("lpp_employee_share_pct")}
+            onChange={(v) => set("lpp_employee_share_pct", v)}
+          />
           <Field label="Assureur LAA">
             <Input value={str("laa_insurer")} onChange={(e) => set("laa_insurer", e.target.value)} />
           </Field>
-          <Field
-            label="Prime AANP (%)"
-            hint="Accidents non professionnels, à votre charge (art. 91 al. 2 LAA). Les accidents professionnels sont payés par l'employeur."
-          >
-            <Input
-              type="number" step="0.001" min="0"
-              value={str("laa_nonoccupational_pct")}
-              onChange={(e) => set("laa_nonoccupational_pct", e.target.value)}
-            />
-          </Field>
-          <Field
-            label="Prime IJM (%)"
-            hint="Indemnités journalières maladie. Assurance facultative, souvent partagée par moitié."
-          >
-            <Input
-              type="number" step="0.001" min="0"
-              value={str("ijm_employee_pct")}
-              onChange={(e) => set("ijm_employee_pct", e.target.value)}
-            />
-          </Field>
+          <RateField
+            kind="laa"
+            value={str("laa_nonoccupational_pct")}
+            onChange={(v) => set("laa_nonoccupational_pct", v)}
+          />
+          <RateField
+            kind="ijm"
+            value={str("ijm_employee_pct")}
+            onChange={(v) => set("ijm_employee_pct", v)}
+          />
         </CardContent>
       </Card>
 

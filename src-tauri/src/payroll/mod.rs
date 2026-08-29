@@ -31,7 +31,14 @@ use serde::{Deserialize, Serialize};
 
 /// Termes de l'emploi, saisis une fois par l'utilisateur. Tout est optionnel :
 /// le moteur dégrade proprement et signale ce qu'il ne peut pas contrôler.
+///
+/// `#[serde(default)]` fait tenir cette promesse jusqu'au bout. Les champs
+/// booléens ne sont pas des `Option`, donc sans lui serde les EXIGE : un écran
+/// qui ne connaît pas encore `hourly_paid` voyait sa requête rejetée en bloc,
+/// avec un « missing field » à la place du décompte. Un drapeau absent vaut
+/// désormais « non », ce qui est exactement ce qu'il veut dire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EmploymentTerms {
     /// Sert uniquement à choisir la tranche de bonification LPP.
     pub birth_date: Option<String>,
@@ -1193,6 +1200,28 @@ mod tests {
         assert_eq!(p.effective_year, 2023);
         assert_eq!(p.lpp_entry_threshold, 22_050.0);
         assert_eq!(p.ac_solidarity_employee_pct, 0.0, "aboli au 1.1.2023");
+    }
+
+    /// « Tout est optionnel » doit valoir jusqu'au décodage. Les drapeaux ne
+    /// sont pas des `Option` : sans `#[serde(default)]`, un écran qui n'envoie
+    /// que ce qu'il connaît se voyait refuser sa requête entière, avec un
+    /// « missing field » à la place du décompte.
+    #[test]
+    fn partial_terms_decode_with_flags_defaulting_to_false() {
+        let terms: EmploymentTerms = serde_json::from_str(
+            r#"{"salary_periods_per_year": 13, "lpp_employee_share_pct": 3.5}"#,
+        )
+        .expect("une requête partielle doit être acceptée");
+        assert_eq!(terms.salary_periods_per_year, Some(13));
+        assert_eq!(terms.lpp_employee_share_pct, Some(3.5));
+        assert!(!terms.hourly_paid);
+        assert!(!terms.tax_at_source);
+        assert!(!terms.thirteenth_salary);
+        assert!(!terms.subsidized_canteen);
+        assert_eq!(terms.birth_date, None, "absent veut dire inconnu");
+
+        // Et l'objet vide reste valide : c'est le cas d'un revenu sans contrat.
+        assert!(serde_json::from_str::<EmploymentTerms>("{}").is_ok());
     }
 
 

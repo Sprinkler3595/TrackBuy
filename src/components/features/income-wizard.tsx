@@ -8,6 +8,7 @@ import { I18nContext } from "@/lib/i18n"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { InlineCreateSelect, type InlineOption } from "@/components/ui/inline-create-select"
 import { GrossToNetSummary } from "@/components/features/gross-to-net-summary"
+import { RateField } from "@/components/features/rate-field"
 import { useNetFromGross } from "@/hooks/use-net-from-gross"
 import { formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
@@ -792,7 +793,13 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
                   choix. Les montrer évite pourtant de laisser croire que
                   l'AVS a été oubliée, et ils viennent du calcul lui-même —
                   donc ce sont exactement ceux qui sont appliqués. */}
-              <LegalRates params={netResult?.params ?? null} year={payYear} fr={fr} />
+              <LegalRates
+                params={netResult?.params ?? null}
+                year={payYear}
+                fr={fr}
+                loading={netLoading}
+                error={netError}
+              />
 
               <div className="space-y-3">
                 <div>
@@ -806,21 +813,9 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
                   </p>
                 </div>
                 <div className="grid gap-4 rounded-lg border bg-muted/20 p-4 sm:grid-cols-3">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">{fr ? "2ᵉ pilier (LPP) %" : "Pension (LPP) %"}</label>
-                    <Input type="number" min="0" step="0.01" value={lppPct}
-                      onChange={(e) => setLppPct(e.target.value)} placeholder="3.50" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">{fr ? "LAA non prof. %" : "Non-occ. accident %"}</label>
-                    <Input type="number" min="0" step="0.01" value={laaPct}
-                      onChange={(e) => setLaaPct(e.target.value)} placeholder="1.00" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">{fr ? "Indemn. journalières %" : "Daily allowances %"}</label>
-                    <Input type="number" min="0" step="0.01" value={ijmPct}
-                      onChange={(e) => setIjmPct(e.target.value)} placeholder="0.50" />
-                  </div>
+                  <RateField kind="lpp" value={lppPct} onChange={setLppPct} />
+                  <RateField kind="laa" value={laaPct} onChange={setLaaPct} />
+                  <RateField kind="ijm" value={ijmPct} onChange={setIjmPct} />
                 </div>
               </div>
 
@@ -918,17 +913,36 @@ function LegalRates({
   params,
   year,
   fr,
+  loading,
+  error,
 }: {
   params: api.PayrollParams | null
   year: number
   fr: boolean
+  loading: boolean
+  error: string | null
 }) {
+  // Un calcul en échec n'est pas un brut manquant. Annoncer « dès que le
+  // salaire brut sera saisi » à quelqu'un qui vient de le saisir l'envoie
+  // chercher son erreur là où elle n'est pas.
   if (!params) {
     return (
-      <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-        {fr
-          ? "Les retenues légales s'afficheront dès que le salaire brut sera saisi."
-          : "Statutory deductions appear once the gross salary is entered."}
+      <div
+        className={`rounded-lg border p-3 text-xs ${
+          error
+            ? "border-destructive/40 bg-destructive/5"
+            : "border-dashed text-muted-foreground"
+        }`}
+      >
+        {error
+          ? (fr
+              ? `Les retenues légales n'ont pas pu être chargées : ${error}`
+              : `Statutory deductions could not be loaded: ${error}`)
+          : loading
+            ? (fr ? "Chargement des retenues légales…" : "Loading statutory deductions…")
+            : (fr
+                ? "Les retenues légales s'afficheront dès que le salaire brut sera saisi."
+                : "Statutory deductions appear once the gross salary is entered.")}
       </div>
     )
   }
