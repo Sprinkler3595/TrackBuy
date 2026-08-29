@@ -115,6 +115,8 @@ pub fn run() {
             commands::payroll::delete_tax_at_source_import,
             commands::payroll::get_employment_contract,
             commands::payroll::upsert_employment_contract,
+            commands::payroll::get_employment_contract_versions,
+            commands::payroll::delete_employment_contract_version,
             commands::payroll::check_income_receipt,
             commands::payroll::check_income_receipts,
             commands::payroll::preview_payslip_check,

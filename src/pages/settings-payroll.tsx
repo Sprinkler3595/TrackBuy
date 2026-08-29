@@ -8,6 +8,7 @@ import { ErrorPanel } from "@/components/ui/error-panel"
 import { useToast } from "@/components/ui/toast"
 import { formatDate } from "@/lib/utils"
 import * as api from "@/lib/tauri"
+import { CANTONS } from "@/lib/cantons"
 
 /// Paramètres → Barèmes.
 ///
@@ -123,12 +124,6 @@ const GROUPS: Group[] = [
     ],
   },
 ]
-
-const CANTONS = [
-  "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU",
-  "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS",
-  "ZG", "ZH",
-] as const
 
 const parseRate = (v: string): number | null => {
   const t = v.trim().replace(",", ".")

@@ -795,7 +795,19 @@ pub fn export_salary_certificates_csv(state: State<'_, AppState>) -> Result<Stri
                     c.origin, c.r15_remarks
              FROM annual_salary_certificates c
              JOIN incomes i ON i.id = c.income_id
-             LEFT JOIN employment_contracts e ON e.income_id = c.income_id
+             -- Sous-requête et non jointure : le contrat a plusieurs versions
+             -- depuis les avenants, et une jointure rendrait une ligne de CSV
+             -- par version. On prend l'employeur en vigueur à la fin de
+             -- l'année du certificat.
+             LEFT JOIN (
+                 SELECT ec.income_id, ec.employer_name, ec.started_on
+                 FROM employment_contracts ec
+             ) e ON e.income_id = c.income_id
+                AND e.started_on = (
+                    SELECT MAX(ec2.started_on) FROM employment_contracts ec2
+                    WHERE ec2.income_id = c.income_id
+                      AND ec2.started_on <= c.fiscal_year || '-12-31'
+                )
              ORDER BY c.fiscal_year DESC, i.name",
         )
         .map_err(|e| e.to_string())?;

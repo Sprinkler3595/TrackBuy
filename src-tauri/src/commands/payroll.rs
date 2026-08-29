@@ -532,47 +532,52 @@ pub fn duplicate_payroll_year(
 // Contrat de travail
 // ===========================================================================
 
-const CONTRACT_COLUMNS: &str = "id, income_id, employer_name, employer_uid, avs_number,
-     birth_date, work_canton, activity_rate_pct, annual_gross_agreed,
+const CONTRACT_COLUMNS: &str = "id, income_id, label, employer_name, employer_uid,
+     avs_number, birth_date, work_canton, residence_canton,
+     tax_at_source_canton_source, activity_rate_pct, annual_gross_agreed,
      salary_periods_per_year, weekly_hours, hourly_paid, thirteenth_salary,
-     lpp_fund_name, lpp_employee_share_pct, laa_insurer, laa_nonoccupational_pct,
-     ijm_employee_pct, tax_at_source, tax_at_source_scale, tax_at_source_rate_pct,
-     company_car_purchase_price, subsidized_canteen, commute_km_per_day,
-     commute_public_transport_cost_year, started_on, ended_on, notes,
-     created_at, updated_at";
+     lpp_fund_name, lpp_employee_share_pct, lpp_insured_scope, laa_insurer,
+     laa_nonoccupational_pct, ijm_employee_pct, tax_at_source, tax_at_source_scale,
+     tax_at_source_rate_pct, company_car_purchase_price, subsidized_canteen,
+     commute_km_per_day, commute_public_transport_cost_year, started_on, ended_on,
+     notes, created_at, updated_at";
 
 fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmploymentContract> {
     Ok(EmploymentContract {
         id: row.get(0)?,
         income_id: row.get(1)?,
-        employer_name: row.get(2)?,
-        employer_uid: row.get(3)?,
-        avs_number: row.get(4)?,
-        birth_date: row.get(5)?,
-        work_canton: row.get(6)?,
-        activity_rate_pct: row.get(7)?,
-        annual_gross_agreed: row.get(8)?,
-        salary_periods_per_year: row.get(9)?,
-        weekly_hours: row.get(10)?,
-        hourly_paid: row.get::<_, i64>(11)? != 0,
-        thirteenth_salary: row.get::<_, i64>(12)? != 0,
-        lpp_fund_name: row.get(13)?,
-        lpp_employee_share_pct: row.get(14)?,
-        laa_insurer: row.get(15)?,
-        laa_nonoccupational_pct: row.get(16)?,
-        ijm_employee_pct: row.get(17)?,
-        tax_at_source: row.get::<_, i64>(18)? != 0,
-        tax_at_source_scale: row.get(19)?,
-        tax_at_source_rate_pct: row.get(20)?,
-        company_car_purchase_price: row.get(21)?,
-        subsidized_canteen: row.get::<_, i64>(22)? != 0,
-        commute_km_per_day: row.get(23)?,
-        commute_public_transport_cost_year: row.get(24)?,
-        started_on: row.get(25)?,
-        ended_on: row.get(26)?,
-        notes: row.get(27)?,
-        created_at: row.get(28)?,
-        updated_at: row.get(29)?,
+        label: row.get(2)?,
+        employer_name: row.get(3)?,
+        employer_uid: row.get(4)?,
+        avs_number: row.get(5)?,
+        birth_date: row.get(6)?,
+        work_canton: row.get(7)?,
+        residence_canton: row.get(8)?,
+        tax_at_source_canton_source: row.get(9)?,
+        activity_rate_pct: row.get(10)?,
+        annual_gross_agreed: row.get(11)?,
+        salary_periods_per_year: row.get(12)?,
+        weekly_hours: row.get(13)?,
+        hourly_paid: row.get::<_, i64>(14)? != 0,
+        thirteenth_salary: row.get::<_, i64>(15)? != 0,
+        lpp_fund_name: row.get(16)?,
+        lpp_employee_share_pct: row.get(17)?,
+        lpp_insured_scope: row.get(18)?,
+        laa_insurer: row.get(19)?,
+        laa_nonoccupational_pct: row.get(20)?,
+        ijm_employee_pct: row.get(21)?,
+        tax_at_source: row.get::<_, i64>(22)? != 0,
+        tax_at_source_scale: row.get(23)?,
+        tax_at_source_rate_pct: row.get(24)?,
+        company_car_purchase_price: row.get(25)?,
+        subsidized_canteen: row.get::<_, i64>(26)? != 0,
+        commute_km_per_day: row.get(27)?,
+        commute_public_transport_cost_year: row.get(28)?,
+        started_on: row.get(29)?,
+        ended_on: row.get(30)?,
+        notes: row.get(31)?,
+        created_at: row.get(32)?,
+        updated_at: row.get(33)?,
     })
 }
 
@@ -587,12 +592,62 @@ pub fn get_employment_contract(
     load_contract(&conn, &income_id)
 }
 
-fn load_contract(
+/// Canton dont le barème d'impôt à la source s'applique.
+///
+/// Pour un résident suisse, c'est celui du DOMICILE (art. 38 al. 4 let. a
+/// LHID), pas celui du lieu de travail. Certains employeurs retiennent
+/// toutefois selon le canton de leur siège puis reversent : le contrat porte
+/// ce réglage, parce que seule la fiche de salaire permet de trancher.
+fn tax_canton_of(contract: Option<&EmploymentContract>) -> Option<String> {
+    let c = contract?;
+    let pick = if c.tax_at_source_canton_source == "work" {
+        c.work_canton.as_deref()
+    } else {
+        // Domicile non renseigné : on retombe sur le canton de travail plutôt
+        // que de ne rien calculer. C'est le cas de qui vit et travaille dans le
+        // même canton, de loin le plus fréquent.
+        c.residence_canton.as_deref().or(c.work_canton.as_deref())
+    };
+    pick.map(|v| v.trim().to_uppercase()).filter(|v| v.len() == 2)
+}
+
+/// La version du contrat en vigueur à une date donnée.
+///
+/// C'est ce qui rend un avenant utile : une fiche de 2019 doit être jugée avec
+/// les conditions de 2019, pas avec le salaire d'aujourd'hui. Même forme que
+/// `load_tariff_rows` pour les barèmes d'impôt — on retient la version dont la
+/// date d'effet est la plus récente parmi celles déjà entrées en vigueur, et
+/// jamais une version future.
+fn load_contract_at(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+    on_date: &str,
+) -> Result<Option<EmploymentContract>, String> {
+    let sql = format!(
+        "SELECT {} FROM employment_contracts
+         WHERE income_id = ?1 AND started_on <= ?2
+           AND (ended_on IS NULL OR ended_on >= ?2)
+         ORDER BY started_on DESC LIMIT 1",
+        CONTRACT_COLUMNS
+    );
+    match conn.query_row(&sql, rusqlite::params![income_id, on_date], row_to_contract) {
+        Ok(c) => Ok(Some(c)),
+        // Aucune version ne couvre cette date — un bulletin antérieur au
+        // premier contrat saisi, par exemple. On retombe alors sur la version
+        // la plus ancienne : mieux vaut des conditions approchées, signalées
+        // comme telles par le contrôle, qu'aucun contrôle du tout.
+        Err(rusqlite::Error::QueryReturnedNoRows) => oldest_contract(conn, income_id),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn oldest_contract(
     conn: &rusqlite::Connection,
     income_id: &str,
 ) -> Result<Option<EmploymentContract>, String> {
     let sql = format!(
-        "SELECT {} FROM employment_contracts WHERE income_id = ?1",
+        "SELECT {} FROM employment_contracts WHERE income_id = ?1
+         ORDER BY started_on ASC LIMIT 1",
         CONTRACT_COLUMNS
     );
     match conn.query_row(&sql, [income_id], row_to_contract) {
@@ -600,6 +655,67 @@ fn load_contract(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// La version en vigueur aujourd'hui, ou à défaut la plus récente. C'est celle
+/// que décrivent les écrans qui parlent du présent.
+fn load_contract(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+) -> Result<Option<EmploymentContract>, String> {
+    let sql = format!(
+        "SELECT {} FROM employment_contracts WHERE income_id = ?1
+         ORDER BY (ended_on IS NULL) DESC, started_on DESC LIMIT 1",
+        CONTRACT_COLUMNS
+    );
+    match conn.query_row(&sql, [income_id], row_to_contract) {
+        Ok(c) => Ok(Some(c)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Toutes les versions d'un revenu, de la plus récente à la plus ancienne.
+fn load_contract_versions(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+) -> Result<Vec<EmploymentContract>, String> {
+    let sql = format!(
+        "SELECT {} FROM employment_contracts WHERE income_id = ?1
+         ORDER BY started_on DESC",
+        CONTRACT_COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([income_id], row_to_contract)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_employment_contract_versions(
+    state: State<'_, AppState>,
+    income_id: String,
+) -> Result<Vec<EmploymentContract>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    load_contract_versions(&conn, &income_id)
+}
+
+#[tauri::command]
+pub fn delete_employment_contract_version(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute("DELETE FROM employment_contracts WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Crée ou remplace le contrat d'un revenu. Un revenu = un employeur, donc
@@ -627,24 +743,39 @@ fn upsert_contract_inner(
         contract.id.clone()
     };
 
+    // Une version sans date d'effet couvrirait « depuis quand ? ». On ne force
+    // pas l'utilisateur à inventer une date qu'il ignore : une borne basse
+    // large vaut mieux, et elle garantit qu'aucune fiche ancienne ne se
+    // retrouve sans contrat en vigueur.
+    let started_on = contract
+        .started_on
+        .clone()
+        .filter(|d| d.len() >= 10)
+        .unwrap_or_else(|| "0001-01-01".to_string());
+
     conn.execute(
         "INSERT INTO employment_contracts (
-            id, income_id, employer_name, employer_uid, avs_number, birth_date,
-            work_canton, activity_rate_pct, annual_gross_agreed,
-            salary_periods_per_year, weekly_hours, hourly_paid, thirteenth_salary,
-            lpp_fund_name, lpp_employee_share_pct, laa_insurer,
+            id, income_id, label, employer_name, employer_uid, avs_number, birth_date,
+            work_canton, residence_canton, tax_at_source_canton_source,
+            activity_rate_pct, annual_gross_agreed, salary_periods_per_year,
+            weekly_hours, hourly_paid, thirteenth_salary, lpp_fund_name,
+            lpp_employee_share_pct, lpp_insured_scope, laa_insurer,
             laa_nonoccupational_pct, ijm_employee_pct, tax_at_source,
             tax_at_source_scale, tax_at_source_rate_pct, company_car_purchase_price,
             subsidized_canteen, commute_km_per_day, commute_public_transport_cost_year,
             started_on, ended_on, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
-         ON CONFLICT(income_id) DO UPDATE SET
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+                 ?29, ?30, ?31, ?32)
+         ON CONFLICT(id) DO UPDATE SET
+            label = excluded.label,
             employer_name = excluded.employer_name,
             employer_uid = excluded.employer_uid,
             avs_number = excluded.avs_number,
             birth_date = excluded.birth_date,
             work_canton = excluded.work_canton,
+            residence_canton = excluded.residence_canton,
+            tax_at_source_canton_source = excluded.tax_at_source_canton_source,
             activity_rate_pct = excluded.activity_rate_pct,
             annual_gross_agreed = excluded.annual_gross_agreed,
             salary_periods_per_year = excluded.salary_periods_per_year,
@@ -653,6 +784,7 @@ fn upsert_contract_inner(
             thirteenth_salary = excluded.thirteenth_salary,
             lpp_fund_name = excluded.lpp_fund_name,
             lpp_employee_share_pct = excluded.lpp_employee_share_pct,
+            lpp_insured_scope = excluded.lpp_insured_scope,
             laa_insurer = excluded.laa_insurer,
             laa_nonoccupational_pct = excluded.laa_nonoccupational_pct,
             ijm_employee_pct = excluded.ijm_employee_pct,
@@ -670,11 +802,14 @@ fn upsert_contract_inner(
         rusqlite::params![
             id,
             &contract.income_id,
+            &contract.label,
             &contract.employer_name,
             &contract.employer_uid,
             &contract.avs_number,
             &contract.birth_date,
             &contract.work_canton,
+            &contract.residence_canton,
+            &contract.tax_at_source_canton_source,
             contract.activity_rate_pct,
             contract.annual_gross_agreed,
             contract.salary_periods_per_year,
@@ -683,6 +818,7 @@ fn upsert_contract_inner(
             contract.thirteenth_salary as i64,
             &contract.lpp_fund_name,
             contract.lpp_employee_share_pct,
+            &contract.lpp_insured_scope,
             &contract.laa_insurer,
             contract.laa_nonoccupational_pct,
             contract.ijm_employee_pct,
@@ -693,15 +829,32 @@ fn upsert_contract_inner(
             contract.subsidized_canteen as i64,
             contract.commute_km_per_day,
             contract.commute_public_transport_cost_year,
-            &contract.started_on,
+            started_on,
             &contract.ended_on,
             &contract.notes,
         ],
     )
     .map_err(|e| e.to_string())?;
 
-    load_contract(conn, &contract.income_id)?
-        .ok_or_else(|| "Contrat introuvable après enregistrement".to_string())
+    // Deux versions ne peuvent pas se chevaucher, sinon « le contrat en vigueur
+    // ce jour-là » n'aurait pas de réponse. Enregistrer une version clôt donc
+    // la précédente à la veille de sa prise d'effet — automatiquement, parce
+    // que personne ne pense à le faire à la main.
+    conn.execute(
+        "UPDATE employment_contracts
+            SET ended_on = date(?2, '-1 day'), updated_at = datetime('now')
+          WHERE income_id = ?1 AND id <> ?3 AND started_on < ?2
+            AND (ended_on IS NULL OR ended_on >= ?2)",
+        rusqlite::params![&contract.income_id, started_on, id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let sql = format!(
+        "SELECT {} FROM employment_contracts WHERE id = ?1",
+        CONTRACT_COLUMNS
+    );
+    conn.query_row(&sql, [&id], row_to_contract)
+        .map_err(|e| e.to_string())
 }
 
 // ===========================================================================
@@ -1078,7 +1231,11 @@ pub struct NetFromGrossRequest {
     pub terms: EmploymentTerms,
     /// Canton de travail et code de barème : hors de `EmploymentTerms`, qui ne
     /// connaît que le droit fédéral.
+    ///
+    /// Deux cantons, deux rôles : le siège de l'employeur commande les retenues
+    /// sociales cantonales, le domicile commande le barème d'impôt à la source.
     pub work_canton: Option<String>,
+    pub residence_canton: Option<String>,
     pub tax_at_source_scale: Option<String>,
     /// Repli : le taux effectif lu sur la fiche de salaire, quand aucun
     /// barème cantonal n'est importé.
@@ -1112,6 +1269,10 @@ pub struct NetFromGrossResponse {
     /// que c'est bien le sien.
     pub tax_tariff_code: Option<String>,
     pub tax_annual_model: bool,
+    /// Les deux cantons retenus, pour que l'écran puisse dire lequel a servi à
+    /// quoi plutôt que de laisser deviner.
+    pub tax_canton: Option<String>,
+    pub social_canton: Option<String>,
     /// Net d'une période type — celui qu'on enregistre comme montant du
     /// revenu. Calculé ici pour que l'écran n'ait pas à choisir lui-même
     /// quelle période représente l'année.
@@ -1141,7 +1302,9 @@ fn net_from_gross_inner(
     // Le contrat enregistré complète ce que la requête ne dit pas — jamais
     // l'inverse : ce que l'utilisateur vient de taper à l'écran prime.
     let contract = match &req.income_id {
-        Some(id) => load_contract(conn, id)?,
+        // La version en vigueur à la fin de l'année projetée : c'est celle
+        // dont les conditions s'appliqueront aux paies qu'on simule.
+        Some(id) => load_contract_at(conn, id, &format!("{}-12-31", req.year))?,
         None => None,
     };
     let mut terms = req.terms;
@@ -1152,11 +1315,20 @@ fn net_from_gross_inner(
         terms.laa_nonoccupational_pct = terms.laa_nonoccupational_pct.or(c.laa_nonoccupational_pct);
         terms.ijm_employee_pct = terms.ijm_employee_pct.or(c.ijm_employee_pct);
     }
-    let canton = req
+    // Deux cantons, deux rôles. Le siège de l'employeur commande le social ;
+    // le domicile commande l'impôt à la source. Les confondre donne
+    // nécessairement un des deux calculs faux dès qu'ils diffèrent.
+    let work_canton = req
         .work_canton
         .or_else(|| contract.as_ref().and_then(|c| c.work_canton.clone()))
         .map(|c| c.trim().to_uppercase())
         .filter(|c| c.len() == 2);
+    let tax_canton = req
+        .residence_canton
+        .map(|c| c.trim().to_uppercase())
+        .filter(|c| c.len() == 2)
+        .or_else(|| tax_canton_of(contract.as_ref()))
+        .or_else(|| work_canton.clone());
     let scale = req
         .tax_at_source_scale
         .or_else(|| contract.as_ref().and_then(|c| c.tax_at_source_scale.clone()))
@@ -1168,16 +1340,17 @@ fn net_from_gross_inner(
         .filter(|r| *r > 0.0);
 
     // Les retenues cantonales tombent sur la fiche du salarié en VD, VS et GE.
-    if let Some(c) = canton.as_deref() {
+    // Elles suivent la caisse de l'employeur, donc son SIÈGE.
+    if let Some(c) = work_canton.as_deref() {
         resolved.params.cantonal = load_cantonal(conn, c, req.year)?;
     }
 
     let periods = terms.salary_periods_per_year.unwrap_or(12).clamp(1, 53) as f64;
-    let annual_model = canton.as_deref().map(uses_annual_model).unwrap_or(false);
+    let annual_model = tax_canton.as_deref().map(uses_annual_model).unwrap_or(false);
 
     // Tranches du barème, chargées une fois : la fermeture est appelée à
     // chaque période et n'a pas à retourner en base douze fois.
-    let rows = match (&canton, &scale, terms.tax_at_source) {
+    let rows = match (&tax_canton, &scale, terms.tax_at_source) {
         (Some(canton), Some(code), true) => {
             let children = children_from_code(code).unwrap_or(0);
             let on_date = format!("{}-12-31", req.year);
@@ -1228,6 +1401,8 @@ fn net_from_gross_inner(
         tax_source,
         tax_tariff_code: scale,
         tax_annual_model: annual_model,
+        tax_canton,
+        social_canton: work_canton,
     })
 }
 
@@ -1405,7 +1580,10 @@ fn build_report(
     sort_key: &str,
     exclude_id: &str,
 ) -> Result<PayslipReport, String> {
-    let contract = load_contract(conn, income_id)?;
+    // `sort_key` est la date de la période du bulletin — celle qui décide
+    // quel avenant s'appliquait. Une fiche de juin relève du contrat de
+    // juin, même si une augmentation a pris effet en juillet.
+    let contract = load_contract_at(conn, income_id, sort_key)?;
     let terms = contract
         .as_ref()
         .map(EmploymentTerms::from)
@@ -1420,6 +1598,9 @@ fn build_report(
         periods_per_year: periods,
     };
 
+    // Les retenues cantonales suivent le canton de TRAVAIL — la caisse de
+    // l'employeur. Le canton de domicile, lui, ne sert qu'à l'impôt à la
+    // source, qui n'est pas recalculé ici.
     let resolved = resolve_params_for_canton(
         conn,
         input.fiscal_year,
@@ -2073,7 +2254,9 @@ fn income_tax_summary_inner(
         let count = receipts.iter().filter(|r| receipt_year(r) == year).count();
         let computed = compute_certificate(&receipts, &income_id, year);
         let declared = load_certificate(conn, &income_id, year)?;
-        let contract = load_contract(conn, &income_id)?;
+        // Le contrat en vigueur à la clôture de l'année fiscale — c'est lui
+        // qui porte les frais et le régime de l'année déclarée.
+        let contract = load_contract_at(conn, &income_id, &format!("{year}-12-31"))?;
 
         // Le certificat de l'employeur fait foi dès qu'il est enregistré :
         // c'est lui que l'administration fiscale recevra.
@@ -2372,9 +2555,19 @@ fn contributions_history_inner(
     let mut rows: Vec<ContributionYear> = Vec::new();
 
     for (income_id, income_name) in salaries {
-        let employer_name = load_contract(conn, &income_id)?
-            .and_then(|c| c.employer_name)
-            .or_else(|| Some(income_name.clone()));
+        // Toutes les versions d'un coup : l'employeur peut avoir changé de
+        // raison sociale en cours de carrière, et recharger le contrat pour
+        // chaque année ferait une requête par ligne.
+        let versions = load_contract_versions(conn, &income_id)?;
+        let employer_at = |year: i32| -> Option<String> {
+            let end = format!("{year}-12-31");
+            versions
+                .iter()
+                .filter(|c| c.started_on.as_deref().unwrap_or("0001-01-01") <= end.as_str())
+                .max_by(|a, b| a.started_on.cmp(&b.started_on))
+                .and_then(|c| c.employer_name.clone())
+                .or_else(|| Some(income_name.clone()))
+        };
 
         // Une seule requête sort toute la carrière chez cet employeur ; le
         // découpage par année se fait ensuite en mémoire.
@@ -2400,7 +2593,7 @@ fn contributions_history_inner(
                     year,
                     income_id: income_id.clone(),
                     income_name: income_name.clone(),
-                    employer_name: employer_name.clone(),
+                    employer_name: employer_at(year),
                     gross_total: c.r8_gross_total.unwrap_or(0.0),
                     social_total: c.r9_social_contributions.unwrap_or(0.0),
                     avs_ai_apg: None,
@@ -2422,7 +2615,7 @@ fn contributions_history_inner(
                 r.year = year;
                 r.income_id = income_id.clone();
                 r.income_name = income_name.clone();
-                r.employer_name = employer_name.clone();
+                r.employer_name = employer_at(year);
                 // Les deux sources existent : l'écart de brut signale un
                 // bulletin manquant, ce qui est l'incident courant quand on
                 // reprend une vieille année.
@@ -3101,6 +3294,7 @@ mod tests {
                 ..Default::default()
             },
             work_canton: None,
+            residence_canton: None,
             tax_at_source_scale: None,
             tax_at_source_rate_pct: None,
             income_id: None,
@@ -3822,5 +4016,221 @@ mod tests {
         req.work_canton = Some("VD".into());
         let r = net_from_gross_inner(&conn, req).unwrap();
         assert_eq!(r.projection.periods[0].cantonal, 0.0);
+    }
+
+
+    // --- deux cantons ---
+
+    fn insert_vd_ge_tariffs(conn: &rusqlite::Connection) {
+        // Barème vaudois et barème genevois, volontairement très différents :
+        // si le mauvais est interrogé, le test le voit tout de suite.
+        for (canton, tax) in [("VD", 6_000.0), ("GE", 9_000.0)] {
+            conn.execute(
+                "INSERT INTO tax_at_source_tariffs
+                    (canton, tariff_code, valid_from, children, income_from,
+                     income_step, tax_amount)
+                 VALUES (?1, 'A0N', '2026-01-01', 0, 0.0, 1000000.0, ?2)",
+                rusqlite::params![canton, tax],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Habiter Vaud et travailler pour une société genevoise : le barème
+    /// d'impôt suit le DOMICILE, les retenues sociales suivent le SIÈGE. Avec
+    /// un champ unique, l'un des deux était forcément faux.
+    #[test]
+    fn tax_follows_the_home_canton_and_social_follows_the_employer_seat() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_vd_ge_tariffs(&conn);
+        // L'assurance maternité genevoise est à la charge de l'employé.
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "GE".into(),
+                year: 2026,
+                family_allowance_employee_pct: None,
+                maternity_employee_pct: Some(0.043),
+                note: None,
+            },
+        )
+        .unwrap();
+        // Vaud fait cotiser l'employé aux allocations familiales — mais pas
+        // pour un salarié affilié à une caisse genevoise.
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "VD".into(),
+                year: 2026,
+                family_allowance_employee_pct: Some(0.131),
+                maternity_employee_pct: None,
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let mut req = request(8_000.0);
+        req.terms.tax_at_source = true;
+        req.work_canton = Some("GE".into());
+        req.residence_canton = Some("VD".into());
+        req.tax_at_source_scale = Some("A0N".into());
+
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.tax_canton.as_deref(), Some("VD"));
+        assert_eq!(r.social_canton.as_deref(), Some("GE"));
+        assert!(r.tax_annual_model, "Vaud applique le modèle annuel");
+        // 6'000 annuels vaudois répartis sur 12, et non 9'000 genevois.
+        assert!((r.projection.periods[0].tax_at_source.unwrap() - 500.0).abs() < 0.01);
+        // 8'000 × 0.043 % = 3.44, la maternité genevoise et rien de vaudois.
+        assert!((r.projection.periods[0].cantonal - 3.44).abs() < 0.01);
+    }
+
+    /// Certains employeurs retiennent selon le canton de leur siège. Le
+    /// réglage bascule le barème sans toucher au social.
+    #[test]
+    fn withholding_at_the_employer_seat_switches_only_the_tax() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_vd_ge_tariffs(&conn);
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.work_canton = Some("GE".into());
+        c.residence_canton = Some("VD".into());
+        c.tax_at_source_canton_source = "work".into();
+        c.tax_at_source = true;
+        c.tax_at_source_scale = Some("A0N".into());
+        c.started_on = Some("2020-01-01".into());
+        upsert_contract_inner(&conn, &c).unwrap();
+
+        let mut req = request(8_000.0);
+        req.income_id = Some("inc1".into());
+        req.terms.tax_at_source = true;
+        let r = net_from_gross_inner(&conn, req).unwrap();
+
+        assert_eq!(r.tax_canton.as_deref(), Some("GE"), "le siège l'emporte");
+        assert_eq!(r.social_canton.as_deref(), Some("GE"));
+        // 9'000 genevois / 12 : le barème du siège, pas celui du domicile.
+        assert!((r.projection.periods[0].tax_at_source.unwrap() - 750.0).abs() < 0.01);
+    }
+
+    /// Un seul canton renseigné — le cas de loin le plus fréquent : il sert aux
+    /// deux, sans rien demander de plus à l'utilisateur.
+    #[test]
+    fn a_single_canton_serves_both_roles() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.work_canton = Some("BE".into());
+        c.residence_canton = None;
+        c.started_on = Some("2020-01-01".into());
+        upsert_contract_inner(&conn, &c).unwrap();
+
+        let mut req = request(8_000.0);
+        req.income_id = Some("inc1".into());
+        let r = net_from_gross_inner(&conn, req).unwrap();
+        assert_eq!(r.tax_canton.as_deref(), Some("BE"));
+        assert_eq!(r.social_canton.as_deref(), Some("BE"));
+    }
+
+    // --- avenants ---
+
+    fn version(income_id: &str, from: &str, to: Option<&str>, gross: f64) -> EmploymentContract {
+        EmploymentContract {
+            income_id: income_id.into(),
+            annual_gross_agreed: Some(gross),
+            salary_periods_per_year: Some(13),
+            lpp_employee_share_pct: Some(3.5),
+            started_on: Some(from.into()),
+            ended_on: to.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// Le cœur du versionnement : une fiche est jugée avec les conditions de sa
+    /// date, pas avec celles d'aujourd'hui.
+    #[test]
+    fn a_payslip_is_checked_against_the_contract_in_force_that_month() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &version("inc1", "2018-04-01", None, 48_000.0)).unwrap();
+        upsert_contract_inner(&conn, &version("inc1", "2021-07-01", None, 50_000.0)).unwrap();
+
+        let june = load_contract_at(&conn, "inc1", "2021-06-30").unwrap().unwrap();
+        assert_eq!(june.annual_gross_agreed, Some(48_000.0));
+        let july = load_contract_at(&conn, "inc1", "2021-07-31").unwrap().unwrap();
+        assert_eq!(july.annual_gross_agreed, Some(50_000.0));
+    }
+
+    /// Enregistrer un avenant clôt la version précédente à la veille : sans
+    /// cela, deux versions se chevaucheraient et « le contrat en vigueur ce
+    /// jour-là » n'aurait pas de réponse.
+    #[test]
+    fn adding_a_version_closes_the_previous_one_the_day_before() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &version("inc1", "2018-04-01", None, 48_000.0)).unwrap();
+        upsert_contract_inner(&conn, &version("inc1", "2021-07-01", None, 50_000.0)).unwrap();
+
+        let versions = load_contract_versions(&conn, "inc1").unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].started_on.as_deref(), Some("2021-07-01"));
+        assert!(versions[0].ended_on.is_none(), "la version courante reste ouverte");
+        assert_eq!(
+            versions[1].ended_on.as_deref(),
+            Some("2021-06-30"),
+            "la précédente est close la veille"
+        );
+    }
+
+    /// Une fiche antérieure au premier contrat saisi ne doit pas perdre tout
+    /// contrôle : on retombe sur la version la plus ancienne.
+    #[test]
+    fn a_payslip_older_than_every_version_falls_back_to_the_first() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        upsert_contract_inner(&conn, &version("inc1", "2018-04-01", None, 48_000.0)).unwrap();
+
+        let old = load_contract_at(&conn, "inc1", "2015-03-31").unwrap();
+        assert!(old.is_some(), "mieux vaut des conditions approchées qu'aucune");
+        assert_eq!(old.unwrap().annual_gross_agreed, Some(48_000.0));
+    }
+
+    /// Modifier une version existante ne crée pas un doublon : c'est une
+    /// correction de saisie, pas un avenant.
+    #[test]
+    fn editing_a_version_updates_it_in_place() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let saved =
+            upsert_contract_inner(&conn, &version("inc1", "2018-04-01", None, 48_000.0)).unwrap();
+
+        let mut fixed = version("inc1", "2018-04-01", None, 49_000.0);
+        fixed.id = saved.id.clone();
+        upsert_contract_inner(&conn, &fixed).unwrap();
+
+        let versions = load_contract_versions(&conn, "inc1").unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].annual_gross_agreed, Some(49_000.0));
+    }
+
+    /// Un contrat sans date d'effet couvre tout : personne ne doit être forcé
+    /// d'inventer une date pour que ses fiches soient contrôlées.
+    #[test]
+    fn a_version_without_a_start_date_covers_everything() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.started_on = None;
+        upsert_contract_inner(&conn, &c).unwrap();
+
+        assert!(load_contract_at(&conn, "inc1", "1999-01-31").unwrap().is_some());
+        assert!(load_contract_at(&conn, "inc1", "2026-01-31").unwrap().is_some());
     }
 }

@@ -74,6 +74,7 @@ export function GrossToNetPanel({
             tax_at_source: contract?.tax_at_source ?? false,
           },
           work_canton: contract?.work_canton ?? null,
+          residence_canton: contract?.residence_canton ?? null,
           tax_at_source_scale: contract?.tax_at_source_scale ?? null,
           tax_at_source_rate_pct: contract?.tax_at_source_rate_pct ?? null,
         }

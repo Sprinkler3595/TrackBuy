@@ -707,6 +707,9 @@ pub struct CreateIncomeReceiptRequest {
 pub struct EmploymentContract {
     pub id: String,
     pub income_id: String,
+    /// Ce qui distingue cette version des autres à l'écran : « Contrat
+    /// initial », « Avenant 2021 — augmentation ».
+    pub label: Option<String>,
     pub employer_name: Option<String>,
     /// IDE de l'employeur, format CHE-123.456.789.
     pub employer_uid: Option<String>,
@@ -714,9 +717,15 @@ pub struct EmploymentContract {
     pub avs_number: Option<String>,
     /// Sert uniquement à déterminer la tranche de bonification LPP.
     pub birth_date: Option<String>,
-    /// Canton de travail : c'est lui qui fixe le barème des allocations
-    /// familiales, pas le canton de domicile.
+    /// Siège de l'employeur : retenues sociales cantonales et caisse
+    /// d'allocations familiales.
     pub work_canton: Option<String>,
+    /// Domicile du salarié : barème d'impôt à la source, qui suit le domicile
+    /// et non le lieu de travail (art. 38 al. 4 let. a LHID).
+    pub residence_canton: Option<String>,
+    /// `residence` ou `work` — certains employeurs retiennent selon le canton
+    /// de leur siège puis reversent. Seule la fiche de salaire tranche.
+    pub tax_at_source_canton_source: String,
     pub activity_rate_pct: Option<f64>,
     pub annual_gross_agreed: Option<f64>,
     /// 12 ou 13 selon que le 13ᵉ salaire est versé séparément.
@@ -726,6 +735,10 @@ pub struct EmploymentContract {
     pub thirteenth_salary: bool,
     pub lpp_fund_name: Option<String>,
     pub lpp_employee_share_pct: Option<f64>,
+    /// `total` = le brut entier est assuré, suppléments compris ; `base` = seul
+    /// le salaire contractuel l'est. La réponse tient au règlement de la caisse
+    /// de pension : elle ne se devine pas, elle se lit.
+    pub lpp_insured_scope: String,
     pub laa_insurer: Option<String>,
     pub laa_nonoccupational_pct: Option<f64>,
     pub ijm_employee_pct: Option<f64>,

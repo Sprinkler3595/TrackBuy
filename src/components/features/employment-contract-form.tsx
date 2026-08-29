@@ -1,19 +1,13 @@
 import { useEffect, useState } from "react"
-import { Briefcase, Save } from "lucide-react"
+import { Briefcase, Plus, Save } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/toast"
 import { ErrorPanel } from "@/components/ui/error-panel"
+import { ContractVersions } from "@/components/features/contract-versions"
 import * as api from "@/lib/tauri"
-
-/// Cantons suisses, code officiel. Le canton de TRAVAIL détermine le barème
-/// des allocations familiales — pas celui de domicile.
-const CANTONS = [
-  "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU",
-  "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS",
-  "ZG", "ZH",
-] as const
+import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
 
 type FormState = Record<string, string | boolean>
 
@@ -27,11 +21,14 @@ const FIELDS_NUMBER = [
 const emptyForm = (incomeId: string): FormState => ({
   id: "",
   income_id: incomeId,
+  label: "",
   employer_name: "",
   employer_uid: "",
   avs_number: "",
   birth_date: "",
   work_canton: "",
+  residence_canton: "",
+  tax_at_source_canton_source: "residence",
   activity_rate_pct: "100",
   annual_gross_agreed: "",
   salary_periods_per_year: "12",
@@ -40,6 +37,7 @@ const emptyForm = (incomeId: string): FormState => ({
   thirteenth_salary: true,
   lpp_fund_name: "",
   lpp_employee_share_pct: "",
+  lpp_insured_scope: "total",
   laa_insurer: "",
   laa_nonoccupational_pct: "",
   ijm_employee_pct: "",
@@ -60,11 +58,14 @@ function toForm(c: api.EmploymentContract): FormState {
   return {
     id: c.id,
     income_id: c.income_id,
+    label: str(c.label),
     employer_name: str(c.employer_name),
     employer_uid: str(c.employer_uid),
     avs_number: str(c.avs_number),
     birth_date: str(c.birth_date),
     work_canton: str(c.work_canton),
+    residence_canton: str(c.residence_canton),
+    tax_at_source_canton_source: c.tax_at_source_canton_source || "residence",
     activity_rate_pct: str(c.activity_rate_pct),
     annual_gross_agreed: str(c.annual_gross_agreed),
     salary_periods_per_year: str(c.salary_periods_per_year),
@@ -73,6 +74,7 @@ function toForm(c: api.EmploymentContract): FormState {
     thirteenth_salary: c.thirteenth_salary,
     lpp_fund_name: str(c.lpp_fund_name),
     lpp_employee_share_pct: str(c.lpp_employee_share_pct),
+    lpp_insured_scope: c.lpp_insured_scope || "total",
     laa_insurer: str(c.laa_insurer),
     laa_nonoccupational_pct: str(c.laa_nonoccupational_pct),
     ijm_employee_pct: str(c.ijm_employee_pct),
@@ -105,11 +107,17 @@ function toContract(f: FormState): api.EmploymentContract {
   return {
     id: String(f.id ?? ""),
     income_id: String(f.income_id),
+    label: text("label"),
     employer_name: text("employer_name"),
     employer_uid: text("employer_uid"),
     avs_number: text("avs_number"),
     birth_date: text("birth_date"),
     work_canton: text("work_canton"),
+    // Domicile non renseigné : c'est qu'il coïncide avec le lieu de
+    // travail — le cas de loin le plus fréquent. On le recopie plutôt
+    // que de laisser le barème d'impôt sans canton.
+    residence_canton: text("residence_canton") ?? text("work_canton"),
+    tax_at_source_canton_source: String(f.tax_at_source_canton_source || "residence"),
     activity_rate_pct: num("activity_rate_pct"),
     annual_gross_agreed: num("annual_gross_agreed"),
     salary_periods_per_year: num("salary_periods_per_year"),
@@ -118,6 +126,7 @@ function toContract(f: FormState): api.EmploymentContract {
     thirteenth_salary: flag("thirteenth_salary"),
     lpp_fund_name: text("lpp_fund_name"),
     lpp_employee_share_pct: num("lpp_employee_share_pct"),
+    lpp_insured_scope: String(f.lpp_insured_scope || "total"),
     laa_insurer: text("laa_insurer"),
     laa_nonoccupational_pct: num("laa_nonoccupational_pct"),
     ijm_employee_pct: num("ijm_employee_pct"),
@@ -200,6 +209,14 @@ export function EmploymentContractForm({
 }) {
   const { toast } = useToast()
   const [form, setForm] = useState<FormState>(() => emptyForm(incomeId))
+  /// Deux cantons distincts sont l'exception, pas la règle : le second champ
+  /// reste caché tant qu'on n'en a pas besoin. Il s'ouvre tout seul quand le
+  /// contrat chargé en porte déjà deux différents.
+  const [otherCanton, setOtherCanton] = useState(false)
+  /// Toutes les versions du contrat. Un avenant n'écrase pas la précédente, il
+  /// lui succède : une fiche de 2019 doit rester jugée avec les conditions de
+  /// 2019.
+  const [versions, setVersions] = useState<api.EmploymentContract[]>([])
   const [params, setParams] = useState<api.PayrollParamsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -216,16 +233,24 @@ export function EmploymentContractForm({
     const load = async () => {
       setLoading(true)
       try {
-        const [contract, p] = await Promise.all([
-          api.getEmploymentContract(incomeId),
+        const [list, p] = await Promise.all([
+          api.getEmploymentContractVersions(incomeId),
           api.getPayrollParams(new Date().getFullYear()),
         ])
         if (cancelled) return
         setParams(p)
+        setVersions(list)
+        // On ouvre sur la version en vigueur — celle qu'on vient consulter
+        // neuf fois sur dix — et non sur la première de la liste.
+        const contract = list.find((c) => c.ended_on == null) ?? list[0] ?? null
         setForm(
           contract
             ? toForm(contract)
             : { ...emptyForm(incomeId), employer_name: defaultEmployerName ?? "" },
+        )
+        setOtherCanton(
+          !!contract?.residence_canton &&
+            contract.residence_canton !== contract.work_canton,
         )
       } catch (e) {
         if (!cancelled) setLoadError(String(e))
@@ -255,7 +280,10 @@ export function EmploymentContractForm({
     try {
       const saved = await api.upsertEmploymentContract(toContract(form))
       setForm(toForm(saved))
-      toast("Contrat enregistré", "success")
+      // Enregistrer une version peut clore la précédente : la liste doit être
+      // relue, sinon elle afficherait deux périodes qui se chevauchent.
+      setVersions(await api.getEmploymentContractVersions(incomeId))
+      toast(isAmendment ? "Avenant enregistré" : "Contrat enregistré", "success")
       onSaved?.(saved)
     } catch (e) {
       toast(`Erreur: ${e}`, "error")
@@ -263,6 +291,43 @@ export function EmploymentContractForm({
       setSaving(false)
     }
   }
+
+  /// Un avenant part des conditions actuelles : on ne renégocie jamais tout,
+  /// on change un salaire ou un taux. Pré-remplir évite de tout ressaisir et,
+  /// surtout, de perdre un taux qu'on aurait oublié de recopier.
+  const startAmendment = () => {
+    const today = new Date().toISOString().slice(0, 10)
+    setForm((f) => ({
+      ...f,
+      id: "",
+      label: `Avenant ${today.slice(0, 4)}`,
+      started_on: today,
+      ended_on: "",
+    }))
+  }
+
+  const selectVersion = (id: string) => {
+    const v = versions.find((c) => c.id === id)
+    if (!v) return
+    setForm(toForm(v))
+    setOtherCanton(!!v.residence_canton && v.residence_canton !== v.work_canton)
+  }
+
+  const removeVersion = async (id: string) => {
+    try {
+      await api.deleteEmploymentContractVersion(id)
+      const list = await api.getEmploymentContractVersions(incomeId)
+      setVersions(list)
+      const next = list.find((c) => c.ended_on == null) ?? list[0] ?? null
+      setForm(next ? toForm(next) : emptyForm(incomeId))
+      toast("Version supprimée", "success")
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    }
+  }
+
+  /// Vrai quand le formulaire décrit une version qui n'existe pas encore.
+  const isAmendment = !str("id") && versions.length > 0
 
   if (loading) {
     return (
@@ -284,12 +349,42 @@ export function EmploymentContractForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <ContractVersions
+        versions={versions}
+        selectedId={str("id") || null}
+        onSelect={selectVersion}
+        onAddAmendment={startAmendment}
+        onDelete={removeVersion}
+      />
+
+      {isAmendment && (
+        <div className="rounded-lg border border-primary/40 bg-primary/5 p-3">
+          <p className="text-sm font-medium">Nouvel avenant</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Les conditions actuelles sont reprises : ne changez que ce qui change. À
+            l'enregistrement, la version précédente sera close la veille de la date d'effet,
+            et vos anciens bulletins continueront d'être contrôlés avec elle.
+          </p>
+        </div>
+      )}
+
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Briefcase className="h-4 w-4" />
-            Employeur
-          </CardTitle>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Briefcase className="h-4 w-4" />
+              Employeur
+            </CardTitle>
+            {/* Quand il n'y a qu'une version, la frise ne s'affiche pas : le
+                bouton doit donc exister ici, sans quoi on ne pourrait jamais
+                créer le premier avenant. */}
+            {versions.length === 1 && !isAmendment && (
+              <Button type="button" variant="outline" size="sm" onClick={startAmendment}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                Ajouter un avenant
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Nom de l'employeur">
@@ -309,10 +404,7 @@ export function EmploymentContractForm({
               placeholder="756.1234.5678.90"
             />
           </Field>
-          <Field
-            label="Canton de travail"
-            hint="C'est lui qui fixe le barème des allocations familiales, pas le canton de domicile."
-          >
+          <Field label="Canton de travail" hint={WORK_CANTON_HINT}>
             <select
               className={inputCls}
               value={str("work_canton")}
@@ -322,12 +414,63 @@ export function EmploymentContractForm({
               {CANTONS.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </Field>
-          <Field label="Début du contrat">
+          {(versions.length > 1 || isAmendment) && (
+            <Field label="Nom de cette version" hint="Ex. « Avenant 2021 — augmentation ».">
+              <Input value={str("label")} onChange={(e) => set("label", e.target.value)} />
+            </Field>
+          )}
+          <Field label="Début du contrat" hint="Date d'effet de cette version.">
             <Input type="date" value={str("started_on")} onChange={(e) => set("started_on", e.target.value)} />
           </Field>
           <Field label="Fin du contrat">
             <Input type="date" value={str("ended_on")} onChange={(e) => set("ended_on", e.target.value)} />
           </Field>
+
+          {/* Le second canton ne s'affiche que pour qui en a besoin. Vivre et
+              travailler dans le même canton est le cas courant : lui imposer
+              deux sélecteurs identiques serait une complication gratuite. */}
+          <div className="sm:col-span-2 lg:col-span-3 space-y-3">
+            <Checkbox
+              label="J'habite dans un autre canton que celui de mon employeur"
+              checked={otherCanton}
+              onChange={(v) => {
+                setOtherCanton(v)
+                if (!v) set("residence_canton", "")
+              }}
+              hint="Par exemple : domicile à Vaud, entreprise basée à Genève."
+            />
+            {otherCanton && (
+              <div className="grid gap-4 rounded-lg border bg-muted/20 p-4 sm:grid-cols-2">
+                <Field label="Canton de domicile" hint={RESIDENCE_CANTON_HINT}>
+                  <select
+                    className={inputCls}
+                    value={str("residence_canton")}
+                    onChange={(e) => set("residence_canton", e.target.value)}
+                  >
+                    <option value="">—</option>
+                    {CANTONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </Field>
+                <Field
+                  label="Barème d'impôt à la source appliqué"
+                  hint="La loi désigne votre canton de domicile. Certains employeurs retiennent malgré tout selon le leur : votre fiche de salaire le dit."
+                >
+                  <select
+                    className={inputCls}
+                    value={str("tax_at_source_canton_source")}
+                    onChange={(e) => set("tax_at_source_canton_source", e.target.value)}
+                  >
+                    <option value="residence">Celui de mon canton de domicile</option>
+                    <option value="work">Celui du canton de mon employeur</option>
+                  </select>
+                </Field>
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  Les retenues sociales cantonales et les allocations familiales suivent
+                  toujours le canton de votre employeur, quel que soit ce réglage.
+                </p>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 

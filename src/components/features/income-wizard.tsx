@@ -10,6 +10,7 @@ import { InlineCreateSelect, type InlineOption } from "@/components/ui/inline-cr
 import { GrossToNetSummary } from "@/components/features/gross-to-net-summary"
 import { useNetFromGross } from "@/hooks/use-net-from-gross"
 import * as api from "@/lib/tauri"
+import { CANTONS } from "@/lib/cantons"
 
 /// Guided creation of an income.
 ///
@@ -38,14 +39,6 @@ const BONUS_TYPES: api.IncomeType[] = ["bonus", "thirteenth"]
 
 const bonusLabel = (t: api.IncomeType, fr: boolean): string =>
   t === "thirteenth" ? (fr ? "13e salaire" : "13th salary") : (fr ? "Prime / bonus" : "Bonus")
-
-/// Canton de TRAVAIL : c'est lui qui détermine le barème d'impôt à la source,
-/// pas le canton de domicile.
-const CANTONS = [
-  "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU",
-  "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS",
-  "ZG", "ZH",
-] as const
 
 /// Nombre de paies dans l'année. Le 13ᵉ salaire versé à part est une période
 /// de plus, pas un mois plus gros : c'est ce qui fait le salaire coordonné LPP.
@@ -309,11 +302,17 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
           await api.upsertEmploymentContract({
             id: "",
             income_id: income.id,
+            label: "Contrat initial",
             employer_name: source,
             employer_uid: null,
             avs_number: null,
             birth_date: birthDate || null,
             work_canton: canton || null,
+            // L'assistant ne demande qu'un canton : le cas courant est d'y
+            // vivre et d'y travailler. Qui habite ailleurs le précisera sur la
+            // fiche du revenu, où la question est posée explicitement.
+            residence_canton: canton || null,
+            tax_at_source_canton_source: "residence",
             activity_rate_pct: optionalNumber(workload),
             annual_gross_agreed: grossMode ? amountValue * periodsPerYear : null,
             salary_periods_per_year: periodsPerYear,
@@ -322,6 +321,10 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
             thirteenth_salary: thirteenth,
             lpp_fund_name: null,
             lpp_employee_share_pct: optionalNumber(lppPct),
+            // Le règlement de caisse décide si les suppléments sont assurés.
+            // « total » est le cas le plus répandu ; la fiche du revenu permet
+            // de le corriger si votre caisse n'assure que le salaire de base.
+            lpp_insured_scope: "total",
             laa_insurer: null,
             laa_nonoccupational_pct: optionalNumber(laaPct),
             ijm_employee_pct: optionalNumber(ijmPct),

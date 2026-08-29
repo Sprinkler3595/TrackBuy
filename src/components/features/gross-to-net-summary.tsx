@@ -189,6 +189,15 @@ export function GrossToNetSummary({
         </p>
       )}
 
+      {result.tax_canton && result.social_canton &&
+        result.tax_canton !== result.social_canton && (
+          <p className="text-xs text-muted-foreground">
+            Impôt à la source au barème de {result.tax_canton} (votre domicile
+            {result.tax_annual_model ? ", modèle annuel" : ""}), retenues sociales
+            selon {result.social_canton} (le siège de votre employeur).
+          </p>
+        )}
+
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
         <ScrollText className="h-3 w-3 shrink-0" />
         {params.estimated

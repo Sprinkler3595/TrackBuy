@@ -1302,6 +1302,9 @@ export interface IncomeReceipt {
 export interface EmploymentContract {
   id: string
   income_id: string
+  /// Ce qui distingue cette version des autres : « Contrat initial »,
+  /// « Avenant 2021 — augmentation ».
+  label: string | null
   employer_name: string | null
   /// IDE, format CHE-123.456.789
   employer_uid: string | null
@@ -1311,7 +1314,14 @@ export interface EmploymentContract {
   birth_date: string | null
   /// Canton de travail — c'est lui qui fixe le barème des allocations
   /// familiales, pas le canton de domicile.
+  /// Siège de l'employeur : retenues sociales cantonales et caisse
+  /// d'allocations familiales.
   work_canton: string | null
+  /// Domicile du salarié : barème d'impôt à la source, qui suit le domicile et
+  /// non le lieu de travail.
+  residence_canton: string | null
+  /// `residence` (la règle) ou `work` (l'employeur retient selon son canton).
+  tax_at_source_canton_source: string
   activity_rate_pct: number | null
   annual_gross_agreed: number | null
   salary_periods_per_year: number | null
@@ -1320,6 +1330,9 @@ export interface EmploymentContract {
   thirteenth_salary: boolean
   lpp_fund_name: string | null
   lpp_employee_share_pct: number | null
+  /// `total` = tout le brut est assuré, suppléments compris ; `base` = seul le
+  /// salaire contractuel l'est.
+  lpp_insured_scope: string
   laa_insurer: string | null
   laa_nonoccupational_pct: number | null
   ijm_employee_pct: number | null
@@ -1560,6 +1573,7 @@ export interface NetFromGrossRequest {
   family_allowance?: number | null
   terms: EmploymentTerms
   work_canton?: string | null
+  residence_canton?: string | null
   tax_at_source_scale?: string | null
   tax_at_source_rate_pct?: number | null
   income_id?: string | null
@@ -1572,6 +1586,9 @@ export interface NetFromGrossResponse {
   tax_source: TaxSource
   tax_tariff_code: string | null
   tax_annual_model: boolean
+  /// Les deux cantons retenus, pour que l'écran dise lequel a servi à quoi.
+  tax_canton: string | null
+  social_canton: string | null
   /// Net d'une période type — le montant à enregistrer pour le revenu.
   net_per_period: number
 }
@@ -1906,6 +1923,14 @@ export const getEmploymentContract = (incomeId: string) =>
 
 export const upsertEmploymentContract = (contract: EmploymentContract) =>
   invoke<EmploymentContract>("upsert_employment_contract", { contract })
+
+/// Toutes les versions d'un contrat, de la plus récente à la plus ancienne.
+/// Un avenant est une version ; il n'écrase pas la précédente, il lui succède.
+export const getEmploymentContractVersions = (incomeId: string) =>
+  invoke<EmploymentContract[]>("get_employment_contract_versions", { incomeId })
+
+export const deleteEmploymentContractVersion = (id: string) =>
+  invoke<void>("delete_employment_contract_version", { id })
 
 /// Contrôle un bulletin déjà enregistré.
 export const checkIncomeReceipt = (receiptId: string) =>
