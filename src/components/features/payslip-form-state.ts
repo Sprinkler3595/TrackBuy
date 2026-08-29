@@ -126,3 +126,59 @@ export function formToReceipt(
     created_at: "",
   }
 }
+
+/// Postes lus par l'IA, et le champ du formulaire où chacun se range.
+///
+/// Cette table vivait à l'intérieur du formulaire de saisie. L'import en lot a
+/// besoin exactement du même mappage : deux copies finiraient par ranger le
+/// même poste dans deux champs différents selon l'écran.
+const EXTRACTION_MAP: Array<[keyof PayslipFormState, keyof api.ExtractedPayslip, string]> = [
+  ["amount", "net_paid", "net"],
+  ["gross_amount", "gross_amount", "brut"],
+  ["base_salary_amount", "base_salary", "salaire de base"],
+  ["thirteenth_amount", "thirteenth", "13ᵉ"],
+  ["overtime_amount", "overtime", "heures sup."],
+  ["overtime_hours", "overtime_hours", "heures"],
+  ["holiday_pay_amount", "holiday_pay", "vacances"],
+  ["bonus_amount", "bonus", "bonus"],
+  ["benefits_in_kind_amount", "benefits_in_kind", "nature"],
+  ["company_car_private_amount", "company_car_private", "part privée véhicule"],
+  ["family_allowance_amount", "family_allowance", "allocations"],
+  ["other_gross_amount", "other_gross", "autre brut"],
+  ["social_charges_amount", "avs_ai_apg", "AVS"],
+  ["ac_amount", "ac", "AC"],
+  ["ac_solidarity_amount", "ac_solidarity", "solidarité AC"],
+  ["pension_amount", "lpp", "LPP"],
+  ["laa_nonoccupational_amount", "laa_nonoccupational", "AANP"],
+  ["ijm_amount", "ijm", "IJM"],
+  ["tax_at_source_amount", "tax_at_source", "impôt source"],
+  ["other_deductions_amount", "other_deductions", "autres retenues"],
+  ["expense_reimbursement_amount", "expense_reimbursement", "frais effectifs"],
+  ["expense_lump_sum_amount", "expense_lump_sum", "frais forfaitaires"],
+  ["period_start", "period_start", "période"],
+  ["period_end", "period_end", "période"],
+  ["period_label", "period_label", "libellé"],
+  ["received_on", "received_on", "date"],
+]
+
+/// Reporte une extraction sur un formulaire, sans rien écraser d'absent :
+/// un poste que l'IA n'a pas lu laisse la valeur en place.
+export function applyExtractionToForm(
+  form: PayslipFormState,
+  x: api.ExtractedPayslip,
+): { form: PayslipFormState; filled: string[] } {
+  const next = { ...form }
+  const filled: string[] = []
+  for (const [field, source, label] of EXTRACTION_MAP) {
+    const v = x[source]
+    if (v == null || v === "") continue
+    next[field] = String(v)
+    filled.push(label)
+  }
+  return { form: next, filled }
+}
+
+/// Résumé lisible de ce qui a été rempli, pour le toast de fin de scan.
+export function extractionSummary(filled: string[]): string {
+  return filled.length ? `${filled.length} champs : ${filled.slice(0, 6).join(", ")}…` : ""
+}

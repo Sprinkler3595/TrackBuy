@@ -16,6 +16,8 @@ import {
   parseMoney,
   type MoneyKey,
   type PayslipFormState,
+  applyExtractionToForm,
+  extractionSummary,
 } from "@/components/features/payslip-form-state"
 import * as api from "@/lib/tauri"
 
@@ -156,45 +158,15 @@ export function PayslipForm({
   /// conformité qui se déclenche derrière — c'est là que se voient les
   /// erreurs de lecture de l'IA autant que celles de l'employeur.
   const applyExtraction = (x: api.ExtractedPayslip): string => {
-    const filled: string[] = []
+    let filled: string[] = []
     setForm((f) => {
-      const next = { ...f }
-      const put = (key: keyof PayslipFormState, v: number | string | null, label: string) => {
-        if (v == null || v === "") return
-        next[key] = String(v)
-        filled.push(label)
-      }
-      put("amount", x.net_paid, "net")
-      put("gross_amount", x.gross_amount, "brut")
-      put("base_salary_amount", x.base_salary, "salaire de base")
-      put("thirteenth_amount", x.thirteenth, "13ᵉ")
-      put("overtime_amount", x.overtime, "heures sup.")
-      put("overtime_hours", x.overtime_hours, "heures")
-      put("holiday_pay_amount", x.holiday_pay, "vacances")
-      put("bonus_amount", x.bonus, "bonus")
-      put("benefits_in_kind_amount", x.benefits_in_kind, "nature")
-      put("company_car_private_amount", x.company_car_private, "part privée véhicule")
-      put("family_allowance_amount", x.family_allowance, "allocations")
-      put("other_gross_amount", x.other_gross, "autre brut")
-      put("social_charges_amount", x.avs_ai_apg, "AVS")
-      put("ac_amount", x.ac, "AC")
-      put("ac_solidarity_amount", x.ac_solidarity, "solidarité AC")
-      put("pension_amount", x.lpp, "LPP")
-      put("laa_nonoccupational_amount", x.laa_nonoccupational, "AANP")
-      put("ijm_amount", x.ijm, "IJM")
-      put("tax_at_source_amount", x.tax_at_source, "impôt source")
-      put("other_deductions_amount", x.other_deductions, "autres retenues")
-      put("expense_reimbursement_amount", x.expense_reimbursement, "frais effectifs")
-      put("expense_lump_sum_amount", x.expense_lump_sum, "frais forfaitaires")
-      put("period_start", x.period_start, "période")
-      put("period_end", x.period_end, "période")
-      put("period_label", x.period_label, "libellé")
-      put("received_on", x.received_on, "date")
-      return next
+      const applied = applyExtractionToForm(f, x)
+      filled = applied.filled
+      return applied.form
     })
     // Les sections repliées cacheraient les champs remplis.
     setOpenSections({ gross: true, deductions: true, expenses: true })
-    return filled.length ? `${filled.length} champs : ${filled.slice(0, 6).join(", ")}…` : ""
+    return extractionSummary(filled)
   }
 
   const handleSubmit = async (ev: React.FormEvent) => {

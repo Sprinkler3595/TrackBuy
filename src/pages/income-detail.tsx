@@ -2,7 +2,7 @@ import { useContext, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
   ArrowLeft, Plus, Trash2, ListChecks, History, Paperclip, Briefcase,
-  Pencil, AlertTriangle, CheckCircle2, FileText,
+  Pencil, AlertTriangle, CheckCircle2, FileText, Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,6 +15,7 @@ import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { EmploymentContractForm } from "@/components/features/employment-contract-form"
 import { GrossToNetPanel } from "@/components/features/gross-to-net-panel"
 import { PayslipForm } from "@/components/features/payslip-form"
+import { PayslipBatchImport } from "@/components/features/payslip-batch-import"
 import {
   emptyPayslipForm,
   receiptToForm,
@@ -112,6 +113,10 @@ export function IncomeDetailPage() {
     void run()
     return () => { cancelled = true }
   }, [tab, receipts])
+
+  /// Import en lot : c'est le chemin d'une reprise d'historique, distinct
+  /// de la saisie d'un bulletin du mois.
+  const [batchOpen, setBatchOpen] = useState(false)
 
   /// Date proposée pour clore l'emploi : le dernier versement connu, sinon
   /// aujourd'hui. Sur un employeur quitté il y a des années, proposer la date
@@ -480,7 +485,13 @@ export function IncomeDetailPage() {
 
       {tab === "receipts" && (
         <div className="space-y-3">
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            {isSalary && (
+              <Button size="sm" variant="outline" onClick={() => setBatchOpen(true)}>
+                <Upload className="h-4 w-4" />
+                Importer un lot
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={() => (showForm ? setShowForm(false) : openNewForm())}
@@ -546,15 +557,13 @@ export function IncomeDetailPage() {
                       <MaskedAmount amount={r.amount} currency={r.currency} visible={amountsVisible} />
                     </p>
                     <div className="flex gap-1 shrink-0">
-                      {report && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setExpandedCheck(expanded ? null : r.id)}
-                        >
-                          {expanded ? t("incomes.hideCheck") : t("incomes.showCheck")}
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setExpandedCheck(expanded ? null : r.id)}
+                      >
+                        {expanded ? t("incomes.hideCheck") : t("incomes.showCheck")}
+                      </Button>
                       <Button variant="ghost" size="icon" onClick={() => openEditForm(r)}>
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -563,8 +572,17 @@ export function IncomeDetailPage() {
                       </Button>
                     </div>
                   </div>
-                  {expanded && report && (
-                    <PayslipCheckPanel report={report} currency={r.currency} />
+                  {expanded && (
+                    <div className="space-y-3">
+                      {report && <PayslipCheckPanel report={report} currency={r.currency} />}
+                      {/* Le PDF du bulletin se consulte ici, à côté du contrôle
+                          qu'il justifie — pas dans une pile commune au revenu où
+                          plus rien ne dit quel mois il documente. */}
+                      <AttachmentsPanel
+                        incomeReceiptId={r.id}
+                        itemDescription={`${i.name} — ${r.period_label ?? formatDate(r.received_on)}`}
+                      />
+                    </div>
                   )}
                 </CardContent>
               </Card>
@@ -612,6 +630,15 @@ export function IncomeDetailPage() {
         onConfirm={handleDeleteReceipt}
         onCancel={() => setDeleteReceiptTarget(null)}
       />
+
+      {batchOpen && (
+        <PayslipBatchImport
+          income={i}
+          existingReceipts={receipts}
+          onClose={() => setBatchOpen(false)}
+          onImported={load}
+        />
+      )}
 
       {/* Clore demande une DATE, pas une confirmation : c'est elle qui situe
           l'emploi dans la carrière, et `ConfirmDialog` ne sait pas la saisir. */}

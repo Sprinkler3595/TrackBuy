@@ -1756,6 +1756,29 @@ export type CreateIncomeReceipt = {
   >
 >
 
+/// Verdict d'une ligne d'un import en lot. Un lot de deux cents fiches ne
+/// peut pas échouer en bloc pour un doublon : chaque ligne a son verdict.
+export interface BulkReceiptResult {
+  /// Position dans le lot envoyé — à utiliser pour recoller le verdict à sa
+  /// ligne, plutôt que l'ordre de retour.
+  index: number
+  status: "created" | "replaced" | "duplicate" | "rejected"
+  receipt_id: string | null
+  existing_id: string | null
+  message: string | null
+}
+
+/// Enregistre plusieurs bulletins en une transaction. Tout est validé avant
+/// la moindre écriture : un lot à moitié importé serait pire que rien.
+export const logIncomeReceiptsBulk = (
+  receipts: CreateIncomeReceipt[],
+  replaceDuplicates = false,
+) =>
+  invoke<BulkReceiptResult[]>("log_income_receipts_bulk", {
+    receipts,
+    replaceDuplicates,
+  })
+
 export const logIncomeReceipt = (receipt: CreateIncomeReceipt) =>
   invoke<IncomeReceipt>("log_income_receipt", { receipt })
 

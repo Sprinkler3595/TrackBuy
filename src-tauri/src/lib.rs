@@ -102,6 +102,7 @@ pub fn run() {
             commands::incomes::delete_income,
             commands::incomes::get_income_receipts,
             commands::incomes::log_income_receipt,
+            commands::incomes::log_income_receipts_bulk,
             commands::incomes::update_income_receipt,
             commands::incomes::delete_income_receipt,
             commands::payroll::get_payroll_params,
