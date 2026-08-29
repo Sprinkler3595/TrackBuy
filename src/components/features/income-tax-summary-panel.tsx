@@ -47,8 +47,15 @@ export function IncomeTaxSummaryPanel({
   if (nothingYet) return null
 
   const pe = summary.professional_expenses
+  // Les années publiées dans le code ne couvrent que 2022-2026 : sans les
+  // années réellement présentes dans les bulletins, une carrière ancienne
+  // serait invisible dans ce sélecteur.
   const years = Array.from(
-    new Set([...summary.params.known_years, new Date().getFullYear()]),
+    new Set([
+      ...summary.params.known_years,
+      ...summary.params.data_years,
+      new Date().getFullYear(),
+    ]),
   ).sort((a, b) => b - a)
 
   const money = (v: number) => (

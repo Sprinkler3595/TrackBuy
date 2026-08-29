@@ -593,6 +593,9 @@ pub struct CreateIncomeRequest {
     pub currency: Option<String>,
     pub status: Option<String>,
     pub started_on: Option<String>,
+    /// Renseigné quand on saisit un emploi déjà terminé : c'est ce qui permet
+    /// de reprendre une carrière employeur par employeur.
+    pub ended_on: Option<String>,
     pub attributed_to_member_id: Option<String>,
     pub notes: Option<String>,
 }

@@ -400,6 +400,9 @@ export type TranslationKeys = {
   "incomes.status": string
   "incomes.startedOn": string
   "incomes.endedOn": string
+  "incomes.endedOnHint": string
+  "incomes.closeIncome": string
+  "incomes.lastPayment": string
   "incomes.notes": string
   "incomes.statusActive": string
   "incomes.statusEnded": string
@@ -897,6 +900,9 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.status": "Statut",
     "incomes.startedOn": "Début",
     "incomes.endedOn": "Fin",
+    "incomes.endedOnHint": "Sert à situer cet emploi dans votre carrière.",
+    "incomes.closeIncome": "Clore ce revenu",
+    "incomes.lastPayment": "Dernier versement",
     "incomes.notes": "Notes",
     "incomes.statusActive": "Actif",
     "incomes.statusEnded": "Terminé",
@@ -1391,6 +1397,9 @@ const translations: Record<Locale, TranslationKeys> = {
     "incomes.status": "Status",
     "incomes.startedOn": "Started",
     "incomes.endedOn": "Ended",
+    "incomes.endedOnHint": "Places this job in your career timeline.",
+    "incomes.closeIncome": "Close this income",
+    "incomes.lastPayment": "Last payment",
     "incomes.notes": "Notes",
     "incomes.statusActive": "Active",
     "incomes.statusEnded": "Ended",

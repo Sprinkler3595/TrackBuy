@@ -48,6 +48,34 @@ pub struct PayrollParamsResponse {
     /// s'ajoutent au sélecteur, sinon une année créée à la main (2027) serait
     /// invisible.
     pub edited_years: Vec<i32>,
+    /// Années où des bulletins ou des certificats existent réellement.
+    ///
+    /// Sans elles, les sélecteurs d'année se limitaient aux années publiées
+    /// dans le code (2022-2026) : une carrière commencée en 2008 était
+    /// littéralement inatteignable à l'écran.
+    pub data_years: Vec<i32>,
+}
+
+/// Années présentes dans les données, du plus récent au plus ancien.
+fn data_years(conn: &rusqlite::Connection) -> Result<Vec<i32>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT y FROM (
+                 SELECT COALESCE(r.fiscal_year, CAST(substr(
+                     COALESCE(r.period_end, r.period_start, r.received_on), 1, 4) AS INTEGER)) AS y
+                 FROM income_receipts r
+                 UNION
+                 SELECT fiscal_year AS y FROM annual_salary_certificates
+             )
+             WHERE y > 1900 ORDER BY y DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let years = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<i32>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(years)
 }
 
 fn edited_years(conn: &rusqlite::Connection) -> Result<Vec<i32>, String> {
@@ -72,6 +100,7 @@ fn params_response(
         known_years: known_years(),
         overridden_fields: resolved.overridden,
         edited_years: edited_years(conn)?,
+        data_years: data_years(conn)?,
     })
 }
 
@@ -1845,7 +1874,8 @@ fn income_tax_summary_inner(
              FROM income_receipts r
              JOIN incomes i ON i.id = r.income_id
              WHERE i.income_type <> 'salary'
-               AND COALESCE(r.fiscal_year, CAST(substr(r.received_on, 1, 4) AS INTEGER)) = ?1
+               AND COALESCE(r.fiscal_year, CAST(substr(
+                COALESCE(r.period_end, r.period_start, r.received_on), 1, 4) AS INTEGER)) = ?1
                AND r.currency = 'CHF'
              GROUP BY i.income_type
              ORDER BY 2 DESC",
@@ -1938,6 +1968,297 @@ fn income_tax_summary_inner(
         affiliated_to_lpp,
         salary_sources: sources,
     })
+}
+
+// ===========================================================================
+// Historique de carrière
+// ===========================================================================
+
+/// Une année de cotisations chez un employeur.
+///
+/// Les postes détaillés sont `Option` parce que les deux sources ne disent pas
+/// la même chose : douze bulletins donnent le détail poste par poste, tandis
+/// qu'un certificat de salaire ne publie qu'un total (rubrique 9 = AVS + AC +
+/// solidarité + AANP confondus). Sur une année où seul le certificat subsiste,
+/// le détail est donc **inconnu** — pas nul.
+#[derive(Debug, Serialize)]
+pub struct ContributionYear {
+    pub year: i32,
+    pub income_id: String,
+    pub income_name: String,
+    pub employer_name: Option<String>,
+    /// Brut total versé dans l'année (rubrique 8).
+    pub gross_total: f64,
+    /// Total des cotisations sociales (rubrique 9). Toujours connu.
+    pub social_total: f64,
+    pub avs_ai_apg: Option<f64>,
+    pub ac: Option<f64>,
+    pub ac_solidarity: Option<f64>,
+    pub laa_nonoccupational: Option<f64>,
+    /// Cotisations au 2ᵉ pilier (rubrique 10.1).
+    pub lpp: f64,
+    /// Indemnités journalières maladie : une retenue réelle sur le bulletin,
+    /// mais absente du certificat de salaire. D'où l'`Option`.
+    pub ijm: Option<f64>,
+    pub other_deductions: Option<f64>,
+    pub tax_at_source: f64,
+    pub net: f64,
+    pub receipt_count: i64,
+    /// `payslips` quand la ligne est reconstituée depuis les bulletins (avec
+    /// le détail), `certificate` quand seul le certificat annuel subsiste.
+    pub source: &'static str,
+    /// Écart de brut entre le certificat reçu et la somme des bulletins,
+    /// quand les deux existent. `None` s'il n'y a pas matière à comparer.
+    /// C'est le signal qu'il manque un bulletin dans l'année.
+    pub certificate_gap: Option<f64>,
+}
+
+/// Totaux de carrière. Un poste dont le détail manque sur au moins une année
+/// est signalé comme partiel : afficher « 84 200 CHF d'AVS versée » alors que
+/// trois années n'ont livré qu'un total serait faux.
+#[derive(Debug, Serialize, Default)]
+pub struct ContributionTotals {
+    pub gross_total: f64,
+    pub social_total: f64,
+    pub lpp: f64,
+    pub tax_at_source: f64,
+    pub net: f64,
+    pub avs_ai_apg: f64,
+    pub ac: f64,
+    /// Postes dont au moins une année n'a pas livré le détail.
+    pub partial_fields: Vec<&'static str>,
+    pub years_covered: i64,
+    pub receipt_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContributionsHistory {
+    /// Triées de l'année la plus récente à la plus ancienne, puis par
+    /// employeur — l'ordre dans lequel on relit une carrière.
+    pub rows: Vec<ContributionYear>,
+    pub first_year: Option<i32>,
+    pub last_year: Option<i32>,
+    pub totals: ContributionTotals,
+}
+
+/// Reconstitue une année depuis les bulletins, avec le détail des retenues.
+///
+/// Volontairement distinct de `compute_certificate` : celui-ci répond au
+/// formulaire 11, qui range les indemnités journalières maladie et les
+/// « autres retenues » hors de la rubrique 9. Un historique de cotisations,
+/// lui, doit les montrer — ce sont bien des montants prélevés sur le salaire.
+fn contributions_from_receipts(receipts: &[&IncomeReceipt]) -> ContributionYear {
+    let sum = |f: fn(&IncomeReceipt) -> Option<f64>| -> f64 {
+        receipts.iter().filter_map(|r| f(r)).sum()
+    };
+
+    let avs = sum(|r| r.social_charges_amount);
+    let ac = sum(|r| r.ac_amount);
+    let solidarity = sum(|r| r.ac_solidarity_amount);
+    let laa = sum(|r| r.laa_nonoccupational_amount);
+    let lpp = sum(|r| r.pension_amount);
+    let ijm = sum(|r| r.ijm_amount);
+    let other = sum(|r| r.other_deductions_amount);
+    let tax = sum(|r| r.tax_at_source_amount);
+
+    // Le brut imprimé fait foi quand il est là ; sinon on recompose depuis les
+    // postes, comme le fait déjà la reconstitution du certificat.
+    let printed: f64 = receipts.iter().filter_map(|r| r.gross_amount).sum();
+    let composed = sum(|r| r.base_salary_amount)
+        + sum(|r| r.thirteenth_amount)
+        + sum(|r| r.overtime_amount)
+        + sum(|r| r.holiday_pay_amount)
+        + sum(|r| r.bonus_amount)
+        + sum(|r| r.benefits_in_kind_amount)
+        + sum(|r| r.company_car_private_amount)
+        + sum(|r| r.other_gross_amount)
+        + sum(|r| r.family_allowance_amount);
+    let gross_total = if printed > 0.0 { printed } else { composed };
+
+    ContributionYear {
+        year: 0,
+        income_id: String::new(),
+        income_name: String::new(),
+        employer_name: None,
+        gross_total,
+        social_total: avs + ac + solidarity + laa,
+        avs_ai_apg: Some(avs),
+        ac: Some(ac),
+        ac_solidarity: Some(solidarity),
+        laa_nonoccupational: Some(laa),
+        lpp,
+        ijm: Some(ijm),
+        other_deductions: Some(other),
+        tax_at_source: tax,
+        // Le net effectivement versé, tel qu'il figure sur les bulletins :
+        // plus fiable qu'une soustraction, qui raterait les frais remboursés.
+        net: receipts.iter().map(|r| r.amount).sum(),
+        receipt_count: receipts.len() as i64,
+        source: "payslips",
+        certificate_gap: None,
+    }
+}
+
+/// Historique complet, tous employeurs et toutes années confondus.
+#[tauri::command]
+pub fn get_contributions_history(
+    state: State<'_, AppState>,
+) -> Result<ContributionsHistory, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    contributions_history_inner(&conn)
+}
+
+fn contributions_history_inner(
+    conn: &rusqlite::Connection,
+) -> Result<ContributionsHistory, String> {
+    // Tous les salaires, terminés compris : c'est précisément l'intérêt.
+    let mut stmt = conn
+        .prepare("SELECT id, name FROM incomes WHERE income_type = 'salary' ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let salaries: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    let mut rows: Vec<ContributionYear> = Vec::new();
+
+    for (income_id, income_name) in salaries {
+        let employer_name = load_contract(conn, &income_id)?
+            .and_then(|c| c.employer_name)
+            .or_else(|| Some(income_name.clone()));
+
+        // Une seule requête sort toute la carrière chez cet employeur ; le
+        // découpage par année se fait ensuite en mémoire.
+        let receipts = load_receipts(conn, &income_id)?;
+
+        let mut years: Vec<i32> = receipts.iter().map(receipt_year).collect();
+        years.extend(certificate_years(conn, &income_id)?);
+        years.retain(|y| *y > 1900);
+        years.sort_unstable();
+        years.dedup();
+
+        for year in years {
+            let of_year: Vec<&IncomeReceipt> =
+                receipts.iter().filter(|r| receipt_year(r) == year).collect();
+            let declared = load_certificate(conn, &income_id, year)?;
+
+            let mut row = if of_year.is_empty() {
+                // Année sans bulletin : seul le certificat subsiste, donc le
+                // détail des cotisations est perdu. On le dit plutôt que de
+                // répartir arbitrairement la rubrique 9.
+                let Some(c) = declared.as_ref() else { continue };
+                ContributionYear {
+                    year,
+                    income_id: income_id.clone(),
+                    income_name: income_name.clone(),
+                    employer_name: employer_name.clone(),
+                    gross_total: c.r8_gross_total.unwrap_or(0.0),
+                    social_total: c.r9_social_contributions.unwrap_or(0.0),
+                    avs_ai_apg: None,
+                    ac: None,
+                    ac_solidarity: None,
+                    laa_nonoccupational: None,
+                    lpp: c.r10_1_lpp_ordinary.unwrap_or(0.0)
+                        + c.r10_2_lpp_buyback.unwrap_or(0.0),
+                    ijm: None,
+                    other_deductions: None,
+                    tax_at_source: c.r12_tax_at_source.unwrap_or(0.0),
+                    net: c.r11_net_salary.unwrap_or(0.0),
+                    receipt_count: 0,
+                    source: "certificate",
+                    certificate_gap: None,
+                }
+            } else {
+                let mut r = contributions_from_receipts(&of_year);
+                r.year = year;
+                r.income_id = income_id.clone();
+                r.income_name = income_name.clone();
+                r.employer_name = employer_name.clone();
+                // Les deux sources existent : l'écart de brut signale un
+                // bulletin manquant, ce qui est l'incident courant quand on
+                // reprend une vieille année.
+                if let Some(declared_gross) = declared.as_ref().and_then(|c| c.r8_gross_total) {
+                    let gap = declared_gross - r.gross_total;
+                    if gap.abs() > 1.0 {
+                        r.certificate_gap = Some(gap);
+                    }
+                }
+                r
+            };
+
+            if row.gross_total == 0.0 && row.net == 0.0 && row.receipt_count == 0 {
+                continue;
+            }
+            row.year = year;
+            rows.push(row);
+        }
+    }
+
+    // De la plus récente à la plus ancienne : on relit une carrière à rebours.
+    rows.sort_by(|a, b| {
+        b.year
+            .cmp(&a.year)
+            .then_with(|| a.income_name.cmp(&b.income_name))
+    });
+
+    let mut totals = ContributionTotals::default();
+    let mut distinct_years: Vec<i32> = rows.iter().map(|r| r.year).collect();
+    distinct_years.sort_unstable();
+    distinct_years.dedup();
+    totals.years_covered = distinct_years.len() as i64;
+
+    for r in &rows {
+        totals.gross_total += r.gross_total;
+        totals.social_total += r.social_total;
+        totals.lpp += r.lpp;
+        totals.tax_at_source += r.tax_at_source;
+        totals.net += r.net;
+        totals.receipt_count += r.receipt_count;
+        match r.avs_ai_apg {
+            Some(v) => totals.avs_ai_apg += v,
+            None => {
+                if !totals.partial_fields.contains(&"avs_ai_apg") {
+                    totals.partial_fields.push("avs_ai_apg");
+                }
+            }
+        }
+        match r.ac {
+            Some(v) => totals.ac += v,
+            None => {
+                if !totals.partial_fields.contains(&"ac") {
+                    totals.partial_fields.push("ac");
+                }
+            }
+        }
+    }
+
+    Ok(ContributionsHistory {
+        first_year: distinct_years.first().copied(),
+        last_year: distinct_years.last().copied(),
+        rows,
+        totals,
+    })
+}
+
+/// Années pour lesquelles un certificat de salaire est enregistré. Une année
+/// dont tous les bulletins ont été perdus n'existe que par là.
+fn certificate_years(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+) -> Result<Vec<i32>, String> {
+    let mut stmt = conn
+        .prepare("SELECT fiscal_year FROM annual_salary_certificates WHERE income_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let years = stmt
+        .query_map([income_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<i32>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(years)
 }
 
 #[cfg(test)]
@@ -2669,5 +2990,190 @@ mod tests {
         let conn = db.conn.lock().unwrap();
         let r = net_from_gross_inner(&conn, request(8_000.0)).unwrap();
         assert!((r.net_per_period - 7_180.575).abs() < 0.01);
+    }
+
+
+    // --- historique de carrière ---
+
+    /// Insère un bulletin détaillé pour une période donnée.
+    fn insert_full_receipt(
+        conn: &rusqlite::Connection,
+        id: &str,
+        income_id: &str,
+        period_start: &str,
+        period_end: &str,
+        received_on: &str,
+        gross: f64,
+    ) {
+        conn.execute(
+            "INSERT INTO income_receipts
+                (id, income_id, received_on, amount, currency, period_start, period_end,
+                 gross_amount, social_charges_amount, ac_amount, pension_amount,
+                 laa_nonoccupational_amount, ijm_amount, tax_at_source_amount,
+                 other_deductions_amount)
+             VALUES (?1, ?2, ?3, ?4, 'CHF', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            rusqlite::params![
+                id,
+                income_id,
+                received_on,
+                gross - 424.0 - 88.0 - 187.43 - 80.0 - 40.0,
+                period_start,
+                period_end,
+                gross,
+                424.0,
+                88.0,
+                187.43,
+                80.0,
+                40.0,
+                0.0,
+                0.0,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Le cas qui départageait les trois définitions d'année fiscale : le
+    /// salaire de décembre, versé le 5 janvier, appartient à décembre. S'en
+    /// remettre à la date d'encaissement décalerait un mois par année sur
+    /// toute une carrière.
+    #[test]
+    fn a_december_payslip_paid_in_january_belongs_to_december() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        insert_full_receipt(
+            &conn, "r1", "inc1", "2019-12-01", "2019-12-31", "2020-01-05", 8_000.0,
+        );
+
+        let h = contributions_history_inner(&conn).unwrap();
+        assert_eq!(h.rows.len(), 1);
+        assert_eq!(h.rows[0].year, 2019, "la période prime sur l'encaissement");
+    }
+
+    /// Deux employeurs, trois années : une ligne par couple, la plus récente
+    /// d'abord, et des totaux de carrière cohérents.
+    #[test]
+    fn the_history_gives_one_row_per_year_and_employer() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status, ended_on)
+             VALUES ('inc2', 'Salaire ANCIEN', 'salary', 'monthly', 'CHF', 'ended', '2018-06-30')",
+            [],
+        )
+        .unwrap();
+
+        insert_full_receipt(&conn, "a1", "inc1", "2020-01-01", "2020-01-31", "2020-01-25", 8_000.0);
+        insert_full_receipt(&conn, "a2", "inc1", "2020-02-01", "2020-02-28", "2020-02-25", 8_000.0);
+        insert_full_receipt(&conn, "b1", "inc2", "2018-01-01", "2018-01-31", "2018-01-25", 5_000.0);
+        insert_full_receipt(&conn, "b2", "inc1", "2019-05-01", "2019-05-31", "2019-05-25", 7_000.0);
+
+        let h = contributions_history_inner(&conn).unwrap();
+        assert_eq!(h.rows.len(), 3, "2020×inc1, 2019×inc1, 2018×inc2");
+        assert_eq!(h.rows[0].year, 2020, "la plus récente d'abord");
+        assert_eq!(h.rows[2].year, 2018);
+        assert_eq!(h.first_year, Some(2018));
+        assert_eq!(h.last_year, Some(2020));
+
+        let y2020 = &h.rows[0];
+        assert_eq!(y2020.receipt_count, 2);
+        assert!((y2020.gross_total - 16_000.0).abs() < 0.01);
+        assert!((y2020.avs_ai_apg.unwrap() - 848.0).abs() < 0.01);
+        // Rubrique 9 : AVS + AC + solidarité + AANP, sans les IJM.
+        assert!((y2020.social_total - (848.0 + 176.0 + 160.0)).abs() < 0.01);
+        assert!((y2020.ijm.unwrap() - 80.0).abs() < 0.01, "les IJM sont montrées à part");
+
+        assert_eq!(h.totals.years_covered, 3);
+        assert_eq!(h.totals.receipt_count, 4);
+        assert!(h.totals.partial_fields.is_empty(), "tout vient des bulletins");
+    }
+
+    /// Une année dont les bulletins ont été perdus n'existe que par son
+    /// certificat : le total des cotisations est connu, leur détail non. Le
+    /// répartir arbitrairement serait inventer.
+    #[test]
+    fn a_year_known_only_by_its_certificate_has_no_breakdown() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        conn.execute(
+            "INSERT INTO annual_salary_certificates
+                (id, income_id, fiscal_year, r8_gross_total, r9_social_contributions,
+                 r10_1_lpp_ordinary, r11_net_salary, r12_tax_at_source)
+             VALUES ('c1', 'inc1', 2011, 72000.0, 5400.0, 2200.0, 64400.0, 0.0)",
+            [],
+        )
+        .unwrap();
+
+        let h = contributions_history_inner(&conn).unwrap();
+        assert_eq!(h.rows.len(), 1);
+        let row = &h.rows[0];
+        assert_eq!(row.year, 2011);
+        assert_eq!(row.source, "certificate");
+        assert_eq!(row.receipt_count, 0);
+        assert!((row.social_total - 5_400.0).abs() < 0.01);
+        assert!(row.avs_ai_apg.is_none(), "le détail est inconnu, pas nul");
+        assert!(row.ijm.is_none());
+        assert!(
+            h.totals.partial_fields.contains(&"avs_ai_apg"),
+            "le total AVS de carrière doit être annoncé comme partiel"
+        );
+    }
+
+    /// Quand les deux sources existent, l'écart de brut trahit un bulletin
+    /// manquant — l'incident courant quand on reprend une vieille année.
+    #[test]
+    fn a_missing_payslip_shows_up_as_a_gap_against_the_certificate() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        // Onze bulletins saisis, douze déclarés par l'employeur.
+        for m in 1..=11 {
+            insert_full_receipt(
+                &conn,
+                &format!("r{m}"),
+                "inc1",
+                &format!("2021-{m:02}-01"),
+                &format!("2021-{m:02}-28"),
+                &format!("2021-{m:02}-25"),
+                8_000.0,
+            );
+        }
+        conn.execute(
+            "INSERT INTO annual_salary_certificates
+                (id, income_id, fiscal_year, r8_gross_total)
+             VALUES ('c1', 'inc1', 2021, 96000.0)",
+            [],
+        )
+        .unwrap();
+
+        let h = contributions_history_inner(&conn).unwrap();
+        let row = &h.rows[0];
+        assert_eq!(row.source, "payslips", "le détail des bulletins l'emporte");
+        assert_eq!(row.receipt_count, 11);
+        assert!(
+            (row.certificate_gap.unwrap() - 8_000.0).abs() < 0.01,
+            "un mois manque à l'appel"
+        );
+    }
+
+    /// Un employeur quitté reste dans l'historique : c'est tout l'objet de
+    /// l'écran.
+    #[test]
+    fn an_ended_employer_stays_in_the_history() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status, ended_on)
+             VALUES ('old', 'Salaire ANCIEN', 'salary', 'monthly', 'CHF', 'ended', '2016-03-31')",
+            [],
+        )
+        .unwrap();
+        insert_full_receipt(&conn, "r1", "old", "2016-01-01", "2016-01-31", "2016-01-25", 5_000.0);
+
+        let h = contributions_history_inner(&conn).unwrap();
+        assert_eq!(h.rows.len(), 1);
+        assert_eq!(h.rows[0].year, 2016);
     }
 }

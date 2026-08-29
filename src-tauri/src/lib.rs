@@ -121,6 +121,7 @@ pub fn run() {
             commands::payroll::compute_salary_certificate,
             commands::payroll::reconcile_salary_certificate,
             commands::payroll::get_income_tax_summary,
+            commands::payroll::get_contributions_history,
             commands::pending_reimbursements::list_pending_reimbursements,
             commands::pending_reimbursements::get_pending_reimbursement,
             commands::pending_reimbursements::create_pending_reimbursement,

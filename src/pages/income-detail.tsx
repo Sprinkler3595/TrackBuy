@@ -5,6 +5,7 @@ import {
   Pencil, AlertTriangle, CheckCircle2, FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
@@ -22,7 +23,7 @@ import {
 import { PayslipCheckPanel } from "@/components/features/payslip-check-panel"
 import { SalaryCertificatePanel } from "@/components/features/salary-certificate-panel"
 import { formatDate, daysUntil, cn } from "@/lib/utils"
-import { monthlyEquivalent } from "@/lib/finance"
+import { monthlyEquivalent, receiptYear } from "@/lib/finance"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
@@ -112,6 +113,12 @@ export function IncomeDetailPage() {
     return () => { cancelled = true }
   }, [tab, receipts])
 
+  /// Date proposée pour clore l'emploi : le dernier versement connu, sinon
+  /// aujourd'hui. Sur un employeur quitté il y a des années, proposer la date
+  /// du jour obligerait à la corriger à chaque fois.
+  const [closeDate, setCloseDate] = useState("")
+  const [closing, setClosing] = useState(false)
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -146,16 +153,47 @@ export function IncomeDetailPage() {
     days <= 7 ? "text-amber-600 dark:text-amber-500" :
     "text-muted-foreground"
 
-  const currentYear = today().slice(0, 4)
-  const yearReceipts = receipts.filter(
-    (r) => String(r.fiscal_year ?? r.received_on.slice(0, 4)) === currentYear,
-  )
+  /// Année montrée par la carte de cumul. Pour un emploi en cours c'est
+  /// l'année courante ; pour un employeur quitté en 2019, l'année courante ne
+  /// contient rien et la carte afficherait 0. On retombe alors sur la dernière
+  /// année réellement cotisée — la seule qui ait un sens à afficher.
+  const summaryYear = (() => {
+    const thisYear = new Date().getFullYear()
+    const years = receipts.map(receiptYear).filter((y) => !Number.isNaN(y))
+    if (years.includes(thisYear)) return thisYear
+    return years.length > 0 ? Math.max(...years) : thisYear
+  })()
+
+  const yearReceipts = receipts.filter((r) => receiptYear(r) === summaryYear)
   const totalYTD = yearReceipts.reduce((acc, r) => acc + r.amount, 0)
   const grossYTD = yearReceipts.reduce((acc, r) => acc + (r.gross_amount ?? 0), 0)
 
   const anomalies = Object.values(checks).filter((c) =>
     c.findings.some((f) => f.severity === "error"),
   ).length
+
+  const openClose = () => {
+    const last = receipts
+      .map((r) => r.period_end || r.received_on)
+      .sort()
+      .pop()
+    setCloseDate(last ?? new Date().toISOString().slice(0, 10))
+  }
+
+  const handleClose = async () => {
+    if (!i || !closeDate) return
+    setClosing(true)
+    try {
+      await api.updateIncome({ ...i, status: "ended", ended_on: closeDate })
+      toast(t("incomes.updated"), "success")
+      setCloseDate("")
+      await load()
+    } catch (e) {
+      toast(`Erreur: ${e}`, "error")
+    } finally {
+      setClosing(false)
+    }
+  }
 
   const handleDelete = async () => {
     try {
@@ -277,6 +315,11 @@ export function IncomeDetailPage() {
             labelShow={t("incomes.showAmounts")}
             labelHide={t("incomes.hideAmounts")}
           />
+          {i.status === "active" && (
+            <Button variant="outline" size="sm" onClick={openClose}>
+              {t("incomes.closeIncome")}
+            </Button>
+          )}
           <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
             <Trash2 className="h-4 w-4" />{t("common.delete")}
           </Button>
@@ -381,7 +424,7 @@ export function IncomeDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader><CardTitle className="text-lg">{t("incomes.totalYTD")} {currentYear}</CardTitle></CardHeader>
+            <CardHeader><CardTitle className="text-lg">{t("incomes.totalYTD")} {summaryYear}</CardTitle></CardHeader>
             <CardContent className="space-y-2">
               <p className="text-3xl font-bold">
                 <MaskedAmount amount={totalYTD} currency={i.currency} visible={amountsVisible} />
@@ -569,6 +612,36 @@ export function IncomeDetailPage() {
         onConfirm={handleDeleteReceipt}
         onCancel={() => setDeleteReceiptTarget(null)}
       />
+
+      {/* Clore demande une DATE, pas une confirmation : c'est elle qui situe
+          l'emploi dans la carrière, et `ConfirmDialog` ne sait pas la saisir. */}
+      {closeDate !== "" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
+            <h3 className="text-lg font-semibold">{t("incomes.closeIncome")}</h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("incomes.endedOnHint")}
+            </p>
+            <div className="mt-4 space-y-2">
+              <label className="text-sm font-medium">{t("incomes.endedOn")}</label>
+              <Input
+                type="date"
+                value={closeDate}
+                onChange={(e) => setCloseDate(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setCloseDate("")} disabled={closing}>
+                {t("common.cancel")}
+              </Button>
+              <Button onClick={handleClose} disabled={closing || !closeDate}>
+                {t("incomes.closeIncome")}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

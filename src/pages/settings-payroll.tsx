@@ -189,7 +189,14 @@ export function PayrollSettings() {
 
   const years = useMemo(() => {
     if (!params) return [currentYear]
-    const all = new Set<number>([...params.known_years, ...params.edited_years, currentYear, year])
+    const all = new Set<number>([
+      ...params.known_years,
+      ...params.edited_years,
+      // Une année où l'on a des bulletins mérite son barème.
+      ...params.data_years,
+      currentYear,
+      year,
+    ])
     return [...all].sort((a, b) => b - a)
   }, [params, currentYear, year])
 

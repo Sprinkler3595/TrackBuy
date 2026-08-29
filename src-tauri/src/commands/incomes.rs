@@ -115,7 +115,16 @@ pub fn get_incomes(
             params.push(Box::new(t.clone()));
         }
     }
-    sql.push_str(" ORDER BY i.next_expected_date");
+    // Les revenus actifs se lisent par échéance : c'est ce qui arrive
+    // bientôt qui intéresse. Les revenus terminés se lisent en sens inverse,
+    // du plus récemment quitté au premier employeur — c'est la chronologie
+    // d'une carrière, et `next_expected_date` n'y veut plus rien dire.
+    sql.push_str(
+        " ORDER BY CASE WHEN i.status = 'ended' THEN 1 ELSE 0 END,
+                   CASE WHEN i.status = 'ended'
+                        THEN COALESCE(i.ended_on, i.started_on, '') END DESC,
+                   i.next_expected_date",
+    );
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         params.iter().map(|p| p.as_ref()).collect();
@@ -162,8 +171,8 @@ pub fn create_income(
     conn.execute(
         "INSERT INTO incomes (id, name, income_type, source_name, payment_card_id,
          billing_cycle, cycle_interval, next_expected_date, current_amount, currency,
-         status, started_on, attributed_to_member_id, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+         status, started_on, ended_on, attributed_to_member_id, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             id,
             income.name,
@@ -177,6 +186,7 @@ pub fn create_income(
             currency,
             status,
             income.started_on,
+            income.ended_on,
             income.attributed_to_member_id,
             income.notes,
         ],

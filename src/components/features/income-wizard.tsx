@@ -154,6 +154,11 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
   const [nextDate, setNextDate] = useState(firstOfNextMonth())
   const [startedOn, setStartedOn] = useState("")
   const [workload, setWorkload] = useState("100")
+  /// Emploi passé : c'est ce qui permet de reprendre une carrière, employeur
+  /// par employeur. Un revenu terminé n'attend plus de versement — sa date
+  /// devient celle du DERNIER, pas du prochain.
+  const [ended, setEnded] = useState(false)
+  const [endedOn, setEndedOn] = useState("")
 
   // --- salaire : brut et taux de l'employeur ---
   /// Le brut est le mode normal. La bascule vers le net existe pour qui n'a
@@ -291,8 +296,9 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
           // et les prévisions doivent compter. Le brut vit au contrat.
           current_amount: netAmount ?? amountValue,
           currency: "CHF",
-          status: "active",
+          status: ended ? "ended" : "active",
           started_on: startedOn || null,
+          ended_on: ended ? endedOn || null : null,
           notes: notes.trim() || null,
         })
         // Le contrat garde ce que l'assistant vient d'apprendre : sans lui, le
@@ -327,7 +333,7 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
             commute_km_per_day: null,
             commute_public_transport_cost_year: null,
             started_on: startedOn || null,
-            ended_on: null,
+            ended_on: ended ? endedOn || null : null,
             notes: null,
             created_at: "",
             updated_at: "",
@@ -541,12 +547,43 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">{fr ? "Prochain versement" : "Next payment"}</label>
+                    <label className="text-sm font-medium">
+                      {ended
+                        ? (fr ? "Dernier versement" : "Last payment")
+                        : (fr ? "Prochain versement" : "Next payment")}
+                    </label>
                     <Input type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{fr ? "Date d'entrée" : "Start date"}</label>
                     <Input type="date" value={startedOn} onChange={(e) => setStartedOn(e.target.value)} />
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-input accent-primary"
+                        checked={ended}
+                        onChange={(e) => {
+                          setEnded(e.target.checked)
+                          // Un emploi clos sans date de fin n'a pas de place
+                          // dans la chronologie : on en propose une.
+                          if (e.target.checked && !endedOn) setEndedOn(today())
+                        }}
+                      />
+                      {fr ? "Cet emploi est terminé" : "This job has ended"}
+                    </label>
+                    {ended && (
+                      <div className="space-y-2 pl-6">
+                        <label className="text-sm font-medium">{fr ? "Date de fin" : "End date"}</label>
+                        <Input type="date" value={endedOn} onChange={(e) => setEndedOn(e.target.value)} />
+                        <p className="text-xs text-muted-foreground">
+                          {fr
+                            ? "Le revenu est enregistré comme terminé : il ne compte plus dans « Ce mois », mais ses bulletins restent dans votre historique de cotisations."
+                            : "The income is recorded as ended: it no longer counts in \"This month\", but its payslips stay in your contribution history."}
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{fr ? "Taux d'activité (%)" : "Workload (%)"}</label>

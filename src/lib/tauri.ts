@@ -1422,6 +1422,9 @@ export interface PayrollParams {
   /// Années pour lesquelles une saisie existe — elles s'ajoutent au
   /// sélecteur, sinon une année créée à la main serait invisible.
   edited_years: number[]
+  /// Années où des bulletins ou des certificats existent réellement. C'est ce
+  /// qui rend une carrière ancienne atteignable dans les sélecteurs d'année.
+  data_years: number[]
 }
 
 /// Valeurs surchargeables d'une année. `null` = « garder la valeur livrée ».
@@ -1527,6 +1530,60 @@ export interface TariffImport {
   imported_at: string
   /// FR, GE, TI, VD, VS taxent le revenu annualisé, pas le mois.
   annual_model: boolean
+}
+
+/// Une année de cotisations chez un employeur.
+///
+/// Les postes détaillés sont `null` quand l'année n'est connue que par son
+/// certificat de salaire : celui-ci ne publie qu'un total (rubrique 9), pas la
+/// répartition. `null` veut donc dire « inconnu », jamais « zéro ».
+export interface ContributionYear {
+  year: number
+  income_id: string
+  income_name: string
+  employer_name: string | null
+  gross_total: number
+  /// Total des cotisations sociales (rubrique 9). Toujours connu.
+  social_total: number
+  avs_ai_apg: number | null
+  ac: number | null
+  ac_solidarity: number | null
+  laa_nonoccupational: number | null
+  lpp: number
+  /// Retenue réelle du bulletin, absente du certificat de salaire.
+  ijm: number | null
+  other_deductions: number | null
+  tax_at_source: number
+  net: number
+  receipt_count: number
+  /// `payslips` = reconstituée depuis les bulletins, avec le détail.
+  /// `certificate` = seul le certificat annuel subsiste.
+  source: "payslips" | "certificate"
+  /// Écart de brut entre le certificat reçu et la somme des bulletins :
+  /// le signal qu'un bulletin manque à l'année.
+  certificate_gap: number | null
+}
+
+export interface ContributionTotals {
+  gross_total: number
+  social_total: number
+  lpp: number
+  tax_at_source: number
+  net: number
+  avs_ai_apg: number
+  ac: number
+  /// Postes dont au moins une année n'a pas livré le détail : leur total est
+  /// donc incomplet, et l'écran doit le dire.
+  partial_fields: string[]
+  years_covered: number
+  receipt_count: number
+}
+
+export interface ContributionsHistory {
+  rows: ContributionYear[]
+  first_year: number | null
+  last_year: number | null
+  totals: ContributionTotals
 }
 
 export type FindingSeverity = "ok" | "info" | "warn" | "error"
@@ -1643,6 +1700,8 @@ export const createIncome = (income: {
   currency?: string
   status?: IncomeStatus
   started_on?: string | null
+  /// Emploi déjà terminé : date de fin.
+  ended_on?: string | null
   attributed_to_member_id?: string | null
   notes?: string | null
 }) => invoke<Income>("create_income", { income })
@@ -1773,6 +1832,11 @@ export const reconcileSalaryCertificate = (incomeId: string, year: number) =>
 /// Base imposable et déductions liées au revenu, pour une année fiscale.
 export const getIncomeTaxSummary = (year: number, options?: { working_days?: number }) =>
   invoke<IncomeTaxSummary>("get_income_tax_summary", { year, options: options ?? null })
+
+/// Cotisations de toute la carrière, une ligne par année et par employeur.
+/// Les employeurs quittés y figurent : c'est tout l'objet de l'écran.
+export const getContributionsHistory = () =>
+  invoke<ContributionsHistory>("get_contributions_history")
 
 // Polymorphic attachments
 export const getIncomeAttachments = (incomeId: string) =>

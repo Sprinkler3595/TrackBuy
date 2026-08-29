@@ -684,7 +684,8 @@ pub fn export_income_receipts_csv(state: State<'_, AppState>) -> Result<String, 
         .prepare(
             "SELECT r.received_on, i.name, i.income_type, r.period_label,
                     r.period_start, r.period_end,
-                    COALESCE(r.fiscal_year, CAST(substr(r.received_on, 1, 4) AS INTEGER)),
+                    COALESCE(r.fiscal_year, CAST(substr(
+                COALESCE(r.period_end, r.period_start, r.received_on), 1, 4) AS INTEGER)),
                     r.amount, r.currency, r.gross_amount,
                     r.base_salary_amount, r.thirteenth_amount, r.overtime_amount,
                     r.overtime_hours, r.holiday_pay_amount, r.bonus_amount,
