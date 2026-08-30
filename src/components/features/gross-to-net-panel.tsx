@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/toast"
 import { GrossToNetSummary } from "@/components/features/gross-to-net-summary"
 import { useNetFromGross } from "@/hooks/use-net-from-gross"
+import { bracketForAge, lppAge, nextBracket } from "@/lib/lpp-plan"
 import { unitLabel } from "@/lib/supplements"
 import { formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
@@ -247,7 +248,60 @@ export function GrossToNetPanel({
           error={error}
           currency={income.currency}
         />
+
+        {/* Le plan par tranches est invisible dans le décompte : la LPP n'y est
+            qu'un montant. Nommer la tranche appliquée et la date du palier
+            suivant évite d'avoir à ouvrir l'éditeur pour comprendre d'où sort
+            le chiffre — et rassure sur le fait que ça changera tout seul. */}
+        <LppBracketNote contract={contract} year={year} />
       </CardContent>
     </Card>
+  )
+}
+
+/// Quelle tranche du plan de prévoyance a servi, et quand vient la suivante.
+///
+/// Se tait quand il n'y a pas de plan : la grande majorité des contrats n'en
+/// ont qu'un taux fixe, et leur imposer une ligne de plus serait du bruit.
+function LppBracketNote({
+  contract,
+  year,
+}: {
+  contract: api.EmploymentContract | null
+  year: number
+}) {
+  const [plan, setPlan] = useState<api.LppPlanBracket[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    const id = contract?.id
+    if (!id) {
+      setPlan([])
+      return
+    }
+    ;(async () => {
+      try {
+        const list = await api.getLppPlan(id)
+        if (!cancelled) setPlan(list)
+      } catch {
+        if (!cancelled) setPlan([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [contract?.id])
+
+  if (plan.length === 0) return null
+
+  const age = lppAge(contract?.birth_date, year)
+  const current = bracketForAge(plan, age)
+  const next = nextBracket(plan, age, year)
+  if (!current) return null
+
+  return (
+    <p className="text-xs text-muted-foreground">
+      2ᵉ pilier : tranche {current.age_from}–{current.age_to} ans ({current.employee_pct} % à
+      votre charge sur {current.total_pct} % au total).
+      {next && ` Au 1ᵉʳ janvier ${next.year}, ce sera ${next.bracket.employee_pct} %.`}
+    </p>
   )
 }

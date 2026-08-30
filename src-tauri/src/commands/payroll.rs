@@ -21,7 +21,8 @@ use uuid::Uuid;
 
 use crate::commands::auth::AppState;
 use crate::db::models::{
-    EmploymentContract, IncomeReceipt, ReceiptSupplement, SalaryCertificate, SupplementRate,
+    EmploymentContract, IncomeReceipt, LppPlanBracket, ReceiptSupplement, SalaryCertificate,
+    SupplementRate,
 };
 use crate::payroll::tax_at_source::{
     children_from_code, parse_tariff_file, tax_for_base, uses_annual_model, TariffRow,
@@ -866,6 +867,7 @@ fn upsert_contract_inner(
     if let Some(previous_id) = previous {
         if previous_id != id {
             copy_rates(conn, &previous_id, &id)?;
+            copy_lpp_plan(conn, &previous_id, &id)?;
         }
     }
 
@@ -1339,6 +1341,11 @@ fn net_from_gross_inner(
         terms.lpp_employee_share_pct = terms.lpp_employee_share_pct.or(c.lpp_employee_share_pct);
         terms.laa_nonoccupational_pct = terms.laa_nonoccupational_pct.or(c.laa_nonoccupational_pct);
         terms.ijm_employee_pct = terms.ijm_employee_pct.or(c.ijm_employee_pct);
+        // Le plan par tranches passe APRÈS le repli sur le taux fixe : quand
+        // une tranche couvre l'âge de l'année projetée, c'est elle qui fait
+        // foi, y compris contre un taux saisi à l'écran qui daterait d'un
+        // palier précédent.
+        apply_lpp_plan(conn, &mut terms, &c.id, req.year)?;
     }
     // Deux cantons, deux rôles. Le siège de l'employeur commande le social ;
     // le domicile commande l'impôt à la source. Les confondre donne
@@ -1580,6 +1587,174 @@ fn upsert_cantonal_inner(
 // ===========================================================================
 // Barème d'entreprise des suppléments
 // ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Plan de prévoyance : les tranches d'âge du 2ᵉ pilier
+// ---------------------------------------------------------------------------
+
+const PLAN_COLUMNS: &str =
+    "id, contract_id, age_from, age_to, total_pct, employee_pct";
+
+fn row_to_plan_bracket(row: &rusqlite::Row<'_>) -> rusqlite::Result<LppPlanBracket> {
+    Ok(LppPlanBracket {
+        id: row.get(0)?,
+        contract_id: row.get(1)?,
+        age_from: row.get(2)?,
+        age_to: row.get(3)?,
+        total_pct: row.get(4)?,
+        employee_pct: row.get(5)?,
+    })
+}
+
+pub(crate) fn load_lpp_plan(
+    conn: &rusqlite::Connection,
+    contract_id: &str,
+) -> Result<Vec<LppPlanBracket>, String> {
+    let sql = format!(
+        "SELECT {PLAN_COLUMNS} FROM lpp_plan_brackets
+         WHERE contract_id = ?1 ORDER BY age_from"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([contract_id], row_to_plan_bracket)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_lpp_plan(
+    state: State<'_, AppState>,
+    contract_id: String,
+) -> Result<Vec<LppPlanBracket>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    load_lpp_plan(&conn, &contract_id)
+}
+
+#[tauri::command]
+pub fn upsert_lpp_plan_bracket(
+    state: State<'_, AppState>,
+    bracket: LppPlanBracket,
+) -> Result<Vec<LppPlanBracket>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    upsert_plan_bracket_inner(&conn, &bracket)?;
+    load_lpp_plan(&conn, &bracket.contract_id)
+}
+
+fn upsert_plan_bracket_inner(
+    conn: &rusqlite::Connection,
+    b: &LppPlanBracket,
+) -> Result<String, String> {
+    if b.age_from < 0 || b.age_to < b.age_from {
+        return Err("La tranche doit se terminer après son début.".into());
+    }
+    if b.total_pct < 0.0 || b.employee_pct < 0.0 {
+        return Err("Un taux de cotisation ne peut pas être négatif.".into());
+    }
+    // Art. 66 al. 1 LPP : l'employeur finance au moins autant que le salarié.
+    // Un plan qui dit l'inverse est illégal, pas seulement inhabituel — on
+    // refuse de l'enregistrer plutôt que de calculer une retenue indue.
+    if b.employee_pct > b.total_pct / 2.0 + 1e-9 {
+        return Err(format!(
+            "Votre part ({} %) dépasse la moitié du total ({} %). L'employeur doit financer au moins autant que vous (art. 66 al. 1 LPP).",
+            b.employee_pct, b.total_pct
+        ));
+    }
+    let id = if b.id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        b.id.clone()
+    };
+    conn.execute(
+        "INSERT INTO lpp_plan_brackets
+            (id, contract_id, age_from, age_to, total_pct, employee_pct)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+            age_from = excluded.age_from,
+            age_to = excluded.age_to,
+            total_pct = excluded.total_pct,
+            employee_pct = excluded.employee_pct",
+        rusqlite::params![
+            id,
+            b.contract_id,
+            b.age_from,
+            b.age_to,
+            b.total_pct,
+            b.employee_pct
+        ],
+    )
+    .map_err(|e| {
+        if e.to_string().contains("UNIQUE") {
+            format!("Une tranche commence déjà à {} ans.", b.age_from)
+        } else {
+            e.to_string()
+        }
+    })?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn delete_lpp_plan_bracket(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    conn.execute("DELETE FROM lpp_plan_brackets WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Recopie le plan d'une version de contrat sur une autre, à la création d'un
+/// avenant — un plan de prévoyance change bien plus rarement qu'un salaire.
+fn copy_lpp_plan(
+    conn: &rusqlite::Connection,
+    from_contract: &str,
+    to_contract: &str,
+) -> Result<(), String> {
+    for b in load_lpp_plan(conn, from_contract)? {
+        upsert_plan_bracket_inner(
+            conn,
+            &LppPlanBracket {
+                id: String::new(),
+                contract_id: to_contract.to_string(),
+                ..b
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Applique le plan de prévoyance aux termes, pour une année fiscale donnée.
+///
+/// C'est ici que « je passe un palier » devient automatique : l'âge LPP vaut
+/// `année − année de naissance`, donc changer d'année suffit à changer de
+/// tranche, sans que personne ait à retoucher un taux le 1ᵉʳ janvier.
+///
+/// Le taux fixe du contrat reste le repli — un plan incomplet ne doit pas
+/// effacer ce qui était déjà su.
+pub(crate) fn apply_lpp_plan(
+    conn: &rusqlite::Connection,
+    terms: &mut EmploymentTerms,
+    contract_id: &str,
+    fiscal_year: i32,
+) -> Result<(), String> {
+    let Some(age) = terms
+        .birth_date
+        .as_deref()
+        .and_then(|d| crate::payroll::lpp_age(d, fiscal_year))
+    else {
+        return Ok(());
+    };
+    let plan = load_lpp_plan(conn, contract_id)?;
+    if let Some(b) = crate::payroll::lpp_plan_bracket(&plan, age) {
+        terms.lpp_employee_share_pct = Some(b.employee_pct);
+    }
+    Ok(())
+}
 
 const RATE_COLUMNS: &str = "id, contract_id, code, label, unit, amount, sort_order";
 
@@ -1944,10 +2119,15 @@ fn build_report(
     // quel avenant s'appliquait. Une fiche de juin relève du contrat de
     // juin, même si une augmentation a pris effet en juillet.
     let contract = load_contract_at(conn, income_id, sort_key)?;
-    let terms = contract
+    let mut terms = contract
         .as_ref()
         .map(EmploymentTerms::from)
         .unwrap_or_default();
+    // La tranche du plan est celle de l'année du BULLETIN, pas de l'année en
+    // cours : une fiche de 2019 se contrôle avec le palier qu'on avait alors.
+    if let Some(c) = &contract {
+        apply_lpp_plan(conn, &mut terms, &c.id, input.fiscal_year)?;
+    }
 
     let receipts = load_receipts(conn, income_id)?;
     let ytd = ytd_before(&receipts, input.fiscal_year, sort_key, exclude_id);
@@ -4799,5 +4979,132 @@ mod tests {
         assert_eq!(slugify("Dimanche travaillé"), "dimanche-travaille");
         assert_eq!(slugify("  Piquet de nuit  "), "piquet-de-nuit");
         assert_eq!(slugify("Astreinte (7 j)"), "astreinte-7-j");
+    }
+    // =======================================================================
+    // Plan de prévoyance par tranches d'âge
+    // =======================================================================
+
+    fn bracket(contract_id: &str, from: i32, to: i32, total: f64, employee: f64) -> LppPlanBracket {
+        LppPlanBracket {
+            id: String::new(),
+            contract_id: contract_id.into(),
+            age_from: from,
+            age_to: to,
+            total_pct: total,
+            employee_pct: employee,
+        }
+    }
+
+    /// Le cœur de la demande : franchir un palier ne demande AUCUNE
+    /// intervention. L'âge LPP vaut « année − année de naissance », donc
+    /// changer d'année fiscale suffit à changer de tranche.
+    #[test]
+    fn crossing_an_age_bracket_changes_the_rate_on_its_own() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        // 40 ans au sens LPP en 2026, 41 en 2027.
+        c.birth_date = Some("1986-08-15".into());
+        c.lpp_employee_share_pct = Some(9.9);
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 5.0)).unwrap();
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 40, 65, 15.0, 7.5)).unwrap();
+
+        let share_in = |year: i32| {
+            let mut terms = EmploymentTerms::from(&saved);
+            apply_lpp_plan(&conn, &mut terms, &saved.id, year).unwrap();
+            terms.lpp_employee_share_pct
+        };
+
+        assert_eq!(share_in(2025), Some(5.0), "39 ans : première tranche");
+        assert_eq!(share_in(2026), Some(7.5), "40 ans : le palier est franchi");
+        assert_eq!(share_in(2027), Some(7.5));
+    }
+
+    /// Un trou dans le plan ne doit pas effacer ce qui était déjà su : le taux
+    /// fixe du contrat reprend la main.
+    #[test]
+    fn an_age_outside_the_plan_falls_back_to_the_flat_rate() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.birth_date = Some("2004-03-01".into());
+        c.lpp_employee_share_pct = Some(3.5);
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 65, 10.0, 5.0)).unwrap();
+
+        // 22 ans en 2026 : aucune tranche ne le couvre.
+        let mut terms = EmploymentTerms::from(&saved);
+        apply_lpp_plan(&conn, &mut terms, &saved.id, 2026).unwrap();
+        assert_eq!(terms.lpp_employee_share_pct, Some(3.5));
+    }
+
+    /// Sans date de naissance, aucun âge n'est calculable : le plan se tait
+    /// plutôt que de retenir la première tranche venue.
+    #[test]
+    fn without_a_birth_date_the_plan_stays_out_of_it() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.birth_date = None;
+        c.lpp_employee_share_pct = Some(4.0);
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 65, 10.0, 5.0)).unwrap();
+
+        let mut terms = EmploymentTerms::from(&saved);
+        apply_lpp_plan(&conn, &mut terms, &saved.id, 2026).unwrap();
+        assert_eq!(terms.lpp_employee_share_pct, Some(4.0));
+    }
+
+    /// Art. 66 al. 1 LPP : l'employeur finance au moins autant que le salarié.
+    /// Un plan qui dit l'inverse est illégal, pas seulement inhabituel — on
+    /// refuse de l'enregistrer plutôt que de calculer une retenue indue.
+    #[test]
+    fn an_employee_share_above_half_the_total_is_refused() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let saved = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+
+        let err = upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 6.0))
+            .unwrap_err();
+        assert!(err.contains("66"), "le motif légal doit être nommé : {err}");
+
+        // Moitié-moitié pile passe, et une part plus petite aussi.
+        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 5.0)).is_ok());
+        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 40, 65, 15.0, 6.0)).is_ok());
+
+        // Une tranche qui finit avant de commencer n'a pas de sens.
+        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 50, 45, 10.0, 5.0)).is_err());
+    }
+
+    /// Un avenant hérite du plan : un règlement de caisse change bien plus
+    /// rarement qu'un salaire, et le resaisir ferait sortir des plans à trous.
+    #[test]
+    fn an_amendment_inherits_the_pension_plan() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let v1 =
+            upsert_contract_inner(&conn, &version("inc1", "2019-01-01", None, 48_000.0)).unwrap();
+        upsert_plan_bracket_inner(&conn, &bracket(&v1.id, 25, 39, 10.0, 5.0)).unwrap();
+
+        let v2 =
+            upsert_contract_inner(&conn, &version("inc1", "2021-01-01", None, 52_000.0)).unwrap();
+        assert_ne!(v2.id, v1.id);
+        let inherited = load_lpp_plan(&conn, &v2.id).unwrap();
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].employee_pct, 5.0);
+        assert_eq!(inherited[0].age_from, 25);
+
+        // Et le plan suit la suppression de sa version.
+        conn.execute("DELETE FROM employment_contracts WHERE id = ?1", [&v2.id])
+            .unwrap();
+        assert!(load_lpp_plan(&conn, &v2.id).unwrap().is_empty());
+        assert_eq!(load_lpp_plan(&conn, &v1.id).unwrap().len(), 1, "l'autre version est intacte");
     }
 }

@@ -1669,6 +1669,24 @@ export interface ContributionsHistory {
   totals: ContributionTotals
 }
 
+/// Une tranche du plan de prévoyance : « de 25 à 39 ans, 10 % au total dont
+/// 5 % à ma charge ».
+///
+/// Les âges s'entendent au sens LPP — `année civile − année de naissance` —
+/// donc un palier se franchit au 1ᵉʳ janvier, pas le jour de l'anniversaire.
+export interface LppPlanBracket {
+  id: string
+  contract_id: string
+  /// Bornes incluses. Quand deux tranches se recouvrent sur une année — « 18 à
+  /// 25 » puis « 25 à 40 » — c'est celle qui commence le plus tard qui gagne.
+  age_from: number
+  age_to: number
+  /// Cotisation totale, employeur et salarié réunis.
+  total_pct: number
+  /// Votre part. La part patronale s'en déduit.
+  employee_pct: number
+}
+
 /// Une ligne du barème de suppléments d'une entreprise : astreinte à la
 /// semaine, samedi travaillé, dimanche travaillé…
 ///
@@ -1980,6 +1998,18 @@ export const getEmploymentContractVersions = (incomeId: string) =>
 
 export const deleteEmploymentContractVersion = (id: string) =>
   invoke<void>("delete_employment_contract_version", { id })
+
+/// Plan de prévoyance d'une version de contrat.
+export const getLppPlan = (contractId: string) =>
+  invoke<LppPlanBracket[]>("get_lpp_plan", { contractId })
+
+/// Refuse une tranche dont votre part dépasse la moitié du total
+/// (art. 66 al. 1 LPP), ou dont les bornes sont inversées.
+export const upsertLppPlanBracket = (bracket: LppPlanBracket) =>
+  invoke<LppPlanBracket[]>("upsert_lpp_plan_bracket", { bracket })
+
+export const deleteLppPlanBracket = (id: string) =>
+  invoke<void>("delete_lpp_plan_bracket", { id })
 
 /// Barème de suppléments d'une version de contrat.
 export const getSupplementRates = (contractId: string) =>

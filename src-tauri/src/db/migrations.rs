@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 33;
+pub const CURRENT_SCHEMA_VERSION: i64 = 34;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -129,6 +129,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 33 {
         migrate_v33(conn)?;
+    }
+    if current_version < 34 {
+        migrate_v34(conn)?;
     }
 
     Ok(())
@@ -2235,6 +2238,47 @@ fn migrate_v33(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (33);
         "
     ).map_err(|e| format!("Migration v33 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v34 — le plan de prévoyance de l'entreprise, par tranches d'âge.
+///
+/// La part employé au 2ᵉ pilier était un scalaire unique. Or aucun plan suisse
+/// ne fonctionne comme ça : la cotisation monte par paliers d'âge, et chaque
+/// palier a sa répartition entre l'employeur et le salarié — 8 % dont 4 à votre
+/// charge entre 18 et 25 ans, 10 % dont 5 ensuite, et rien n'oblige un
+/// employeur à s'en tenir à moitié-moitié.
+///
+/// Avec un taux fixe, le salarié voyait sa retenue projetée figée à vie et
+/// devait la corriger à la main le 1ᵉʳ janvier suivant chaque anniversaire de
+/// palier — un rendez-vous qu'on manque forcément. Les tranches sont
+/// rattachées à une VERSION de contrat, comme le barème de suppléments : un
+/// changement de plan se signe par un avenant, et une fiche de 2019 doit
+/// rester lue avec le plan de 2019.
+///
+/// `total_pct` sert au contrôle de l'art. 66 al. 1 LPP : l'employeur doit
+/// financer au moins autant que le salarié. Le stocker plutôt que de le
+/// déduire évite d'avoir deux vérités sur la part patronale.
+fn migrate_v34(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE lpp_plan_brackets (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL,
+            age_from INTEGER NOT NULL,
+            age_to INTEGER NOT NULL,
+            total_pct REAL NOT NULL,
+            employee_pct REAL NOT NULL,
+            FOREIGN KEY (contract_id) REFERENCES employment_contracts(id) ON DELETE CASCADE,
+            UNIQUE (contract_id, age_from)
+        );
+        CREATE INDEX idx_lpp_plan_contract
+            ON lpp_plan_brackets(contract_id, age_from);
+
+        INSERT INTO schema_version (version) VALUES (34);
+        "
+    ).map_err(|e| format!("Migration v34 failed: {}", e))?;
 
     Ok(())
 }

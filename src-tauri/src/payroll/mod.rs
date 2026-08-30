@@ -270,6 +270,35 @@ pub fn lpp_age(birth_date: &str, year: i32) -> Option<i32> {
     Some(year - birth_year)
 }
 
+/// La tranche du plan de prévoyance qui couvre un âge, s'il y en a une.
+///
+/// Deux règles, toutes deux dictées par la façon dont les gens écrivent leur
+/// plan plutôt que par une élégance de code :
+///
+///   - **les bornes sont incluses** aux deux extrémités ;
+///   - **en cas de recouvrement, la tranche qui commence le plus tard
+///     l'emporte.** « De 18 à 25 ans » puis « de 25 à 40 » est la formulation
+///     courante, et à 25 ans c'est bien la seconde qui s'applique. Refuser ces
+///     bornes obligerait à saisir 24 là où le règlement imprime 25.
+///
+/// `None` quand aucune tranche ne couvre l'âge : un trou dans le plan est une
+/// information, pas un zéro. L'appelant retombe alors sur le taux fixe, et
+/// l'écran le dit.
+pub fn lpp_plan_bracket<T: AgeBracket>(plan: &[T], age: i32) -> Option<&T> {
+    plan.iter()
+        .filter(|b| age >= b.age_from() && age <= b.age_to())
+        .max_by_key(|b| b.age_from())
+}
+
+/// Tout ce que la résolution a besoin de savoir d'une tranche : ses bornes.
+/// Ce qu'elle contient — taux, part employé — regarde l'appelant, qui lit la
+/// tranche rendue. L'abstraction évite de faire remonter `db::models` dans le
+/// calcul, qui doit rester ignorant du stockage.
+pub trait AgeBracket {
+    fn age_from(&self) -> i32;
+    fn age_to(&self) -> i32;
+}
+
 /// Part privée d'un véhicule d'entreprise pour un mois : 0.9 % du prix
 /// d'achat HT, avec un minimum. Couvre aussi le trajet domicile-travail
 /// depuis 2022 (d'où la case F du certificat de salaire).
@@ -1200,6 +1229,34 @@ mod tests {
         assert_eq!(p.effective_year, 2023);
         assert_eq!(p.lpp_entry_threshold, 22_050.0);
         assert_eq!(p.ac_solidarity_employee_pct, 0.0, "aboli au 1.1.2023");
+    }
+
+    /// La règle de recouvrement, telle que les plans sont écrits.
+    #[test]
+    fn the_later_bracket_wins_where_two_overlap() {
+        struct B(i32, i32);
+        impl AgeBracket for B {
+            fn age_from(&self) -> i32 { self.0 }
+            fn age_to(&self) -> i32 { self.1 }
+        }
+        // « De 18 à 25 ans », puis « de 25 à 40 » : la formulation courante,
+        // avec sa borne partagée.
+        let plan = [B(18, 25), B(25, 40), B(40, 65)];
+
+        assert_eq!(lpp_plan_bracket(&plan, 20).map(|b| b.0), Some(18));
+        assert_eq!(
+            lpp_plan_bracket(&plan, 25).map(|b| b.0),
+            Some(25),
+            "à la borne partagée, c'est la tranche qui commence là qui s'applique"
+        );
+        assert_eq!(lpp_plan_bracket(&plan, 39).map(|b| b.0), Some(25));
+        assert_eq!(lpp_plan_bracket(&plan, 40).map(|b| b.0), Some(40));
+        assert_eq!(lpp_plan_bracket(&plan, 65).map(|b| b.0), Some(40));
+
+        // Hors du plan : rien, et surtout pas une tranche approchante.
+        assert!(lpp_plan_bracket(&plan, 17).is_none());
+        assert!(lpp_plan_bracket(&plan, 66).is_none());
+        assert!(lpp_plan_bracket::<B>(&[], 30).is_none());
     }
 
     /// « Tout est optionnel » doit valoir jusqu'au décodage. Les drapeaux ne

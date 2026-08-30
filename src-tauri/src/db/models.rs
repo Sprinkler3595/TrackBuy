@@ -1003,6 +1003,43 @@ pub struct CreateBankMatchRuleRequest {
     pub notes: Option<String>,
 }
 
+/// Une tranche du plan de prévoyance : « de 25 à 34 ans, 10 % au total dont
+/// 5 % à ma charge ».
+///
+/// Rattachée à UNE version de contrat, comme le barème de suppléments : un
+/// changement de plan se signe par un avenant, et une fiche de 2019 doit
+/// rester lue avec le plan de 2019.
+///
+/// `age_from` et `age_to` s'entendent au sens LPP — `année civile − année de
+/// naissance` — donc le passage d'un palier tombe au 1ᵉʳ janvier, pas le jour
+/// de l'anniversaire.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LppPlanBracket {
+    pub id: String,
+    pub contract_id: String,
+    /// Bornes incluses toutes les deux. Quand deux tranches se recouvrent sur
+    /// une année — « 18 à 25 » puis « 25 à 40 », ce que tout le monde écrit —
+    /// c'est celle qui commence le plus tard qui l'emporte : c'est ainsi qu'on
+    /// lit un plan de prévoyance.
+    pub age_from: i32,
+    pub age_to: i32,
+    /// Cotisation totale, employeur et salarié réunis. Sert au contrôle de
+    /// l'art. 66 al. 1 LPP.
+    pub total_pct: f64,
+    /// La part à votre charge. La part patronale s'en déduit : deux champs
+    /// indépendants finiraient par se contredire.
+    pub employee_pct: f64,
+}
+
+impl crate::payroll::AgeBracket for LppPlanBracket {
+    fn age_from(&self) -> i32 {
+        self.age_from
+    }
+    fn age_to(&self) -> i32 {
+        self.age_to
+    }
+}
+
 /// Une ligne du barème de suppléments d'une entreprise : astreinte à la
 /// semaine, samedi travaillé, dimanche travaillé…
 ///

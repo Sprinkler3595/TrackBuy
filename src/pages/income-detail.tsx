@@ -14,6 +14,8 @@ import { ErrorPanel } from "@/components/ui/error-panel"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { EmploymentContractForm } from "@/components/features/employment-contract-form"
 import { GrossToNetPanel } from "@/components/features/gross-to-net-panel"
+import { LppPlanEditor } from "@/components/features/lpp-plan-editor"
+import { SupplementRates } from "@/components/features/supplement-rates"
 import { PayslipForm } from "@/components/features/payslip-form"
 import { PayslipConfirm } from "@/components/features/payslip-confirm"
 import { SupplementYearSummary } from "@/components/features/supplement-year-summary"
@@ -519,6 +521,25 @@ export function IncomeDetailPage() {
               api.getEmploymentContractVersions(i.id).then(setContractVersions).catch(() => {})
             }}
           />
+          {/* Deux barèmes rattachés à la VERSION de contrat, donc affichés
+              seulement une fois qu'elle existe. Ils vivent sous le formulaire
+              parce qu'ils se remplissent une fois, contrairement aux taux
+              au-dessus qu'on relit à chaque augmentation. */}
+          {contract && (
+            <>
+              <LppPlanEditor
+                contractId={contract.id}
+                birthDate={contract.birth_date}
+                flatRate={contract.lpp_employee_share_pct}
+                onChanged={() => setChecks({})}
+              />
+              <SupplementRates
+                contractId={contract.id}
+                currency={i.currency}
+                onChanged={() => setChecks({})}
+              />
+            </>
+          )}
         </div>
       )}
 
