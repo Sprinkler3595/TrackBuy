@@ -13,17 +13,24 @@ export function RateField({
   kind,
   value,
   onChange,
+  label,
+  footnote,
 }: {
   kind: RateKind
   value: string
   onChange: (v: string) => void
+  /// Remplace l'intitulé du guide, quand le contexte de l'écran le précise
+  /// mieux — « taux unique de repli » là où un plan par tranches existe à côté.
+  label?: string
+  /// Précision propre à l'écran, ajoutée sous l'aide habituelle.
+  footnote?: React.ReactNode
 }) {
   const guide = RATE_GUIDES[kind]
   const warning = rateWarning(kind, value)
   return (
     <div className="space-y-1.5">
       <label className="block text-sm font-medium">
-        {guide.label}
+        {label ?? guide.label}
         <span className="ml-1 font-normal text-muted-foreground">({guide.unit})</span>
       </label>
       <Input
@@ -45,6 +52,7 @@ export function RateField({
       ) : (
         <p className="text-xs text-muted-foreground">{guide.hint}</p>
       )}
+      {footnote && <p className="text-xs text-muted-foreground">{footnote}</p>}
     </div>
   )
 }

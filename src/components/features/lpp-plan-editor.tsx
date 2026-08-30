@@ -157,6 +157,11 @@ export function LppPlanEditor({
           répartition entre vous et l'employeur. Saisissez-la une fois : le passage d'un
           palier se fera tout seul, au 1ᵉʳ janvier.
         </p>
+        <p className="text-xs text-muted-foreground">
+          Ce plan et le « taux unique de repli » de la carte précédente répondent à la même
+          question — ils ne s'additionnent pas. Dès qu'une tranche couvre votre âge, c'est
+          elle qui s'applique et le taux unique est ignoré.
+        </p>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Ce qui s'applique aujourd'hui, et ce qui viendra ensuite. C'est la
@@ -165,8 +170,11 @@ export function LppPlanEditor({
           <div className="rounded-lg border bg-muted/30 p-3 text-sm">
             {age == null ? (
               <p className="text-amber-700 dark:text-amber-500">
-                Renseignez votre date de naissance ci-dessus : sans elle, aucune tranche ne
-                peut être choisie et c'est le taux fixe qui s'applique.
+                Renseignez votre date de naissance ci-dessus : sans elle, aucun âge n'est
+                calculable, donc aucune tranche ne peut être choisie.{" "}
+                {flatRate != null
+                  ? `En attendant, c'est le « taux unique de repli » du contrat (${pct(flatRate)}) qui s'applique, et ce plan reste sans effet.`
+                  : "En attendant, aucune retenue LPP ne peut être calculée."}
               </p>
             ) : current ? (
               <>
@@ -191,6 +199,14 @@ export function LppPlanEditor({
                     Le 1ᵉʳ janvier {next.year}, vous passerez à la tranche{" "}
                     {next.bracket.age_from}–{next.bracket.age_to} ans :{" "}
                     {pct(next.bracket.employee_pct)} à votre charge. Rien à faire.
+                  </p>
+                )}
+                {/* Deux champs répondent à la même question, sur deux cartes.
+                    Dire lequel gagne vaut mieux que laisser deviner. */}
+                {flatRate != null && (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Le « taux unique de repli » du contrat ({pct(flatRate)}) n'est donc pas
+                    utilisé : c'est ce plan qui s'applique.
                   </p>
                 )}
               </>
@@ -251,7 +267,9 @@ export function LppPlanEditor({
               </thead>
               <tbody className="divide-y">
                 {plan.map((b) => {
-                  const active = current?.id === b.id
+                  // Une tranche est en vigueur par assiette : marquer la
+                  // seule première laisserait croire que l'autre dort.
+                  const active = currentByBasis.some((x) => x.bracket?.id === b.id)
                   return (
                     <tr key={b.id} className={active ? "bg-primary/5" : undefined}>
                       <td className="py-2 pr-2">

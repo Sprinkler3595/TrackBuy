@@ -577,10 +577,16 @@ export function EmploymentContractForm({
           {/* Ces trois taux tendent tous le même piège : « 50/50 » décrit le
               partage de la prime, pas son taux. `RateField` le dit, et le
               signale quand la valeur saisie ressemble à une répartition. */}
+          {/* Ce champ et le plan par tranches, plus bas, répondent à la MÊME
+              question. Le plan gagne dès qu'une de ses tranches couvre votre
+              âge ; celui-ci n'est plus qu'un repli. Le dire ici évite de
+              croire que les deux se cumulent, ou qu'il faut choisir. */}
           <RateField
             kind="lpp"
+            label="Taux unique du 2ᵉ pilier — repli"
             value={str("lpp_employee_share_pct")}
             onChange={(v) => set("lpp_employee_share_pct", v)}
+            footnote="Utilisé seulement si le plan par tranches, plus bas, ne couvre pas votre âge — ou si vous n'en avez pas saisi."
           />
           <div className="sm:col-span-2">
             <Checkbox

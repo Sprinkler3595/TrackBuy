@@ -1618,7 +1618,7 @@ pub(crate) fn load_lpp_plan(
 ) -> Result<Vec<LppPlanBracket>, String> {
     let sql = format!(
         "SELECT {PLAN_COLUMNS} FROM lpp_plan_brackets
-         WHERE contract_id = ?1 ORDER BY age_from"
+         WHERE contract_id = ?1 ORDER BY basis, age_from"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
