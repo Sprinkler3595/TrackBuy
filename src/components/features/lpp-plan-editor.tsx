@@ -15,6 +15,7 @@ import {
   lppAge,
   nextBracket,
 } from "@/lib/lpp-plan"
+import { formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
 
 /// Le plan de prévoyance de l'entreprise, tranche d'âge par tranche d'âge.
@@ -35,11 +36,13 @@ const pct = (n: number) => `${Math.round(n * 1000) / 1000} %`
 
 export function LppPlanEditor({
   contractId,
+  currency = "CHF",
   birthDate,
   flatRate,
   onChanged,
 }: {
   contractId: string
+  currency?: string
   /// Sans elle, aucun âge n'est calculable : le plan se saisit quand même,
   /// mais rien ne peut dire quelle tranche s'applique.
   birthDate: string | null
@@ -50,6 +53,9 @@ export function LppPlanEditor({
 }) {
   const { toast } = useToast()
   const [plan, setPlan] = useState<api.LppPlanBracket[]>([])
+  /// Le plan traduit en francs par le moteur. Recalculé après chaque écriture :
+  /// changer un taux sans voir bouger le montant serait un aveu d'impuissance.
+  const [preview, setPreview] = useState<api.LppPlanPreview | null>(null)
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState({
     age_from: "",
@@ -80,8 +86,14 @@ export function LppPlanEditor({
     ;(async () => {
       setLoading(true)
       try {
-        const list = await api.getLppPlan(contractId)
-        if (!cancelled) setPlan(list)
+        const [list, p] = await Promise.all([
+          api.getLppPlan(contractId),
+          api.previewLppPlan(contractId, new Date().getFullYear()).catch(() => null),
+        ])
+        if (!cancelled) {
+          setPlan(list)
+          setPreview(p)
+        }
       } catch {
         if (!cancelled) setPlan([])
       } finally {
@@ -91,9 +103,16 @@ export function LppPlanEditor({
     return () => { cancelled = true }
   }, [contractId])
 
+  const refreshPreview = () =>
+    api
+      .previewLppPlan(contractId, new Date().getFullYear())
+      .then(setPreview)
+      .catch(() => setPreview(null))
+
   const save = async (b: api.LppPlanBracket) => {
     try {
       setPlan(await api.upsertLppPlanBracket(b))
+      void refreshPreview()
       onChanged?.()
     } catch (e) {
       toast(`${e}`, "error")
@@ -111,6 +130,7 @@ export function LppPlanEditor({
     try {
       await api.deleteLppPlanBracket(id)
       setPlan(await api.getLppPlan(contractId))
+      void refreshPreview()
       onChanged?.()
     } catch (e) {
       toast(`Erreur : ${e}`, "error")
@@ -209,6 +229,7 @@ export function LppPlanEditor({
                     utilisé : c'est ce plan qui s'applique.
                   </p>
                 )}
+                <PlanInFrancs preview={preview} currency={currency} />
               </>
             ) : (
               <p className="text-amber-700 dark:text-amber-500">
@@ -318,7 +339,16 @@ export function LppPlanEditor({
                         />
                       </td>
                       <td className="py-2 pr-2 tabular-nums text-muted-foreground">
-                        {pct(employerPct(b))}
+                        {employerPct(b) < b.employee_pct ? (
+                          <span
+                            className="text-amber-700 dark:text-amber-500"
+                            title="Votre part dépasse la moitié du total sur cette composante. L'art. 66 al. 1 LPP porte sur le TOTAL des cotisations — épargne, risque et frais réunis — donc ce n'est pas forcément irrégulier ; vérifiez sur votre règlement de caisse."
+                          >
+                            {pct(employerPct(b))} ⚠
+                          </span>
+                        ) : (
+                          pct(employerPct(b))
+                        )}
                       </td>
                       <td className="py-2 text-right">
                         <span className="flex items-center justify-end gap-1">
@@ -383,9 +413,18 @@ export function LppPlanEditor({
 
         <div className="space-y-2 border-t pt-4 text-xs text-muted-foreground">
           <p>
-            Votre part ne peut pas dépasser la moitié du total : l'employeur doit financer au
-            moins autant que vous (art. 66 al. 1 LPP). Les âges s'entendent au sens LPP — année
-            civile moins année de naissance — d'où un changement au 1ᵉʳ janvier.
+            L'employeur doit financer au moins autant que l'ensemble des salariés
+            (art. 66 al. 1 LPP). Attention : cette règle porte sur le <strong>total</strong> des
+            cotisations — épargne, primes de risque et frais réunis — pas sur chaque composante
+            prise à part. Une part majoritaire sur la seule épargne est donc signalée ici, mais
+            pas refusée : elle peut être parfaitement régulière si l'employeur reprend la main
+            sur le reste.
+          </p>
+          <p>
+            Les âges s'entendent au sens LPP — année civile moins année de naissance — d'où un
+            changement au 1ᵉʳ janvier. L'épargne obligatoire ne démarre qu'à 25 ans
+            (art. 7 LPP) ; avant cela, seuls les risques décès et invalidité sont couverts,
+            dès 18 ans.
           </p>
           <p>
             Un plan peut empiler des cotisations sur plusieurs assiettes : c'est ce que fait
@@ -408,5 +447,57 @@ export function LppPlanEditor({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+/// Le plan traduit en francs. C'est la question que tout le monde se pose et
+/// qu'aucun pourcentage ne résout : « ça me coûte combien, et c'est quelle part
+/// de mon brut ? » Ne pas y répondre, c'est laisser quelqu'un taper 50 dans un
+/// champ de taux parce que sa caisse lui a dit « 50/50 ».
+///
+/// Le minimum légal est donné à côté, pour situer — pas comme un plafond. La
+/// loi ne plafonne PAS la cotisation totale : elle impose un minimum d'épargne
+/// (art. 16 LPP) et un partage (art. 66 al. 1). Un plan plus généreux fait donc
+/// légitimement monter les deux parts.
+function PlanInFrancs({
+  preview,
+  currency,
+}: {
+  preview: api.LppPlanPreview | null
+  currency: string
+}) {
+  if (!preview || preview.annual_salary == null || preview.employee_annual == null) {
+    return null
+  }
+  const { employee_annual, employee_pct_of_gross, coordinated_salary } = preview
+  return (
+    <div className="mt-3 space-y-1.5 border-t pt-3 text-xs">
+      <p className="text-sm">
+        Sur un brut de {formatPrice(preview.annual_salary, currency)}, votre salaire coordonné
+        vaut {formatPrice(coordinated_salary, currency)} et votre part du 2ᵉ pilier{" "}
+        <span className="font-medium">{formatPrice(employee_annual, currency)} par an</span>
+        {employee_pct_of_gross != null && (
+          <> — soit <span className="font-medium">{employee_pct_of_gross.toFixed(2)} % de votre brut</span></>
+        )}
+        .
+      </p>
+      {preview.legal_credit_pct > 0 && preview.legal_min_employee_pct_of_gross != null && (
+        <p className="text-muted-foreground">
+          À titre de repère : un plan s'en tenant au minimum légal cotiserait{" "}
+          {pct(preview.legal_credit_pct)} du salaire coordonné (art. 16 LPP), dont au plus la
+          moitié à votre charge —{" "}
+          {formatPrice(preview.legal_min_employee_annual, currency)} par an, soit{" "}
+          {preview.legal_min_employee_pct_of_gross.toFixed(2)} % du brut. La loi ne plafonne
+          pas la cotisation totale : un plan plus généreux fait monter les deux parts.
+        </p>
+      )}
+      {preview.legal_credit_pct === 0 && preview.age != null && preview.age < 25 && (
+        <p className="text-muted-foreground">
+          À {preview.age} ans, la loi n'impose encore aucune épargne vieillesse — elle ne
+          couvre que les risques décès et invalidité, dès 18 ans. Ce que votre caisse
+          prélève au-delà est un choix de votre employeur.
+        </p>
+      )}
+    </div>
   )
 }

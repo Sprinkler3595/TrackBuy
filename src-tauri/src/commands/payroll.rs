@@ -1662,15 +1662,16 @@ fn upsert_plan_bracket_inner(
     if b.total_pct < 0.0 || b.employee_pct < 0.0 {
         return Err("Un taux de cotisation ne peut pas être négatif.".into());
     }
-    // Art. 66 al. 1 LPP : l'employeur finance au moins autant que le salarié.
-    // Un plan qui dit l'inverse est illégal, pas seulement inhabituel — on
-    // refuse de l'enregistrer plutôt que de calculer une retenue indue.
-    if b.employee_pct > b.total_pct / 2.0 + 1e-9 {
-        return Err(format!(
-            "Votre part ({} %) dépasse la moitié du total ({} %). L'employeur doit financer au moins autant que vous (art. 66 al. 1 LPP).",
-            b.employee_pct, b.total_pct
-        ));
-    }
+    // L'art. 66 al. 1 LPP n'est PAS vérifiable ici, et le refus posé
+    // précédemment était trop strict. La règle — l'employeur finance au moins
+    // autant que l'ensemble des salariés — porte sur le TOTAL des cotisations :
+    // épargne, primes de risque et frais réunis. Une part employé majoritaire
+    // sur la seule épargne reste donc légale si l'employeur reprend la main sur
+    // le reste, et les primes de risque ne figurent pas dans un plan de
+    // prévoyance — leur taux vit sur la facture annuelle de la caisse.
+    //
+    // Refuser sur la foi d'une composante isolée bloquait des plans licites.
+    // L'écran avertit à la place, ce qui est le bon niveau de certitude.
     // Une assiette inconnue viendrait d'un bug, pas d'une saisie : le moteur
     // retomberait silencieusement sur le salaire coordonné, donc sur un
     // montant faux mais crédible. Mieux vaut refuser.
@@ -1788,6 +1789,125 @@ pub(crate) fn apply_lpp_plan(
     }
     terms.lpp_plan_rates = rates;
     Ok(())
+}
+
+/// Ce que le plan donne CONCRÈTEMENT, pour le salaire du contrat.
+///
+/// « 3.2 % du salaire coordonné » ne dit rien à personne : ni combien de francs,
+/// ni quelle part du brut cela représente. C'est pourtant la seule question
+/// qu'on se pose, et c'est elle qui fait taper 50 dans un champ de taux.
+///
+/// Tout vient du moteur, jamais d'une formule recopiée à l'écran : le salaire
+/// coordonné et les tranches doivent avoir une seule définition.
+#[derive(Debug, Serialize)]
+pub struct LppPlanPreview {
+    pub year: i32,
+    pub age: Option<i32>,
+    pub annual_salary: Option<f64>,
+    pub coordinated_salary: f64,
+    /// Cotisation annuelle à votre charge, toutes assiettes confondues.
+    /// `None` quand ni plan ni taux fixe ne permettent de la chiffrer.
+    pub employee_annual: Option<f64>,
+    /// La même, en % du salaire annuel brut — le chiffre qu'on cherche.
+    pub employee_pct_of_gross: Option<f64>,
+    /// Bonification minimale de l'art. 16 LPP à cet âge, en % du coordonné.
+    /// 0 avant 25 ans : la loi n'impose alors que la couverture des risques.
+    pub legal_credit_pct: f64,
+    /// Si le plan s'en tenait au minimum légal, la moitié de cette bonification
+    /// serait le maximum à votre charge (art. 66 al. 1 LPP).
+    pub legal_min_employee_annual: f64,
+    pub legal_min_employee_pct_of_gross: Option<f64>,
+    /// Les taux retenus, pour dire d'où sort le montant.
+    pub rates: Vec<crate::payroll::LppPlanRate>,
+    /// Vrai quand aucune tranche ne couvre l'âge et que le taux fixe du
+    /// contrat a pris le relais.
+    pub used_flat_rate: bool,
+}
+
+#[tauri::command]
+pub fn preview_lpp_plan(
+    state: State<'_, AppState>,
+    contract_id: String,
+    year: i32,
+) -> Result<LppPlanPreview, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    preview_lpp_plan_inner(&conn, &contract_id, year)
+}
+
+pub(crate) fn preview_lpp_plan_inner(
+    conn: &rusqlite::Connection,
+    contract_id: &str,
+    year: i32,
+) -> Result<LppPlanPreview, String> {
+    let sql = format!("SELECT {CONTRACT_COLUMNS} FROM employment_contracts WHERE id = ?1");
+    let contract: EmploymentContract = conn
+        .query_row(&sql, [contract_id], row_to_contract)
+        .map_err(|e| e.to_string())?;
+
+    let params = resolve_params(conn, year)?.params;
+    let mut terms = EmploymentTerms::from(&contract);
+    apply_lpp_plan(conn, &mut terms, contract_id, year)?;
+
+    let annual = contract.annual_gross_agreed;
+    let part_time = terms
+        .lpp_coordination_part_time
+        .then_some(terms.activity_rate_pct)
+        .flatten();
+    let coordinated = annual
+        .map(|a| crate::payroll::coordinated_salary_with(a, part_time, &params))
+        .unwrap_or(0.0);
+
+    let age = terms
+        .birth_date
+        .as_deref()
+        .and_then(|d| crate::payroll::lpp_age(d, year));
+    let legal_credit_pct = age
+        .map(|a| crate::payroll::lpp_credit_rate(a, &params))
+        .unwrap_or(0.0);
+
+    // La cotisation employé : les tranches du plan sur leurs assiettes, sinon
+    // le taux fixe sur le seul salaire coordonné.
+    let used_flat_rate = terms.lpp_plan_rates.is_empty();
+    let employee_annual = if used_flat_rate {
+        terms
+            .lpp_employee_share_pct
+            .map(|r| coordinated * r / 100.0)
+    } else {
+        annual.map(|a| {
+            terms
+                .lpp_plan_rates
+                .iter()
+                .map(|r| {
+                    crate::payroll::lpp_basis_salary(
+                        crate::payroll::LppBasis::parse(&r.basis),
+                        a,
+                        part_time,
+                        &params,
+                    ) * r.employee_pct
+                        / 100.0
+                })
+                .sum()
+        })
+    };
+
+    let pct_of = |amount: f64| annual.filter(|a| *a > 0.0).map(|a| amount / a * 100.0);
+    let legal_min_employee_annual = coordinated * legal_credit_pct / 100.0 / 2.0;
+
+    Ok(LppPlanPreview {
+        year,
+        age,
+        annual_salary: annual,
+        coordinated_salary: coordinated,
+        employee_annual,
+        employee_pct_of_gross: employee_annual.and_then(pct_of),
+        legal_credit_pct,
+        legal_min_employee_annual,
+        legal_min_employee_pct_of_gross: pct_of(legal_min_employee_annual),
+        rates: terms.lpp_plan_rates,
+        used_flat_rate,
+    })
 }
 
 const RATE_COLUMNS: &str = "id, contract_id, code, label, unit, amount, sort_order";
@@ -5097,28 +5217,6 @@ mod tests {
         assert_eq!(terms.lpp_employee_share_pct, Some(4.0));
     }
 
-    /// Art. 66 al. 1 LPP : l'employeur finance au moins autant que le salarié.
-    /// Un plan qui dit l'inverse est illégal, pas seulement inhabituel — on
-    /// refuse de l'enregistrer plutôt que de calculer une retenue indue.
-    #[test]
-    fn an_employee_share_above_half_the_total_is_refused() {
-        let (_tmp, db) = open_db();
-        let conn = db.conn.lock().unwrap();
-        insert_income(&conn, "inc1", "salary");
-        let saved = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
-
-        let err = upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 6.0))
-            .unwrap_err();
-        assert!(err.contains("66"), "le motif légal doit être nommé : {err}");
-
-        // Moitié-moitié pile passe, et une part plus petite aussi.
-        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 5.0)).is_ok());
-        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 40, 65, 15.0, 6.0)).is_ok());
-
-        // Une tranche qui finit avant de commencer n'a pas de sens.
-        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 50, 45, 10.0, 5.0)).is_err());
-    }
-
     /// Un avenant hérite du plan : un règlement de caisse change bien plus
     /// rarement qu'un salaire, et le resaisir ferait sortir des plans à trous.
     #[test]
@@ -5216,5 +5314,73 @@ mod tests {
         empty.basis = String::new();
         upsert_plan_bracket_inner(&conn, &empty).unwrap();
         assert_eq!(load_lpp_plan(&conn, &saved.id).unwrap()[0].basis, "coordinated");
+    }
+
+    /// Le cas réel, chiffre par chiffre : 75'148 de brut, plan AXA
+    /// « Standard », 25 ans en 2026. Les valeurs attendues viennent d'un calcul
+    /// fait à la main sur le plan et les limites 2026 — si l'une bouge, c'est
+    /// que le moteur a dérivé.
+    #[test]
+    fn the_preview_reproduces_a_real_payslip_to_the_franc() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.birth_date = Some("2001-10-04".into()); // 25 ans au sens LPP en 2026
+        c.annual_gross_agreed = Some(75_148.0);
+        c.lpp_employee_share_pct = None;
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 20, 34, 8.0, 3.2)).unwrap();
+
+        let p = preview_lpp_plan_inner(&conn, &saved.id, 2026).unwrap();
+
+        assert_eq!(p.age, Some(25));
+        // 75'148 − 26'460
+        assert!((p.coordinated_salary - 48_688.0).abs() < 0.5, "{}", p.coordinated_salary);
+        // 3.2 % de 48'688
+        assert!((p.employee_annual.unwrap() - 1_558.0).abs() < 1.0);
+        assert!((p.employee_pct_of_gross.unwrap() - 2.07).abs() < 0.01);
+        // Minimum légal à 25 ans : 7 %, dont la moitié à charge du salarié.
+        assert_eq!(p.legal_credit_pct, 7.0);
+        assert!((p.legal_min_employee_annual - 1_704.0).abs() < 1.0);
+        assert!((p.legal_min_employee_pct_of_gross.unwrap() - 2.27).abs() < 0.01);
+        assert!(!p.used_flat_rate);
+    }
+
+    /// Le plafond du salaire coordonné : 300 % de la rente AVS maximale moins
+    /// la déduction, soit 64'260 en 2026. Au-delà, la cotisation ne monte plus
+    /// sur cette assiette.
+    #[test]
+    fn the_coordinated_salary_stops_at_its_ceiling() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.birth_date = Some("1986-01-01".into());
+        c.annual_gross_agreed = Some(200_000.0);
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+
+        let p = preview_lpp_plan_inner(&conn, &saved.id, 2026).unwrap();
+        assert!((p.coordinated_salary - 64_260.0).abs() < 0.5, "{}", p.coordinated_salary);
+    }
+
+    /// Une part employé majoritaire n'est plus refusée : la règle de l'art. 66
+    /// al. 1 LPP porte sur le TOTAL des cotisations — épargne, risque et frais
+    /// réunis — et les primes de risque ne figurent pas dans un plan. Refuser
+    /// sur la seule épargne bloquait des plans licites.
+    #[test]
+    fn a_majority_employee_share_is_recorded_not_refused() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let saved = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+
+        upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 25, 39, 10.0, 6.0))
+            .expect("l'écran avertit, il ne bloque pas");
+        assert_eq!(load_lpp_plan(&conn, &saved.id).unwrap()[0].employee_pct, 6.0);
+
+        // Ce qui reste impossible le reste : bornes inversées, taux négatif.
+        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 50, 45, 10.0, 5.0)).is_err());
+        assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 30, 40, -1.0, 5.0)).is_err());
     }
 }

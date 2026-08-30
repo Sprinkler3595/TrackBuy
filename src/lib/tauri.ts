@@ -1694,6 +1694,32 @@ export interface LppPlanBracket {
   basis: string
 }
 
+/// Le plan traduit en francs, pour le salaire du contrat.
+///
+/// « 3.2 % du salaire coordonné » ne dit rien à personne : ni combien de
+/// francs, ni quelle part du brut. C'est pourtant la seule question qu'on se
+/// pose — et c'est elle qui fait taper 50 dans un champ de taux.
+export interface LppPlanPreview {
+  year: number
+  age: number | null
+  annual_salary: number | null
+  coordinated_salary: number
+  /// Cotisation annuelle à votre charge, toutes assiettes confondues.
+  employee_annual: number | null
+  /// La même, en % du salaire annuel brut.
+  employee_pct_of_gross: number | null
+  /// Bonification minimale de l'art. 16 LPP à cet âge, en % du coordonné.
+  /// 0 avant 25 ans : la loi n'impose alors que la couverture des risques.
+  legal_credit_pct: number
+  /// Si le plan s'en tenait au minimum légal, la moitié de cette bonification
+  /// serait le maximum à votre charge (art. 66 al. 1 LPP).
+  legal_min_employee_annual: number
+  legal_min_employee_pct_of_gross: number | null
+  rates: Array<{ basis: string; employee_pct: number; total_pct: number }>
+  /// Aucune tranche ne couvre l'âge : c'est le taux fixe qui a servi.
+  used_flat_rate: boolean
+}
+
 /// Une ligne du barème de suppléments d'une entreprise : astreinte à la
 /// semaine, samedi travaillé, dimanche travaillé…
 ///
@@ -2017,6 +2043,12 @@ export const upsertLppPlanBracket = (bracket: LppPlanBracket) =>
 
 export const deleteLppPlanBracket = (id: string) =>
   invoke<void>("delete_lpp_plan_bracket", { id })
+
+/// Ce que le plan donne concrètement pour le salaire du contrat : francs par
+/// an, et part du brut. Tout vient du moteur — le salaire coordonné n'a qu'une
+/// seule définition, et elle est en Rust.
+export const previewLppPlan = (contractId: string, year: number) =>
+  invoke<LppPlanPreview>("preview_lpp_plan", { contractId, year })
 
 /// Barème de suppléments d'une version de contrat.
 export const getSupplementRates = (contractId: string) =>

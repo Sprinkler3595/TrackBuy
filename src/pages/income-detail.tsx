@@ -529,6 +529,7 @@ export function IncomeDetailPage() {
             <>
               <LppPlanEditor
                 contractId={contract.id}
+                currency={i.currency}
                 birthDate={contract.birth_date}
                 flatRate={contract.lpp_employee_share_pct}
                 onChanged={() => setChecks({})}
