@@ -1338,6 +1338,9 @@ export interface EmploymentContract {
   /// `total` = tout le brut est assuré, suppléments compris ; `base` = seul le
   /// salaire contractuel l'est.
   lpp_insured_scope: string
+  /// La caisse réduit-elle la déduction de coordination au taux d'occupation ?
+  /// La loi ne l'impose pas ; le règlement du plan le dit.
+  lpp_coordination_part_time: boolean
   laa_insurer: string | null
   laa_nonoccupational_pct: number | null
   ijm_employee_pct: number | null
@@ -1685,6 +1688,10 @@ export interface LppPlanBracket {
   total_pct: number
   /// Votre part. La part patronale s'en déduit.
   employee_pct: number
+  /// Sur QUEL salaire le taux porte. `coordinated` = le salaire coordonné (le
+  /// cas de loin le plus courant) ; `excess` = la part au-delà de la limite
+  /// supérieure LPP ; `full` = le salaire annuel entier, plafonné.
+  basis: string
 }
 
 /// Une ligne du barème de suppléments d'une entreprise : astreinte à la

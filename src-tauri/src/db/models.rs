@@ -746,6 +746,11 @@ pub struct EmploymentContract {
     /// le salaire contractuel l'est. La réponse tient au règlement de la caisse
     /// de pension : elle ne se devine pas, elle se lit.
     pub lpp_insured_scope: String,
+    /// La caisse réduit-elle la déduction de coordination au taux
+    /// d'occupation ? La loi ne l'impose pas, beaucoup de caisses le
+    /// pratiquent, et le règlement du plan le dit noir sur blanc.
+    #[serde(default)]
+    pub lpp_coordination_part_time: bool,
     pub laa_insurer: Option<String>,
     pub laa_nonoccupational_pct: Option<f64>,
     pub ijm_employee_pct: Option<f64>,
@@ -1029,6 +1034,20 @@ pub struct LppPlanBracket {
     /// La part à votre charge. La part patronale s'en déduit : deux champs
     /// indépendants finiraient par se contredire.
     pub employee_pct: f64,
+    /// Sur QUEL salaire le taux porte : `coordinated` (le salaire coordonné,
+    /// cas de loin le plus courant), `excess` (la part au-delà de la limite
+    /// supérieure LPP) ou `full` (le salaire annuel entier, plafonné).
+    ///
+    /// Un plan réel empile des cotisations sur plusieurs assiettes — AXA
+    /// prélève selon l'âge sur le salaire coordonné ET 4 % sur la part
+    /// au-delà de la limite. Un modèle à une seule assiette sous-estime la
+    /// retenue de qui gagne davantage.
+    #[serde(default = "default_lpp_basis")]
+    pub basis: String,
+}
+
+fn default_lpp_basis() -> String {
+    "coordinated".to_string()
 }
 
 impl crate::payroll::AgeBracket for LppPlanBracket {

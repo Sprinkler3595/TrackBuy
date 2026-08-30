@@ -29,6 +29,22 @@ pub use params::{
 
 use serde::{Deserialize, Serialize};
 
+/// Un taux du plan de prévoyance, déjà rattaché à son assiette. Résolu pour un
+/// âge donné avant d'entrer dans le calcul : le moteur n'a pas à connaître les
+/// tranches, seulement ce qui s'applique cette année-là.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LppPlanRate {
+    /// `coordinated` | `excess` | `full`
+    pub basis: String,
+    /// La part à charge du salarié, en % de l'assiette.
+    pub employee_pct: f64,
+    /// La cotisation totale sur cette assiette. Sert au contrôle de l'art. 66
+    /// al. 1 LPP avec le VRAI total du plan, plutôt qu'avec le minimum légal
+    /// qui n'a rien à voir dès que la caisse cotise davantage.
+    pub total_pct: f64,
+}
+
 /// Termes de l'emploi, saisis une fois par l'utilisateur. Tout est optionnel :
 /// le moteur dégrade proprement et signale ce qu'il ne peut pas contrôler.
 ///
@@ -61,7 +77,19 @@ pub struct EmploymentTerms {
     pub hourly_paid: bool,
     /// Taux employé du règlement de la caisse de pension, en % du salaire
     /// coordonné. Contractuel : jamais déduit d'un barème.
+    ///
+    /// C'est le REPLI. Dès que `lpp_plan_rates` est renseigné, il prend le pas :
+    /// un plan par tranches d'âge est plus précis qu'un taux unique, et c'est
+    /// ainsi que les caisses écrivent leurs règlements.
     pub lpp_employee_share_pct: Option<f64>,
+    /// Les taux du plan applicables à l'âge de l'année contrôlée, résolus en
+    /// amont. Plusieurs entrées quand le plan empile des cotisations sur des
+    /// assiettes différentes — le cas d'AXA/Columna, qui prélève selon l'âge
+    /// sur le salaire coordonné ET 4 % sur la part au-delà de la limite LPP.
+    pub lpp_plan_rates: Vec<LppPlanRate>,
+    /// La caisse réduit-elle la déduction de coordination au taux
+    /// d'occupation ? La loi ne l'impose pas ; le règlement de caisse le dit.
+    pub lpp_coordination_part_time: bool,
     /// `base` = seul le salaire contractuel est assuré ; toute autre valeur,
     /// dont l'absence, vaut `total` — le brut entier, suppléments compris.
     ///
@@ -234,21 +262,98 @@ pub fn expected_net(p: &PayslipInput) -> f64 {
         + p.net_addition.unwrap_or(0.0)
 }
 
-/// Salaire coordonné LPP annuel (art. 8 LPP).
+/// Salaire coordonné LPP annuel (art. 8 LPP), avec réduction éventuelle de la
+/// déduction de coordination au taux d'occupation.
 ///
 /// Sous le seuil d'entrée → 0 (pas d'assujettissement obligatoire).
 /// Au-dessus → salaire AVS plafonné, moins la déduction de coordination,
 /// avec un plancher légal.
-pub fn coordinated_salary(annual_avs_salary: f64, p: &PayrollParams) -> f64 {
+///
+/// La loi ne l'impose pas — elle fixe une déduction en francs, la même pour
+/// tout le monde. Mais beaucoup de caisses la réduisent au prorata, et le
+/// document du plan le dit noir sur blanc quand c'est le cas. L'écart n'a rien
+/// d'anecdotique : à 50 % d'activité sur 50 000 de salaire plein, déduire la
+/// coordination entière laisse 25 000 − 26 460 → le plancher ; la réduire au
+/// prorata laisse 25 000 − 13 230 = 11 770. La retenue va du simple au triple.
+///
+/// `part_time_rate_pct` vaut `Some(50.0)` pour un mi-temps dont la caisse
+/// pratique la réduction, et `None` quand elle applique la déduction pleine —
+/// ce qui est le défaut légal.
+pub fn coordinated_salary_with(
+    annual_avs_salary: f64,
+    part_time_rate_pct: Option<f64>,
+    p: &PayrollParams,
+) -> f64 {
     if annual_avs_salary < p.lpp_entry_threshold {
         return 0.0;
     }
-    let capped = annual_avs_salary.min(p.lpp_avs_upper_limit);
-    let coordinated = capped - p.lpp_coordination_deduction;
+    let ratio = part_time_ratio(part_time_rate_pct);
+    let capped = annual_avs_salary.min(p.lpp_avs_upper_limit * ratio);
+    let coordinated = capped - p.lpp_coordination_deduction * ratio;
     if coordinated < p.lpp_min_coordinated {
         p.lpp_min_coordinated
     } else {
         coordinated
+    }
+}
+
+/// Le taux d'occupation ramené à un facteur utilisable, ou 1 quand il n'y a
+/// rien à réduire. Un taux absurde (0, négatif, au-delà de 100) ne doit pas
+/// faire exploser une assiette : il est ignoré.
+fn part_time_ratio(part_time_rate_pct: Option<f64>) -> f64 {
+    match part_time_rate_pct {
+        Some(r) if r > 0.0 && r < 100.0 => r / 100.0,
+        _ => 1.0,
+    }
+}
+
+/// L'assiette sur laquelle porte un taux du plan de prévoyance.
+///
+/// Les plans réels en définissent plusieurs et font porter des cotisations
+/// différentes sur chacune. AXA/Columna les nomme « salaire assuré 1, 2, 3 » ;
+/// les noms changent d'une caisse à l'autre, la mécanique non.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LppBasis {
+    /// Le salaire coordonné : salaire annuel moins la déduction de
+    /// coordination. C'est l'assiette du régime obligatoire, et de très loin
+    /// la plus courante.
+    Coordinated,
+    /// La part du salaire annuel AU-DELÀ de la limite supérieure LPP (300 % de
+    /// la rente AVS maximale). Nulle en dessous — elle ne concerne que les
+    /// hauts salaires, à qui elle change beaucoup.
+    Excess,
+    /// Le salaire annuel entier, plafonné à la limite supérieure LPP.
+    Full,
+}
+
+impl LppBasis {
+    /// `coordinated` par défaut : c'est le cas de la quasi-totalité des plans,
+    /// et une valeur inconnue ne doit pas faire disparaître une cotisation.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "excess" => Self::Excess,
+            "full" => Self::Full,
+            _ => Self::Coordinated,
+        }
+    }
+}
+
+/// Le montant annuel sur lequel appliquer un taux, selon son assiette.
+pub fn lpp_basis_salary(
+    basis: LppBasis,
+    annual_salary: f64,
+    part_time_rate_pct: Option<f64>,
+    p: &PayrollParams,
+) -> f64 {
+    match basis {
+        LppBasis::Coordinated => coordinated_salary_with(annual_salary, part_time_rate_pct, p),
+        // La déduction de coordination 2 suit le même sort que la première
+        // quand la caisse la réduit : le document du plan les mentionne
+        // ensemble.
+        LppBasis::Excess => {
+            (annual_salary - p.lpp_avs_upper_limit * part_time_ratio(part_time_rate_pct)).max(0.0)
+        }
+        LppBasis::Full => annual_salary.min(p.lpp_avs_upper_limit * part_time_ratio(part_time_rate_pct)),
     }
 }
 
@@ -364,7 +469,13 @@ pub fn expected_deductions(
     let annual_reference = terms
         .annual_gross_agreed
         .unwrap_or_else(|| subject * periods);
-    let coordinated = coordinated_salary(annual_reference, p);
+    // Le taux d'occupation ne sert QUE si la caisse réduit la déduction de
+    // coordination : le brut, lui, reflète déjà le temps partiel.
+    let part_time = terms
+        .lpp_coordination_part_time
+        .then_some(terms.activity_rate_pct)
+        .flatten();
+    let coordinated = coordinated_salary_with(annual_reference, part_time, p);
 
     let age = terms
         .birth_date
@@ -373,10 +484,33 @@ pub fn expected_deductions(
     let credit_rate = age.map(|a| lpp_credit_rate(a, p)).unwrap_or(0.0);
     let minimum_annual_credit = coordinated * credit_rate / 100.0;
 
-    let lpp_employee = terms
-        .lpp_employee_share_pct
-        .map(|rate| coordinated * rate / 100.0 / periods);
-    let lpp_employee_legal_cap = minimum_annual_credit / 2.0 / periods;
+    // Le plan de la caisse fait foi quand il est connu : il empile ses taux
+    // sur les assiettes qu'il désigne, là où le taux unique de repli ne sait
+    // parler que du salaire coordonné.
+    let (lpp_employee, plan_total_annual) = if terms.lpp_plan_rates.is_empty() {
+        (
+            terms
+                .lpp_employee_share_pct
+                .map(|rate| coordinated * rate / 100.0 / periods),
+            None,
+        )
+    } else {
+        let mut employee = 0.0;
+        let mut total = 0.0;
+        for r in &terms.lpp_plan_rates {
+            let base = lpp_basis_salary(LppBasis::parse(&r.basis), annual_reference, part_time, p);
+            employee += base * r.employee_pct / 100.0;
+            total += base * r.total_pct / 100.0;
+        }
+        (Some(employee / periods), Some(total))
+    };
+
+    // Art. 66 al. 1 LPP : l'employeur finance au moins autant que le salarié.
+    // Avec un plan connu, la moitié de SON total est la bonne référence ; le
+    // minimum légal ne l'est que faute de mieux, et il sous-estime le plafond
+    // dès que la caisse cotise davantage que la loi.
+    let lpp_employee_legal_cap =
+        plan_total_annual.unwrap_or(minimum_annual_credit) / 2.0 / periods;
 
     // Prélèvements cantonaux : même assiette que l'AVS. Ils valent zéro dans
     // la plupart des cantons, mais les ignorer là où ils existent fait
@@ -686,22 +820,22 @@ mod tests {
     #[test]
     fn below_entry_threshold_no_coordinated_salary() {
         let p = p2026();
-        assert_eq!(coordinated_salary(20_000.0, &p), 0.0);
+        assert_eq!(coordinated_salary_with(20_000.0, None, &p), 0.0);
     }
 
     #[test]
     fn coordinated_salary_uses_the_legal_floor() {
         let p = p2026();
         // 27'000 − 26'460 = 540, sous le plancher de 3'780.
-        assert_eq!(coordinated_salary(27_000.0, &p), 3_780.0);
+        assert_eq!(coordinated_salary_with(27_000.0, None, &p), 3_780.0);
     }
 
     #[test]
     fn coordinated_salary_is_capped_at_the_upper_limit() {
         let p = p2026();
         // Au-delà de 90'720, le salaire coordonné plafonne à 64'260.
-        assert_eq!(coordinated_salary(200_000.0, &p), 64_260.0);
-        assert_eq!(coordinated_salary(96_000.0, &p), 64_260.0);
+        assert_eq!(coordinated_salary_with(200_000.0, None, &p), 64_260.0);
+        assert_eq!(coordinated_salary_with(96_000.0, None, &p), 64_260.0);
     }
 
     #[test]
@@ -1229,6 +1363,165 @@ mod tests {
         assert_eq!(p.effective_year, 2023);
         assert_eq!(p.lpp_entry_threshold, 22_050.0);
         assert_eq!(p.ac_solidarity_employee_pct, 0.0, "aboli au 1.1.2023");
+    }
+
+    // --- assiettes du plan de prévoyance ---
+
+    /// Les trois assiettes que définit un plan réel (ici AXA/Columna, dont le
+    /// document nomme « salaire assuré 1, 2, 3 »), sur les valeurs 2026 :
+    /// rente AVS maximale 30'240, donc coordination 26'460 et limite
+    /// supérieure 90'720.
+    #[test]
+    fn the_three_bases_a_real_plan_defines() {
+        let p = p2026();
+        assert_eq!(p.lpp_coordination_deduction, 26_460.0);
+        assert_eq!(p.lpp_avs_upper_limit, 90_720.0);
+
+        // 50'000 : coordonné = 50'000 − 26'460. Rien au-delà de la limite.
+        let annual = 50_000.0;
+        assert_eq!(
+            lpp_basis_salary(LppBasis::Coordinated, annual, None, &p),
+            23_540.0
+        );
+        assert_eq!(lpp_basis_salary(LppBasis::Excess, annual, None, &p), 0.0);
+        assert_eq!(lpp_basis_salary(LppBasis::Full, annual, None, &p), 50_000.0);
+
+        // 120'000 : le coordonné plafonne, et la part au-delà apparaît.
+        let high = 120_000.0;
+        assert_eq!(
+            lpp_basis_salary(LppBasis::Coordinated, high, None, &p),
+            90_720.0 - 26_460.0
+        );
+        assert_eq!(
+            lpp_basis_salary(LppBasis::Excess, high, None, &p),
+            120_000.0 - 90_720.0
+        );
+        assert_eq!(lpp_basis_salary(LppBasis::Full, high, None, &p), 90_720.0);
+    }
+
+    /// La réduction de la déduction de coordination au temps partiel. La loi
+    /// ne l'impose pas ; quand la caisse la pratique, l'écart est majeur.
+    #[test]
+    fn a_part_time_coordination_deduction_changes_everything() {
+        let p = p2026();
+        // Mi-temps, 25'000 de salaire effectif.
+        let annual = 25_000.0;
+
+        // Déduction pleine : 25'000 − 26'460 < 0 → le plancher légal.
+        assert_eq!(coordinated_salary_with(annual, None, &p), p.lpp_min_coordinated);
+
+        // Réduite de moitié : 25'000 − 13'230.
+        assert_eq!(coordinated_salary_with(annual, Some(50.0), &p), 11_770.0);
+
+        // Un taux absurde ne doit pas faire exploser l'assiette.
+        assert_eq!(coordinated_salary_with(annual, Some(0.0), &p), p.lpp_min_coordinated);
+        assert_eq!(coordinated_salary_with(annual, Some(150.0), &p), p.lpp_min_coordinated);
+    }
+
+    /// Le cas complet du plan AXA « Standard » : 3.2 % du salaire assuré 1
+    /// entre 20 et 34 ans, ET 4 % du salaire assuré 2 — les deux empilés.
+    #[test]
+    fn a_plan_stacks_its_contributions_across_bases() {
+        let p = p2026();
+        let rates = vec![
+            LppPlanRate { basis: "coordinated".into(), employee_pct: 3.2, total_pct: 8.0 },
+            LppPlanRate { basis: "excess".into(), employee_pct: 4.0, total_pct: 8.0 },
+        ];
+        let terms = EmploymentTerms {
+            annual_gross_agreed: Some(120_000.0),
+            salary_periods_per_year: Some(12),
+            lpp_plan_rates: rates,
+            // Un taux fixe survivant ne doit surtout pas reprendre la main.
+            lpp_employee_share_pct: Some(99.0),
+            ..terms()
+        };
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(10_000.0),
+            net_paid: 0.0,
+            ..Default::default()
+        };
+        let e = expected_deductions(&input, &terms, &ytd(0.0), &p);
+
+        let coordinated = 90_720.0 - 26_460.0;
+        let excess = 120_000.0 - 90_720.0;
+        let expected = (coordinated * 0.032 + excess * 0.04) / 12.0;
+        assert!(
+            (e.lpp_employee.unwrap() - expected).abs() < 0.01,
+            "obtenu {:?}, attendu {expected}",
+            e.lpp_employee
+        );
+
+        // Oublier la seconde assiette coûterait la cotisation sur l'excédent.
+        let only_first = EmploymentTerms {
+            lpp_plan_rates: vec![LppPlanRate {
+                basis: "coordinated".into(),
+                employee_pct: 3.2,
+                total_pct: 8.0,
+            }],
+            ..terms.clone()
+        };
+        let partial = expected_deductions(&input, &only_first, &ytd(0.0), &p);
+        assert!(partial.lpp_employee.unwrap() < e.lpp_employee.unwrap());
+    }
+
+    /// Sans plan, le taux fixe reste le repli — un contrat déjà saisi ne doit
+    /// rien perdre.
+    #[test]
+    fn without_a_plan_the_flat_rate_still_applies() {
+        let p = p2026();
+        let terms = EmploymentTerms {
+            annual_gross_agreed: Some(50_000.0),
+            salary_periods_per_year: Some(12),
+            lpp_employee_share_pct: Some(3.5),
+            ..terms()
+        };
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(4_166.67),
+            net_paid: 0.0,
+            ..Default::default()
+        };
+        let e = expected_deductions(&input, &terms, &ytd(0.0), &p);
+        let expected = 23_540.0 * 0.035 / 12.0;
+        assert!((e.lpp_employee.unwrap() - expected).abs() < 0.01);
+    }
+
+    /// Le plafond de l'art. 66 al. 1 LPP se calcule sur le VRAI total du plan
+    /// quand il est connu : le minimum légal le sous-estime dès que la caisse
+    /// cotise davantage.
+    #[test]
+    fn the_legal_cap_uses_the_plans_own_total() {
+        let p = p2026();
+        let base = EmploymentTerms {
+            annual_gross_agreed: Some(50_000.0),
+            salary_periods_per_year: Some(12),
+            // 30 ans en 2026 : le minimum légal donne 7 %.
+            birth_date: Some("1996-01-01".into()),
+            ..terms()
+        };
+        let input = PayslipInput {
+            fiscal_year: 2026,
+            base_salary: Some(4_166.67),
+            net_paid: 0.0,
+            ..Default::default()
+        };
+
+        let legal = expected_deductions(&input, &base, &ytd(0.0), &p);
+        assert!((legal.lpp_employee_legal_cap - 23_540.0 * 0.07 / 2.0 / 12.0).abs() < 0.01);
+
+        // Le plan AXA cotise 8 % : le plafond monte avec lui.
+        let with_plan = EmploymentTerms {
+            lpp_plan_rates: vec![LppPlanRate {
+                basis: "coordinated".into(),
+                employee_pct: 3.2,
+                total_pct: 8.0,
+            }],
+            ..base
+        };
+        let planned = expected_deductions(&input, &with_plan, &ytd(0.0), &p);
+        assert!((planned.lpp_employee_legal_cap - 23_540.0 * 0.08 / 2.0 / 12.0).abs() < 0.01);
+        assert!(planned.lpp_employee_legal_cap > legal.lpp_employee_legal_cap);
     }
 
     /// La règle de recouvrement, telle que les plans sont écrits.

@@ -543,7 +543,7 @@ const CONTRACT_COLUMNS: &str = "id, income_id, label, employer_name, employer_ui
      laa_nonoccupational_pct, ijm_employee_pct, tax_at_source, tax_at_source_scale,
      tax_at_source_rate_pct, company_car_purchase_price, subsidized_canteen,
      commute_km_per_day, commute_public_transport_cost_year, started_on, ended_on,
-     notes, created_at, updated_at";
+     notes, created_at, updated_at, lpp_coordination_part_time";
 
 fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmploymentContract> {
     Ok(EmploymentContract {
@@ -581,6 +581,7 @@ fn row_to_contract(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmploymentContra
         notes: row.get(31)?,
         created_at: row.get(32)?,
         updated_at: row.get(33)?,
+        lpp_coordination_part_time: row.get::<_, i64>(34)? != 0,
     })
 }
 
@@ -774,10 +775,10 @@ fn upsert_contract_inner(
             laa_nonoccupational_pct, ijm_employee_pct, tax_at_source,
             tax_at_source_scale, tax_at_source_rate_pct, company_car_purchase_price,
             subsidized_canteen, commute_km_per_day, commute_public_transport_cost_year,
-            started_on, ended_on, notes)
+            started_on, ended_on, notes, lpp_coordination_part_time)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                  ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-                 ?29, ?30, ?31, ?32)
+                 ?29, ?30, ?31, ?32, ?33)
          ON CONFLICT(id) DO UPDATE SET
             label = excluded.label,
             employer_name = excluded.employer_name,
@@ -809,6 +810,7 @@ fn upsert_contract_inner(
             started_on = excluded.started_on,
             ended_on = excluded.ended_on,
             notes = excluded.notes,
+            lpp_coordination_part_time = excluded.lpp_coordination_part_time,
             updated_at = datetime('now')",
         rusqlite::params![
             id,
@@ -843,6 +845,7 @@ fn upsert_contract_inner(
             started_on,
             &contract.ended_on,
             &contract.notes,
+            contract.lpp_coordination_part_time as i64,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -894,6 +897,8 @@ impl From<&EmploymentContract> for EmploymentTerms {
             hourly_paid: c.hourly_paid,
             lpp_employee_share_pct: c.lpp_employee_share_pct,
             lpp_insured_scope: Some(c.lpp_insured_scope.clone()),
+            lpp_plan_rates: Vec::new(),
+            lpp_coordination_part_time: c.lpp_coordination_part_time,
             laa_nonoccupational_pct: c.laa_nonoccupational_pct,
             ijm_employee_pct: c.ijm_employee_pct,
             tax_at_source: c.tax_at_source,
@@ -1593,7 +1598,7 @@ fn upsert_cantonal_inner(
 // ---------------------------------------------------------------------------
 
 const PLAN_COLUMNS: &str =
-    "id, contract_id, age_from, age_to, total_pct, employee_pct";
+    "id, contract_id, age_from, age_to, total_pct, employee_pct, basis";
 
 fn row_to_plan_bracket(row: &rusqlite::Row<'_>) -> rusqlite::Result<LppPlanBracket> {
     Ok(LppPlanBracket {
@@ -1603,6 +1608,7 @@ fn row_to_plan_bracket(row: &rusqlite::Row<'_>) -> rusqlite::Result<LppPlanBrack
         age_to: row.get(3)?,
         total_pct: row.get(4)?,
         employee_pct: row.get(5)?,
+        basis: row.get(6)?,
     })
 }
 
@@ -1665,6 +1671,14 @@ fn upsert_plan_bracket_inner(
             b.employee_pct, b.total_pct
         ));
     }
+    // Une assiette inconnue viendrait d'un bug, pas d'une saisie : le moteur
+    // retomberait silencieusement sur le salaire coordonné, donc sur un
+    // montant faux mais crédible. Mieux vaut refuser.
+    let basis = match b.basis.as_str() {
+        "" => "coordinated",
+        v @ ("coordinated" | "excess" | "full") => v,
+        other => return Err(format!("Assiette de cotisation inconnue : {other}")),
+    };
     let id = if b.id.is_empty() {
         Uuid::new_v4().to_string()
     } else {
@@ -1672,25 +1686,30 @@ fn upsert_plan_bracket_inner(
     };
     conn.execute(
         "INSERT INTO lpp_plan_brackets
-            (id, contract_id, age_from, age_to, total_pct, employee_pct)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (id, contract_id, age_from, age_to, total_pct, employee_pct, basis)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
             age_from = excluded.age_from,
             age_to = excluded.age_to,
             total_pct = excluded.total_pct,
-            employee_pct = excluded.employee_pct",
+            employee_pct = excluded.employee_pct,
+            basis = excluded.basis",
         rusqlite::params![
             id,
             b.contract_id,
             b.age_from,
             b.age_to,
             b.total_pct,
-            b.employee_pct
+            b.employee_pct,
+            basis
         ],
     )
     .map_err(|e| {
         if e.to_string().contains("UNIQUE") {
-            format!("Une tranche commence déjà à {} ans.", b.age_from)
+            format!(
+                "Une tranche commence déjà à {} ans sur cette assiette.",
+                b.age_from
+            )
         } else {
             e.to_string()
         }
@@ -1750,9 +1769,24 @@ pub(crate) fn apply_lpp_plan(
         return Ok(());
     };
     let plan = load_lpp_plan(conn, contract_id)?;
-    if let Some(b) = crate::payroll::lpp_plan_bracket(&plan, age) {
-        terms.lpp_employee_share_pct = Some(b.employee_pct);
+    if plan.is_empty() {
+        return Ok(());
     }
+    // Une tranche par assiette : le plan AXA prélève selon l'âge sur le
+    // salaire coordonné ET, en plus, un taux fixe sur la part au-delà de la
+    // limite LPP. N'en garder qu'une sous-estimerait la retenue.
+    let mut rates = Vec::new();
+    for basis in ["coordinated", "excess", "full"] {
+        let of_basis: Vec<_> = plan.iter().filter(|b| b.basis == basis).cloned().collect();
+        if let Some(b) = crate::payroll::lpp_plan_bracket(&of_basis, age) {
+            rates.push(crate::payroll::LppPlanRate {
+                basis: basis.to_string(),
+                employee_pct: b.employee_pct,
+                total_pct: b.total_pct,
+            });
+        }
+    }
+    terms.lpp_plan_rates = rates;
     Ok(())
 }
 
@@ -4992,6 +5026,7 @@ mod tests {
             age_to: to,
             total_pct: total,
             employee_pct: employee,
+            basis: "coordinated".into(),
         }
     }
 
@@ -5015,7 +5050,7 @@ mod tests {
         let share_in = |year: i32| {
             let mut terms = EmploymentTerms::from(&saved);
             apply_lpp_plan(&conn, &mut terms, &saved.id, year).unwrap();
-            terms.lpp_employee_share_pct
+            terms.lpp_plan_rates.first().map(|r| r.employee_pct)
         };
 
         assert_eq!(share_in(2025), Some(5.0), "39 ans : première tranche");
@@ -5039,7 +5074,8 @@ mod tests {
         // 22 ans en 2026 : aucune tranche ne le couvre.
         let mut terms = EmploymentTerms::from(&saved);
         apply_lpp_plan(&conn, &mut terms, &saved.id, 2026).unwrap();
-        assert_eq!(terms.lpp_employee_share_pct, Some(3.5));
+        assert!(terms.lpp_plan_rates.is_empty());
+        assert_eq!(terms.lpp_employee_share_pct, Some(3.5), "le taux fixe reprend la main");
     }
 
     /// Sans date de naissance, aucun âge n'est calculable : le plan se tait
@@ -5057,6 +5093,7 @@ mod tests {
 
         let mut terms = EmploymentTerms::from(&saved);
         apply_lpp_plan(&conn, &mut terms, &saved.id, 2026).unwrap();
+        assert!(terms.lpp_plan_rates.is_empty());
         assert_eq!(terms.lpp_employee_share_pct, Some(4.0));
     }
 
@@ -5106,5 +5143,78 @@ mod tests {
             .unwrap();
         assert!(load_lpp_plan(&conn, &v2.id).unwrap().is_empty());
         assert_eq!(load_lpp_plan(&conn, &v1.id).unwrap().len(), 1, "l'autre version est intacte");
+    }
+
+    /// Le plan AXA/Columna « Standard » du document, saisi tel quel : épargne
+    /// 3.2/4.4/6.4/7.6 % du salaire assuré 1 selon l'âge, ET 4 % du salaire
+    /// assuré 2 pour tout le monde de 20 à 65 ans.
+    #[test]
+    fn the_axa_standard_plan_resolves_both_bases() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let mut c = sample_contract("inc1");
+        c.birth_date = Some("1986-08-15".into()); // 40 ans en 2026
+        let saved = upsert_contract_inner(&conn, &c).unwrap();
+
+        for (from, to, total, employee) in
+            [(20, 34, 8.0, 3.2), (35, 44, 11.0, 4.4), (45, 54, 16.0, 6.4), (55, 65, 19.0, 7.6)]
+        {
+            upsert_plan_bracket_inner(&conn, &bracket(&saved.id, from, to, total, employee))
+                .unwrap();
+        }
+        // La seconde assiette commence AUSSI à 20 ans : c'est précisément ce
+        // que l'ancienne contrainte d'unicité interdisait.
+        let mut excess = bracket(&saved.id, 20, 65, 8.0, 4.0);
+        excess.basis = "excess".into();
+        upsert_plan_bracket_inner(&conn, &excess).unwrap();
+
+        let mut terms = EmploymentTerms::from(&saved);
+        apply_lpp_plan(&conn, &mut terms, &saved.id, 2026).unwrap();
+
+        assert_eq!(terms.lpp_plan_rates.len(), 2, "les deux assiettes sont retenues");
+        let coordinated = terms
+            .lpp_plan_rates
+            .iter()
+            .find(|r| r.basis == "coordinated")
+            .unwrap();
+        assert_eq!(coordinated.employee_pct, 4.4, "40 ans → tranche 35-44");
+        assert_eq!(coordinated.total_pct, 11.0);
+        let excess = terms.lpp_plan_rates.iter().find(|r| r.basis == "excess").unwrap();
+        assert_eq!(excess.employee_pct, 4.0);
+
+        // À 55 ans, seule la tranche d'épargne bouge.
+        let mut older = EmploymentTerms::from(&saved);
+        apply_lpp_plan(&conn, &mut older, &saved.id, 2041).unwrap();
+        assert_eq!(
+            older.lpp_plan_rates.iter().find(|r| r.basis == "coordinated").unwrap().employee_pct,
+            7.6
+        );
+        assert_eq!(
+            older.lpp_plan_rates.iter().find(|r| r.basis == "excess").unwrap().employee_pct,
+            4.0,
+            "la cotisation sur l'excédent ne dépend pas de l'âge"
+        );
+    }
+
+    /// Une assiette inventée est refusée : le moteur retomberait sinon en
+    /// silence sur le salaire coordonné, donc sur un montant faux mais
+    /// crédible.
+    #[test]
+    fn an_unknown_basis_is_refused() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let saved = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+
+        let mut bad = bracket(&saved.id, 25, 65, 10.0, 5.0);
+        bad.basis = "salaire-magique".into();
+        assert!(upsert_plan_bracket_inner(&conn, &bad).is_err());
+
+        // Une assiette vide vaut le salaire coordonné, le cas courant.
+        let mut empty = bracket(&saved.id, 25, 65, 10.0, 5.0);
+        empty.basis = String::new();
+        upsert_plan_bracket_inner(&conn, &empty).unwrap();
+        assert_eq!(load_lpp_plan(&conn, &saved.id).unwrap()[0].basis, "coordinated");
     }
 }

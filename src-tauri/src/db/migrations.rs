@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 34;
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -132,6 +132,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 34 {
         migrate_v34(conn)?;
+    }
+    if current_version < 35 {
+        migrate_v35(conn)?;
     }
 
     Ok(())
@@ -2279,6 +2282,64 @@ fn migrate_v34(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (34);
         "
     ).map_err(|e| format!("Migration v34 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v35 — sur QUEL salaire porte un taux du plan, et la déduction de
+/// coordination des temps partiels.
+///
+/// La v34 supposait qu'un taux s'applique toujours au salaire coordonné. Le
+/// plan AXA/Columna sous les yeux montre que non : il définit trois assiettes,
+/// et fait porter deux cotisations d'épargne différentes sur deux d'entre
+/// elles — 3.2 à 7.6 % selon l'âge sur le « salaire assuré 1 » (le coordonné),
+/// **et en plus** 4 % sur le « salaire assuré 2 », la part du salaire annuel
+/// au-delà de 300 % de la rente AVS maximale. Un plan à une seule assiette ne
+/// sait pas dire cela, et sous-estime la retenue de qui gagne davantage.
+///
+/// `lpp_coordination_part_time` répond à l'autre mention du même document :
+/// « avec réduction de la déduction de coordination pour les salariés à temps
+/// partiel ». La loi ne l'impose pas, beaucoup de caisses le pratiquent, et
+/// l'écart n'a rien d'anecdotique — à 50 %, déduire la coordination entière
+/// écrase le salaire assuré, donc la retenue. Un drapeau par contrat, parce
+/// que c'est le règlement de caisse qui tranche et lui seul.
+/// La table est reconstruite plutôt qu'étendue : son `UNIQUE (contract_id,
+/// age_from)` interdisait précisément ce que le plan AXA exige. Sa tranche
+/// « 20 à 65 ans sur le salaire assuré 2 » commence au même âge que sa tranche
+/// « 20 à 34 ans sur le salaire assuré 1 », et les deux doivent coexister.
+/// L'unicité porte donc désormais sur (contrat, assiette, âge de début).
+fn migrate_v35(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE lpp_plan_brackets_new (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL,
+            age_from INTEGER NOT NULL,
+            age_to INTEGER NOT NULL,
+            total_pct REAL NOT NULL,
+            employee_pct REAL NOT NULL,
+            basis TEXT NOT NULL DEFAULT 'coordinated',
+            FOREIGN KEY (contract_id) REFERENCES employment_contracts(id) ON DELETE CASCADE,
+            UNIQUE (contract_id, basis, age_from)
+        );
+
+        INSERT INTO lpp_plan_brackets_new
+            (id, contract_id, age_from, age_to, total_pct, employee_pct, basis)
+        SELECT id, contract_id, age_from, age_to, total_pct, employee_pct, 'coordinated'
+        FROM lpp_plan_brackets;
+
+        DROP INDEX IF EXISTS idx_lpp_plan_contract;
+        DROP TABLE lpp_plan_brackets;
+        ALTER TABLE lpp_plan_brackets_new RENAME TO lpp_plan_brackets;
+        CREATE INDEX idx_lpp_plan_contract
+            ON lpp_plan_brackets(contract_id, age_from);
+
+        ALTER TABLE employment_contracts
+            ADD COLUMN lpp_coordination_part_time INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (35);
+        "
+    ).map_err(|e| format!("Migration v35 failed: {}", e))?;
 
     Ok(())
 }

@@ -385,6 +385,10 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
             // « total » est le cas le plus répandu ; la fiche du revenu permet
             // de le corriger si votre caisse n'assure que le salaire de base.
             lpp_insured_scope: "total",
+            // La réduction de la déduction de coordination au temps partiel
+            // dépend du règlement de caisse : elle se règle sur la fiche du
+            // contrat, avec le plan de prévoyance sous les yeux.
+            lpp_coordination_part_time: false,
             laa_insurer: null,
             laa_nonoccupational_pct: optionalNumber(laaPct),
             ijm_employee_pct: optionalNumber(ijmPct),

@@ -6,7 +6,10 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/toast"
 import {
+  AXA_COLUMNA_STANDARD,
   LEGAL_MINIMUM_PLAN,
+  LPP_BASES,
+  basisLabel,
   bracketForAge,
   employerPct,
   lppAge,
@@ -48,12 +51,29 @@ export function LppPlanEditor({
   const { toast } = useToast()
   const [plan, setPlan] = useState<api.LppPlanBracket[]>([])
   const [loading, setLoading] = useState(true)
-  const [draft, setDraft] = useState({ age_from: "", age_to: "", total: "", employee: "" })
+  const [draft, setDraft] = useState({
+    age_from: "",
+    age_to: "",
+    total: "",
+    employee: "",
+    basis: "coordinated",
+  })
 
   const year = new Date().getFullYear()
   const age = lppAge(birthDate, year)
-  const current = bracketForAge(plan, age)
-  const next = nextBracket(plan, age, year)
+  /// Une tranche en vigueur PAR assiette : un plan qui empile l'épargne sur le
+  /// salaire coordonné et un taux fixe sur la part au-delà en a deux à la
+  /// fois, et n'en montrer qu'une cacherait la moitié de la retenue.
+  const currentByBasis = LPP_BASES.map((b) => ({
+    basis: b.value as string,
+    bracket: bracketForAge(plan.filter((p) => p.basis === b.value), age),
+  })).filter((x) => x.bracket != null)
+  const current = currentByBasis[0]?.bracket ?? null
+  const next = nextBracket(
+    plan.filter((p) => p.basis === "coordinated"),
+    age,
+    year,
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -106,13 +126,21 @@ export function LppPlanEditor({
       toast("Complétez les quatre champs de la tranche.", "error")
       return
     }
-    await save({ id: "", contract_id: contractId, age_from: from, age_to: to, total_pct: total, employee_pct: employee })
-    setDraft({ age_from: "", age_to: "", total: "", employee: "" })
+    await save({
+      id: "",
+      contract_id: contractId,
+      age_from: from,
+      age_to: to,
+      total_pct: total,
+      employee_pct: employee,
+      basis: draft.basis,
+    })
+    setDraft({ age_from: "", age_to: "", total: "", employee: "", basis: "coordinated" })
   }
 
-  const seedLegalMinimum = async () => {
-    for (const b of LEGAL_MINIMUM_PLAN) {
-      if (plan.some((p) => p.age_from === b.age_from)) continue
+  const seed = async (preset: typeof LEGAL_MINIMUM_PLAN) => {
+    for (const b of preset) {
+      if (plan.some((p) => p.age_from === b.age_from && p.basis === b.basis)) continue
       await save({ id: "", contract_id: contractId, ...b })
     }
   }
@@ -142,15 +170,21 @@ export function LppPlanEditor({
               </p>
             ) : current ? (
               <>
-                <p>
-                  <span className="font-medium">
-                    {age} ans au sens LPP en {year}
-                  </span>{" "}
-                  → tranche {current.age_from}–{current.age_to} ans :{" "}
-                  {pct(current.total_pct)} au total, dont{" "}
-                  <span className="font-medium">{pct(current.employee_pct)} à votre charge</span>{" "}
-                  et {pct(employerPct(current))} pour l'employeur.
+                <p className="font-medium">
+                  {age} ans au sens LPP en {year}
                 </p>
+                <ul className="mt-1 space-y-0.5">
+                  {currentByBasis.map(({ basis, bracket }) => (
+                    <li key={basis}>
+                      {basisLabel(basis)} · tranche {bracket!.age_from}–{bracket!.age_to} ans :{" "}
+                      {pct(bracket!.total_pct)} au total, dont{" "}
+                      <span className="font-medium">
+                        {pct(bracket!.employee_pct)} à votre charge
+                      </span>{" "}
+                      et {pct(employerPct(bracket!))} pour l'employeur.
+                    </li>
+                  ))}
+                </ul>
                 {next && (
                   <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                     <CalendarClock className="h-3.5 w-3.5 shrink-0" />
@@ -179,20 +213,34 @@ export function LppPlanEditor({
               Aucune tranche. Sans plan, c'est le taux fixe du contrat qui s'applique à tout
               âge — correct tant que votre caisse n'a qu'un seul taux.
             </p>
-            <Button type="button" variant="outline" size="sm" onClick={seedLegalMinimum}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              Partir du minimum légal
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => seed(LEGAL_MINIMUM_PLAN)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                Minimum légal
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => seed(AXA_COLUMNA_STANDARD)}>
+                <Plus className="mr-1.5 h-4 w-4" />
+                AXA Columna « Standard »
+              </Button>
+            </div>
             <p className="text-xs text-muted-foreground">
-              7 / 10 / 15 / 18 % selon l'âge (art. 16 LPP), partagés par moitié. Beaucoup
-              d'entreprises cotisent davantage : corrigez ensuite avec votre règlement de caisse.
+              Le <strong>minimum légal</strong> : 7 / 10 / 15 / 18 % selon l'âge (art. 16 LPP),
+              partagés par moitié. Beaucoup d'entreprises cotisent davantage.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <strong>AXA Columna « Standard »</strong> : 8 / 11 / 16 / 19 % dès 20 ans sur le
+              salaire coordonné, dont 40 % à votre charge, plus 4 % sur la part au-delà de la
+              limite LPP. Ce sont les chiffres d'un contrat précis — AXA propose plusieurs
+              variantes et chaque entreprise négocie les siennes. Vérifiez sur votre propre
+              document, puis corrigez ici.
             </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[34rem] text-sm">
+            <table className="w-full min-w-[46rem] text-sm">
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="pb-2 font-medium">Assiette</th>
                   <th className="pb-2 font-medium">De</th>
                   <th className="pb-2 font-medium">À (inclus)</th>
                   <th className="pb-2 font-medium">Total %</th>
@@ -206,6 +254,19 @@ export function LppPlanEditor({
                   const active = current?.id === b.id
                   return (
                     <tr key={b.id} className={active ? "bg-primary/5" : undefined}>
+                      <td className="py-2 pr-2">
+                        <select
+                          className="h-9 w-48 rounded-md border border-input bg-background px-2 text-sm"
+                          value={b.basis}
+                          onChange={(e) =>
+                            save({ ...b, basis: e.target.value })
+                          }
+                        >
+                          {LPP_BASES.map((x) => (
+                            <option key={x.value} value={x.value}>{x.label}</option>
+                          ))}
+                        </select>
+                      </td>
                       <td className="py-2 pr-2">
                         <Input
                           type="number" min="0" max="99" className="h-9 w-20"
@@ -264,6 +325,18 @@ export function LppPlanEditor({
         {plan.length > 0 && (
           <div className="flex flex-wrap items-end gap-2 border-t pt-4">
             <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Assiette</label>
+              <select
+                className="h-10 w-48 rounded-md border border-input bg-background px-2 text-sm"
+                value={draft.basis}
+                onChange={(e) => setDraft((d) => ({ ...d, basis: e.target.value }))}
+              >
+                {LPP_BASES.map((x) => (
+                  <option key={x.value} value={x.value}>{x.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground">De</label>
               <Input type="number" min="0" max="99" className="w-20" value={draft.age_from}
                 onChange={(e) => setDraft((d) => ({ ...d, age_from: e.target.value }))} placeholder="25" />
@@ -290,11 +363,31 @@ export function LppPlanEditor({
           </div>
         )}
 
-        <p className="text-xs text-muted-foreground">
-          Votre part ne peut pas dépasser la moitié du total : l'employeur doit financer au
-          moins autant que vous (art. 66 al. 1 LPP). Les âges s'entendent au sens LPP — année
-          civile moins année de naissance — d'où un changement au 1ᵉʳ janvier.
-        </p>
+        <div className="space-y-2 border-t pt-4 text-xs text-muted-foreground">
+          <p>
+            Votre part ne peut pas dépasser la moitié du total : l'employeur doit financer au
+            moins autant que vous (art. 66 al. 1 LPP). Les âges s'entendent au sens LPP — année
+            civile moins année de naissance — d'où un changement au 1ᵉʳ janvier.
+          </p>
+          <p>
+            Un plan peut empiler des cotisations sur plusieurs assiettes : c'est ce que fait
+            AXA, qui prélève selon l'âge sur le salaire coordonné <em>et</em> un taux fixe sur
+            la part au-delà de la limite LPP.
+          </p>
+          <ul className="space-y-1 pl-4">
+            {LPP_BASES.map((b) => (
+              <li key={b.value} className="list-disc">
+                <strong>{b.label}</strong> — {b.hint}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Les cotisations de <strong>risque et de frais</strong> ne figurent pas ici : les
+            plans en donnent la clé de répartition, pas le taux, qui vit sur la facture
+            annuelle de la caisse. Votre retenue réelle peut donc être un peu supérieure à
+            l'épargne calculée — ajoutez-la comme une tranche si vous connaissez son taux.
+          </p>
+        </div>
       </CardContent>
     </Card>
   )

@@ -39,6 +39,7 @@ const emptyForm = (incomeId: string): FormState => ({
   lpp_fund_name: "",
   lpp_employee_share_pct: "",
   lpp_insured_scope: "total",
+  lpp_coordination_part_time: false,
   laa_insurer: "",
   laa_nonoccupational_pct: "",
   ijm_employee_pct: "",
@@ -76,6 +77,7 @@ function toForm(c: api.EmploymentContract): FormState {
     lpp_fund_name: str(c.lpp_fund_name),
     lpp_employee_share_pct: str(c.lpp_employee_share_pct),
     lpp_insured_scope: c.lpp_insured_scope || "total",
+    lpp_coordination_part_time: c.lpp_coordination_part_time,
     laa_insurer: str(c.laa_insurer),
     laa_nonoccupational_pct: str(c.laa_nonoccupational_pct),
     ijm_employee_pct: str(c.ijm_employee_pct),
@@ -128,6 +130,7 @@ function toContract(f: FormState): api.EmploymentContract {
     lpp_fund_name: text("lpp_fund_name"),
     lpp_employee_share_pct: num("lpp_employee_share_pct"),
     lpp_insured_scope: String(f.lpp_insured_scope || "total"),
+    lpp_coordination_part_time: flag("lpp_coordination_part_time"),
     laa_insurer: text("laa_insurer"),
     laa_nonoccupational_pct: num("laa_nonoccupational_pct"),
     ijm_employee_pct: num("ijm_employee_pct"),
@@ -579,6 +582,14 @@ export function EmploymentContractForm({
             value={str("lpp_employee_share_pct")}
             onChange={(v) => set("lpp_employee_share_pct", v)}
           />
+          <div className="sm:col-span-2">
+            <Checkbox
+              label="Déduction de coordination réduite au taux d'occupation"
+              checked={form.lpp_coordination_part_time === true}
+              onChange={(v) => set("lpp_coordination_part_time", v)}
+              hint="La loi fixe une déduction en francs, la même pour tous ; beaucoup de caisses la réduisent au prorata pour les temps partiels, et le plan le dit alors noir sur blanc. À 50 % d'activité l'écart est majeur : la déduction pleine écrase le salaire assuré, donc la retenue."
+            />
+          </div>
           <Field label="Assureur LAA">
             <Input value={str("laa_insurer")} onChange={(e) => set("laa_insurer", e.target.value)} />
           </Field>
