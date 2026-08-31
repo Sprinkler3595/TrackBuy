@@ -22,6 +22,10 @@ import * as api from "@/lib/tauri"
 /// Aucun réglage préalable : le registre est public et s'interroge tel quel.
 /// Les identifiants des Paramètres, s'il y en a, sont posés par le back-end ;
 /// et si le registre les réclame, c'est son message d'erreur qui y renvoie.
+///
+/// La licence de l'API est « OGD Open use. Must provide the source. » : citer
+/// la source est une CONDITION de l'usage, pas un ornement. D'où la mention en
+/// pied d'écran, qui n'est donc pas à retirer pour gagner trois lignes.
 
 const statusLabel = (s: string | null): { text: string; variant: "success" | "secondary" } | null =>
   s === "ACTIVE"
@@ -171,6 +175,10 @@ export function ZefixLookup({
             </ul>
           )}
         </div>
+
+        <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+          Source : Zefix — Office fédéral du registre du commerce (OFRC).
+        </p>
       </div>
     </div>
   )

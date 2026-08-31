@@ -167,7 +167,10 @@ export function HelpPage() {
               registre est public. S'il refusait vos requêtes, le message vous renverra vers
               <strong> Paramètres → Registre du commerce</strong>, où se saisissent des
               identifiants gratuits obtenus à{" "}
-              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code>.
+              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code>. Les
+              données du registre sont en libre usage à une condition, que l'écran de
+              recherche remplit pour vous : en citer la source, l'Office fédéral du registre
+              du commerce.
             </p>
           </Step>
 

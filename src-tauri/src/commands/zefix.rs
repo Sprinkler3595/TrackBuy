@@ -14,18 +14,25 @@ use crate::commands::auth::AppState;
 /// liste allégée (`CompanyShort`) qui ne porte PAS l'adresse, seulement la
 /// commune du siège. L'adresse complète demande le détail par IDE.
 ///
+/// ## Licence : OGD, source à citer
+///
+/// La spécification publiée (`/ZefixPublicREST/v3/api-docs`, OpenAPI 3.1)
+/// porte : « OGD Open use. Must provide the source. » L'usage est donc libre,
+/// à une condition qui n'est pas décorative : la SOURCE doit être indiquée.
+/// L'écran de recherche la nomme — c'est une obligation, pas une politesse.
+///
 /// ## Identifiants : facultatifs
 ///
-/// L'API est publique et s'interroge sans authentification. Certains accès sont
-/// néanmoins nominatifs (quotas, usage intensif) ; l'OFRC les délivre
-/// gratuitement contre un courriel à `zefix@bj.admin.ch`.
+/// La même spécification déclare un schéma de sécurité sur chacun de ses
+/// points d'entrée (le cadenas de Swagger). Mais elle ne dit pas si le serveur
+/// l'exige réellement, et le registre est par ailleurs annoncé comme public.
 ///
-/// D'où la règle ici : on appelle SANS authentification tant qu'aucun
-/// identifiant n'est enregistré, et on n'en ajoute un que s'il y en a un. Le
-/// cas ordinaire ne demande donc aucun réglage. Si le registre refuse l'appel
-/// anonyme, le 401 le dit et renvoie vers les réglages — plutôt que d'exiger
-/// d'avance des identifiants dont l'immense majorité des utilisateurs n'a pas
-/// besoin.
+/// Impossible de trancher sans appeler : d'où la règle ici. On appelle SANS
+/// authentification tant qu'aucun identifiant n'est enregistré, et on n'en
+/// ajoute un que s'il y en a un. Le cas ordinaire ne demande donc aucun
+/// réglage ; et si le registre refuse l'appel anonyme, le 401 le dit et
+/// renvoie vers les réglages, où l'accès nominatif — gratuit, obtenu auprès de
+/// `zefix@bj.admin.ch` — se saisit.
 ///
 /// Aucun identifiant n'est livré avec l'application : un compte nominatif
 /// embarqué serait partagé entre tous ses utilisateurs, ce que les conditions
@@ -94,22 +101,55 @@ fn client() -> Result<reqwest::Client, String> {
 
 /// Traduit un statut HTTP en cause compréhensible. Un « 401 » brut n'aide
 /// personne ; savoir qu'il manque des identifiants, si.
+/// Le message que le registre met lui-même dans son corps d'erreur
+/// (`RestApiErrorResponse`). Il en dit plus que le statut — « name too short »,
+/// « invalid uid » — et vaut mieux que deux cents caractères de JSON brut.
+fn message_in(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    ["message", "error", "detail"]
+        .iter()
+        .find_map(|k| text_of(&v, k))
+}
+
 fn explain(status: reqwest::StatusCode, body: &str) -> String {
     match status.as_u16() {
         401 | 403 => "Zefix a refusé cette requête. Le registre demande ici des identifiants : ils sont gratuits et s'obtiennent auprès de zefix@bj.admin.ch, puis se saisissent dans Paramètres → Registre du commerce. Si vous en avez déjà saisi, vérifiez-les.".into(),
         404 => "Zefix ne connaît pas cette entreprise.".into(),
         429 => "Trop de requêtes envoyées à Zefix. Patientez un instant.".into(),
         500..=599 => format!("Zefix est momentanément indisponible ({status})."),
-        _ => format!("Zefix a répondu {status} : {}", body.chars().take(200).collect::<String>()),
+        _ => match message_in(body) {
+            Some(m) => format!("Zefix a répondu {status} : {m}"),
+            None => format!("Zefix a répondu {status} : {}", body.chars().take(200).collect::<String>()),
+        },
+    }
+}
+
+/// Le registre exprime certains libellés en quatre langues — son schéma les
+/// type `DFIEString` : Deutsch, Français, Italiano, English. Le champ vaut
+/// alors un OBJET, pas une chaîne, et un lecteur qui n'attend qu'une chaîne
+/// n'y voit rien : la forme juridique disparaîtrait de la liste sans qu'aucune
+/// erreur ne le signale.
+///
+/// Le français d'abord, l'application étant francophone, puis les autres
+/// langues nationales : « Aktiengesellschaft » vaut mieux que rien.
+const LANGS: [&str; 4] = ["fr", "de", "it", "en"];
+
+fn flat_text(v: &serde_json::Value) -> Option<String> {
+    let clean = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    match v {
+        serde_json::Value::String(s) => clean(s.as_str()),
+        serde_json::Value::Object(_) => LANGS
+            .iter()
+            .find_map(|lang| v.get(lang).and_then(|x| x.as_str()).and_then(clean)),
+        _ => None,
     }
 }
 
 fn text_of(v: &serde_json::Value, key: &str) -> Option<String> {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    v.get(key).and_then(flat_text)
 }
 
 /// L'adresse du registre, mise en une ligne : « Route de Meyrin 12, 1217 Meyrin ».
@@ -320,6 +360,46 @@ mod tests {
         assert!(parse_company(&json!("bonjour")).is_err());
         assert!(parse_company(&json!([])).is_err());
         assert!(parse_company(&json!({ "uid": "CHE123456789" })).is_err());
+    }
+
+    /// Un libellé multilingue ne doit pas disparaître : le champ vaut un objet
+    /// de quatre langues, et le français est celui qu'on veut.
+    #[test]
+    fn a_multilingual_label_is_read_in_french_first() {
+        let hit = json!({
+            "name": "KaSy SA",
+            "legalForm": {
+                "shortName": { "de": "AG", "fr": "SA", "it": "SA", "en": "Ltd" },
+            },
+        });
+        assert_eq!(to_match(&hit).unwrap().legal_form.as_deref(), Some("SA"));
+
+        // Français absent : une autre langue nationale plutôt que rien.
+        let de_only = json!({
+            "name": "KaSy AG",
+            "legalForm": { "shortName": { "de": "AG" } },
+        });
+        assert_eq!(to_match(&de_only).unwrap().legal_form.as_deref(), Some("AG"));
+
+        // Et la forme simple continue de passer.
+        let plain = json!({ "name": "KaSy SA", "legalForm": { "shortName": "SA" } });
+        assert_eq!(to_match(&plain).unwrap().legal_form.as_deref(), Some("SA"));
+
+        // Un objet sans aucune langue connue ne rend rien plutôt qu'un débris.
+        let unknown = json!({ "name": "KaSy SA", "legalForm": { "shortName": { "rm": "SA" } } });
+        assert_eq!(to_match(&unknown).unwrap().legal_form, None);
+    }
+
+    /// Le corps d'erreur du registre en dit plus que le statut seul.
+    #[test]
+    fn the_registry_own_error_message_is_surfaced() {
+        let body = r#"{"status":400,"message":"name must be at least 3 characters"}"#;
+        let msg = explain(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(msg.contains("name must be at least 3 characters"), "{msg}");
+
+        // Corps illisible : on retombe sur le texte brut, tronqué.
+        let raw = explain(reqwest::StatusCode::BAD_REQUEST, "<html>oups</html>");
+        assert!(raw.contains("oups"), "{raw}");
     }
 
     /// L'appel anonyme est le cas normal : rien de saisi, rien d'envoyé.
