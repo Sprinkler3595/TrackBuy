@@ -1694,6 +1694,14 @@ export interface LppPlanBracket {
   basis: string
 }
 
+/// Les bulletins qu'une version de contrat juge, et sur quelle période.
+export interface ContractVersionUsage {
+  contract_id: string
+  receipt_count: number
+  first_period: string | null
+  last_period: string | null
+}
+
 /// Le plan traduit en francs, pour le salaire du contrat.
 ///
 /// « 3.2 % du salaire coordonné » ne dit rien à personne : ni combien de
@@ -2049,6 +2057,12 @@ export const deleteLppPlanBracket = (id: string) =>
 /// seule définition, et elle est en Rust.
 export const previewLppPlan = (contractId: string, year: number) =>
   invoke<LppPlanPreview>("preview_lpp_plan", { contractId, year })
+
+/// Combien de bulletins déjà enregistrés dépendent de chaque version.
+/// Permet de dire « ces N fiches ne bougeront pas » avant d'annoncer un
+/// changement — et d'avertir avant de modifier une version qui en porte.
+export const getContractVersionUsage = (incomeId: string) =>
+  invoke<ContractVersionUsage[]>("get_contract_version_usage", { incomeId })
 
 /// Barème de suppléments d'une version de contrat.
 export const getSupplementRates = (contractId: string) =>

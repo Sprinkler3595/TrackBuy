@@ -407,12 +407,31 @@ export function HelpPage() {
         </div>
 
         <div className="space-y-1.5">
-          <p className="font-medium">Quand votre salaire est renégocié</p>
+          <p className="font-medium">Quand vos conditions changent</p>
           <p className="text-muted-foreground">
-            Onglet <strong>Contrat</strong> → <strong>Ajouter un avenant</strong>. Ne
-            modifiez pas la version existante : un avenant crée une nouvelle version datée,
-            et vos anciennes fiches restent contrôlées avec les conditions de leur époque.
-            La version précédente se clôt toute seule à la veille.
+            Onglet <strong>Contrat</strong> → <strong>Annoncer un changement</strong>. Vaut
+            pour tout : salaire renégocié, taux de cotisation revu, nouveau plan de
+            prévoyance, entreprise qui change de nom ou d'IDE, déménagement, passage à temps
+            partiel.
+          </p>
+          <p className="text-muted-foreground">
+            Les conditions actuelles sont reprises — ne changez que ce qui change — et vous
+            fixez la <strong>date d'effet</strong>. Vos bulletins antérieurs restent
+            contrôlés avec les conditions de leur époque, et l'écran vous dit combien sont
+            ainsi protégés. La version précédente se clôt toute seule à la veille.
+          </p>
+          <p className="text-muted-foreground">
+            Ne modifiez la version existante que pour <em>corriger une saisie</em>. Si elle
+            juge déjà des bulletins, l'écran vous avertit : les modifier changerait leur
+            contrôle.
+          </p>
+          <p className="text-muted-foreground">
+            Les taux <strong>légaux</strong> — AVS, chômage, cantonaux — ne dépendent pas de
+            votre contrat : ils changent au 1ᵉʳ janvier et sont gérés par année dans{" "}
+            <Link to="/settings/baremes" className="underline underline-offset-2">
+              Paramètres → Barèmes
+            </Link>
+            . Vos anciens bulletins gardent automatiquement les barèmes de leur année.
           </p>
         </div>
 

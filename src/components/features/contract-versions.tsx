@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatDate, formatPrice } from "@/lib/utils"
+import { changeLog } from "@/lib/contract-changes"
 import type * as api from "@/lib/tauri"
 
 /// La frise des avenants d'un contrat.
@@ -46,6 +47,10 @@ export function ContractVersions({
 }) {
   if (versions.length <= 1) return null
 
+  // Chaque version accompagnée de ce que son arrivée a changé, de la plus
+  // récente à la plus ancienne.
+  const log = changeLog(versions)
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -64,7 +69,7 @@ export function ContractVersions({
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
-        {versions.map((v) => {
+        {log.map(({ version: v, changes }) => {
           const active = v.id === selectedId
           const current = v.ended_on == null
           return (
@@ -90,6 +95,21 @@ export function ContractVersions({
                   {v.annual_gross_agreed != null &&
                     ` · ${formatPrice(v.annual_gross_agreed, currency)} par an`}
                 </span>
+                {/* Ce que SON arrivée a changé. La liste nommait la version,
+                    pas le changement — or c'est le changement qu'on vient
+                    vérifier, et qui sert de preuve si une fiche est contestée. */}
+                {changes.length > 0 && (
+                  <span className="mt-1.5 block space-y-0.5">
+                    {changes.map((c) => (
+                      <span key={c.label} className="block text-xs">
+                        <span className="text-muted-foreground">{c.label} : </span>
+                        <span className="text-muted-foreground line-through">{c.before}</span>
+                        <span className="text-muted-foreground"> → </span>
+                        <span className="font-medium">{c.after}</span>
+                      </span>
+                    ))}
+                  </span>
+                )}
               </button>
               <Button
                 variant="ghost"

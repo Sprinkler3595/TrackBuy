@@ -124,6 +124,7 @@ pub fn run() {
             commands::payroll::upsert_lpp_plan_bracket,
             commands::payroll::delete_lpp_plan_bracket,
             commands::payroll::preview_lpp_plan,
+            commands::payroll::get_contract_version_usage,
             commands::payroll::get_receipt_supplements,
             commands::payroll::set_receipt_supplements,
             commands::payroll::get_supplement_totals,

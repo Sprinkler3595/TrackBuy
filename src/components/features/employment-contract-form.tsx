@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Briefcase, Plus, Save } from "lucide-react"
+import { AlertTriangle, Briefcase, Plus, Save, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,7 @@ import { ContractVersions } from "@/components/features/contract-versions"
 import * as api from "@/lib/tauri"
 import { RateField } from "@/components/features/rate-field"
 import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
+import { formatDate } from "@/lib/utils"
 
 type FormState = Record<string, string | boolean>
 
@@ -231,19 +232,25 @@ export function EmploymentContractForm({
   /// Incrémenté par « Réessayer » : l'identifiant du revenu n'a pas changé,
   /// il faut donc autre chose pour relancer le chargement.
   const [reloadKey, setReloadKey] = useState(0)
+  /// Combien de bulletins chaque version juge déjà. Sert aux deux moitiés de
+  /// la promesse : rassurer avant d'annoncer un changement, avertir avant de
+  /// corriger une version qui a déjà servi.
+  const [usage, setUsage] = useState<api.ContractVersionUsage[]>([])
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       setLoading(true)
       try {
-        const [list, p] = await Promise.all([
+        const [list, use, p] = await Promise.all([
           api.getEmploymentContractVersions(incomeId),
+          api.getContractVersionUsage(incomeId).catch(() => [] as api.ContractVersionUsage[]),
           api.getPayrollParams(new Date().getFullYear()),
         ])
         if (cancelled) return
         setParams(p)
         setVersions(list)
+        setUsage(use)
         // On ouvre sur la version en vigueur — celle qu'on vient consulter
         // neuf fois sur dix — et non sur la première de la liste.
         const contract = list.find((c) => c.ended_on == null) ?? list[0] ?? null
@@ -287,6 +294,7 @@ export function EmploymentContractForm({
       // Enregistrer une version peut clore la précédente : la liste doit être
       // relue, sinon elle afficherait deux périodes qui se chevauchent.
       setVersions(await api.getEmploymentContractVersions(incomeId))
+      setUsage(await api.getContractVersionUsage(incomeId).catch(() => []))
       toast(isAmendment ? "Avenant enregistré" : "Contrat enregistré", "success")
       onSaved?.(saved)
     } catch (e) {
@@ -322,6 +330,7 @@ export function EmploymentContractForm({
       await api.deleteEmploymentContractVersion(id)
       const list = await api.getEmploymentContractVersions(incomeId)
       setVersions(list)
+      setUsage(await api.getContractVersionUsage(incomeId).catch(() => []))
       const next = list.find((c) => c.ended_on == null) ?? list[0] ?? null
       setForm(next ? toForm(next) : emptyForm(incomeId))
       toast("Version supprimée", "success")
@@ -332,6 +341,12 @@ export function EmploymentContractForm({
 
   /// Vrai quand le formulaire décrit une version qui n'existe pas encore.
   const isAmendment = !str("id") && versions.length > 0
+
+  /// L'usage de la version actuellement ouverte dans le formulaire.
+  const editedUsage = usage.find((u) => u.contract_id === str("id")) ?? null
+  /// Ce qu'un changement annoncé laissera intact : tout ce qui est déjà
+  /// enregistré, puisqu'une nouvelle version ne juge que ce qui suit sa date.
+  const frozenBefore = usage.reduce((n, u) => n + u.receipt_count, 0)
 
   if (loading) {
     return (
@@ -361,13 +376,63 @@ export function EmploymentContractForm({
         onDelete={removeVersion}
       />
 
+      {/* Annoncer un changement est le geste normal — modifier une version
+          existante est l'exception. Le bouton est donc toujours là, et non
+          caché dans la frise qui disparaît tant qu'il n'y a qu'une version. */}
+      {!isAmendment && versions.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Vos conditions ont changé ?</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Salaire, taux de cotisation, plan de prévoyance, nom ou IDE de l'entreprise,
+              canton… Déclarez-le à partir d'une date : ce qui précède ne bouge pas.
+            </p>
+          </div>
+          <Button type="button" onClick={startAmendment} className="shrink-0">
+            <Plus className="mr-1.5 h-4 w-4" />
+            Annoncer un changement
+          </Button>
+        </div>
+      )}
+
       {isAmendment && (
         <div className="rounded-lg border border-primary/40 bg-primary/5 p-3">
-          <p className="text-sm font-medium">Nouvel avenant</p>
+          <p className="text-sm font-medium">Nouveau changement de conditions</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Les conditions actuelles sont reprises : ne changez que ce qui change. À
-            l'enregistrement, la version précédente sera close la veille de la date d'effet,
-            et vos anciens bulletins continueront d'être contrôlés avec elle.
+            Les conditions actuelles sont reprises : ne changez que ce qui change, et fixez
+            la <strong>date d'effet</strong> dans « Début du contrat » ci-dessous. À
+            l'enregistrement, la version précédente sera close la veille.
+          </p>
+          {frozenBefore > 0 && (
+            <p className="mt-1.5 flex gap-1.5 text-xs text-emerald-700 dark:text-emerald-500">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {frozenBefore === 1
+                ? "1 bulletin déjà enregistré garde ses conditions actuelles."
+                : `${frozenBefore} bulletins déjà enregistrés gardent leurs conditions actuelles.`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Le vrai danger n'est pas d'annoncer un changement, c'est de corriger
+          une version qui juge déjà des bulletins : leur contrôle changerait
+          sans qu'on l'ait demandé. */}
+      {!isAmendment && editedUsage != null && editedUsage.receipt_count > 0 && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+          <p className="flex gap-2 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
+            <span>
+              <strong>
+                {editedUsage.receipt_count === 1
+                  ? "1 bulletin est contrôlé avec cette version"
+                  : `${editedUsage.receipt_count} bulletins sont contrôlés avec cette version`}
+              </strong>
+              {editedUsage.first_period && editedUsage.last_period && (
+                <> ({formatDate(editedUsage.first_period)} → {formatDate(editedUsage.last_period)})</>
+              )}
+              . Ce que vous modifiez ici changera leur contrôle. Pour un changement qui ne
+              vaut qu'à partir d'une date, utilisez « Annoncer un changement ».
+            </span>
           </p>
         </div>
       )}
@@ -379,15 +444,6 @@ export function EmploymentContractForm({
               <Briefcase className="h-4 w-4" />
               Employeur
             </CardTitle>
-            {/* Quand il n'y a qu'une version, la frise ne s'affiche pas : le
-                bouton doit donc exister ici, sans quoi on ne pourrait jamais
-                créer le premier avenant. */}
-            {versions.length === 1 && !isAmendment && (
-              <Button type="button" variant="outline" size="sm" onClick={startAmendment}>
-                <Plus className="mr-1.5 h-4 w-4" />
-                Ajouter un avenant
-              </Button>
-            )}
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

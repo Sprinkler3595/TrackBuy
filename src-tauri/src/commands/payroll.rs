@@ -1791,6 +1791,79 @@ pub(crate) fn apply_lpp_plan(
     Ok(())
 }
 
+/// Combien de bulletins déjà enregistrés dépendent de chaque version du
+/// contrat, et sur quelle période.
+///
+/// Sans ce chiffre, l'écran ne peut pas tenir la promesse qui compte :
+/// « annoncer un changement ne touche pas au passé ». Il faut pouvoir dire
+/// COMBIEN de fiches restent intactes — et, symétriquement, avertir quand on
+/// s'apprête à modifier une version qui en porte déjà.
+///
+/// Le rattachement suit exactement la règle de `load_contract_at` : la version
+/// dont la période couvre la date du bulletin, la plus tardive à commencer.
+#[derive(Debug, Serialize)]
+pub struct ContractVersionUsage {
+    pub contract_id: String,
+    pub receipt_count: i64,
+    pub first_period: Option<String>,
+    pub last_period: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_contract_version_usage(
+    state: State<'_, AppState>,
+    income_id: String,
+) -> Result<Vec<ContractVersionUsage>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    contract_version_usage_inner(&conn, &income_id)
+}
+
+pub(crate) fn contract_version_usage_inner(
+    conn: &rusqlite::Connection,
+    income_id: &str,
+) -> Result<Vec<ContractVersionUsage>, String> {
+    let versions = load_contract_versions(conn, income_id)?;
+    let receipts = load_receipts(conn, income_id)?;
+
+    let mut usage: Vec<ContractVersionUsage> = versions
+        .iter()
+        .map(|v| ContractVersionUsage {
+            contract_id: v.id.clone(),
+            receipt_count: 0,
+            first_period: None,
+            last_period: None,
+        })
+        .collect();
+
+    for r in &receipts {
+        // La même date que le contrôle : période couverte d'abord, versement
+        // en dernier recours. Compter sur une autre clé rattacherait un
+        // bulletin à une version qui ne l'a jamais jugé.
+        let key = r
+            .period_end
+            .as_deref()
+            .or(r.period_start.as_deref())
+            .unwrap_or(r.received_on.as_str())
+            .to_string();
+        let Some(c) = load_contract_at(conn, income_id, &key)? else {
+            continue;
+        };
+        let Some(slot) = usage.iter_mut().find(|u| u.contract_id == c.id) else {
+            continue;
+        };
+        slot.receipt_count += 1;
+        if slot.first_period.as_deref().is_none_or(|f| key.as_str() < f) {
+            slot.first_period = Some(key.clone());
+        }
+        if slot.last_period.as_deref().is_none_or(|l| key.as_str() > l) {
+            slot.last_period = Some(key);
+        }
+    }
+    Ok(usage)
+}
+
 /// Ce que le plan donne CONCRÈTEMENT, pour le salaire du contrat.
 ///
 /// « 3.2 % du salaire coordonné » ne dit rien à personne : ni combien de francs,
@@ -5382,5 +5455,101 @@ mod tests {
         // Ce qui reste impossible le reste : bornes inversées, taux négatif.
         assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 50, 45, 10.0, 5.0)).is_err());
         assert!(upsert_plan_bracket_inner(&conn, &bracket(&saved.id, 30, 40, -1.0, 5.0)).is_err());
+    }
+
+    // =======================================================================
+    // Annoncer un changement sans toucher au passé
+    // =======================================================================
+
+    /// La promesse centrale : déclarer un changement à partir d'une date laisse
+    /// les bulletins antérieurs EXACTEMENT tels qu'ils étaient contrôlés.
+    #[test]
+    fn announcing_a_change_leaves_earlier_payslips_untouched() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+
+        // Contrat initial, et trois bulletins de mars, avril, mai.
+        let v1 = upsert_contract_inner(
+            &conn,
+            &version("inc1", "2026-01-01", None, 50_000.0),
+        )
+        .unwrap();
+        for m in 3..=5 {
+            insert_receipt(&conn, &format!("r{m}"), "inc1", m);
+        }
+
+        let salary_seen_by = |month: u32| {
+            load_contract_at(&conn, "inc1", &format!("2026-{month:02}-28"))
+                .unwrap()
+                .unwrap()
+                .annual_gross_agreed
+        };
+        assert_eq!(salary_seen_by(3), Some(50_000.0));
+        assert_eq!(salary_seen_by(5), Some(50_000.0));
+
+        // On annonce une augmentation au 1er juillet.
+        let v2 = upsert_contract_inner(
+            &conn,
+            &version("inc1", "2026-07-01", None, 58_000.0),
+        )
+        .unwrap();
+        assert_ne!(v2.id, v1.id);
+
+        // Mars à mai n'ont pas bougé d'un franc.
+        assert_eq!(salary_seen_by(3), Some(50_000.0), "mars garde ses conditions");
+        assert_eq!(salary_seen_by(5), Some(50_000.0), "mai aussi");
+        assert_eq!(salary_seen_by(7), Some(58_000.0), "juillet prend les nouvelles");
+
+        // Et la version d'origine s'est close à la veille, sans chevauchement.
+        let versions = load_contract_versions(&conn, "inc1").unwrap();
+        let old = versions.iter().find(|v| v.id == v1.id).unwrap();
+        assert_eq!(old.ended_on.as_deref(), Some("2026-06-30"));
+    }
+
+    /// Le décompte qui permet à l'écran de dire « ces N bulletins ne bougeront
+    /// pas » — et, en sens inverse, d'avertir avant de modifier une version qui
+    /// en porte déjà.
+    #[test]
+    fn version_usage_counts_the_payslips_each_version_judges() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let v1 =
+            upsert_contract_inner(&conn, &version("inc1", "2026-01-01", None, 50_000.0)).unwrap();
+        for m in 3..=5 {
+            insert_receipt(&conn, &format!("r{m}"), "inc1", m);
+        }
+        let v2 =
+            upsert_contract_inner(&conn, &version("inc1", "2026-07-01", None, 58_000.0)).unwrap();
+        for m in 7..=8 {
+            insert_receipt(&conn, &format!("r{m}"), "inc1", m);
+        }
+
+        let usage = contract_version_usage_inner(&conn, "inc1").unwrap();
+        let of = |id: &str| usage.iter().find(|u| u.contract_id == id).unwrap();
+
+        assert_eq!(of(&v1.id).receipt_count, 3, "mars, avril, mai");
+        assert_eq!(of(&v1.id).first_period.as_deref(), Some("2026-03-28"));
+        assert_eq!(of(&v1.id).last_period.as_deref(), Some("2026-05-28"));
+
+        assert_eq!(of(&v2.id).receipt_count, 2, "juillet, août");
+        assert_eq!(of(&v2.id).first_period.as_deref(), Some("2026-07-28"));
+    }
+
+    /// Une version toute neuve n'a encore jugé personne : l'écran doit pouvoir
+    /// le dire, plutôt que d'avertir à tort.
+    #[test]
+    fn a_fresh_version_reports_no_payslips() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_income(&conn, "inc1", "salary");
+        let v = upsert_contract_inner(&conn, &sample_contract("inc1")).unwrap();
+
+        let usage = contract_version_usage_inner(&conn, "inc1").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].contract_id, v.id);
+        assert_eq!(usage[0].receipt_count, 0);
+        assert!(usage[0].first_period.is_none());
     }
 }
