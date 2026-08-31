@@ -10,6 +10,7 @@ import {
   Repeat,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
+import { ZefixHint } from "@/components/features/zefix-hint"
 import { cn } from "@/lib/utils"
 
 /// L'aide, écrite pour quelqu'un qui a sa fiche de salaire sous les yeux et pas
@@ -160,17 +161,11 @@ export function HelpPage() {
               automatiquement pour vos primes et vos notes de frais.
             </p>
             <p>
-              <strong>« Chercher au registre »</strong> évite de recopier l'IDE à la main :
-              le nom suffit, et l'IDE comme l'adresse du <em>siège</em> viennent de Zefix,
-              le registre officiel du commerce. Le siège compte : c'est lui, et non votre
-              domicile, qui détermine les retenues sociales cantonales. Rien à régler — le
-              registre est public. S'il refusait vos requêtes, le message vous renverra vers
-              <strong> Paramètres → Registre du commerce</strong>, où se saisissent des
-              identifiants gratuits obtenus à{" "}
-              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code>. Les
-              données du registre sont en libre usage à une condition, que l'écran de
-              recherche remplit pour vous : en citer la source, l'Office fédéral du registre
-              du commerce.
+              <strong>Où les trouver ?</strong> L'IDE figure en tête de votre fiche de
+              salaire. S'il n'y est pas, ou si l'adresse vous manque, <ZefixHint /> Prenez
+              l'adresse du <em>siège</em> : c'est elle qui est inscrite au registre, et c'est
+              le canton du siège qui commande les retenues sociales cantonales — pas celui où
+              vous vous rendez le matin, si les deux diffèrent.
             </p>
           </Step>
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import {
-  AlertTriangle, Briefcase, ChevronLeft, ChevronRight, Lock, Plus, Save, Search, ShieldCheck,
+  AlertTriangle, Briefcase, ChevronLeft, ChevronRight, Lock, Plus, Save, ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,10 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/toast"
 import { ErrorPanel } from "@/components/ui/error-panel"
 import { ContractVersions } from "@/components/features/contract-versions"
-import { ZefixLookup } from "@/components/features/zefix-lookup"
 import * as api from "@/lib/tauri"
 import { RateField } from "@/components/features/rate-field"
 import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
+import { ZefixHint } from "@/components/features/zefix-hint"
 import { formatDate } from "@/lib/utils"
 import { diffVersions } from "@/lib/contract-changes"
 
@@ -161,7 +161,8 @@ function Field({
   className,
 }: {
   label: string
-  hint?: string
+  /// Du texte le plus souvent, mais parfois un lien : d'où `ReactNode`.
+  hint?: React.ReactNode
   children: React.ReactNode
   className?: string
 }) {
@@ -236,8 +237,6 @@ export function EmploymentContractForm({
   /// Incrémenté par « Réessayer » : l'identifiant du revenu n'a pas changé,
   /// il faut donc autre chose pour relancer le chargement.
   const [reloadKey, setReloadKey] = useState(0)
-  /// Recherche au registre du commerce, ouverte depuis la carte Employeur.
-  const [zefixOpen, setZefixOpen] = useState(false)
   /// Trois régimes, et un seul par défaut.
   ///
   /// `view` — les conditions enregistrées sont en lecture seule. C'est l'état
@@ -299,24 +298,6 @@ export function EmploymentContractForm({
 
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }))
   const str = (k: string) => String(form[k] ?? "")
-
-  /// Le registre fait foi : ce qu'il renvoie remplace ce qui était saisi.
-  ///
-  /// L'adresse du siège n'a pas de case ici — elle vit sur l'entreprise, pas
-  /// sur le contrat, parce qu'un avenant ne déménage pas l'employeur. On la
-  /// dit quand même, faute de quoi l'utilisateur croirait la recherche
-  /// incomplète.
-  const pickFromZefix = (c: api.ZefixCompany) => {
-    setZefixOpen(false)
-    set("employer_name", c.name)
-    if (c.uid) set("employer_uid", c.uid)
-    toast(
-      c.address
-        ? `${c.name} — siège : ${c.address}`
-        : `${c.name} — pas d'adresse au registre`,
-      "success",
-    )
-  }
 
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
@@ -581,25 +562,21 @@ export function EmploymentContractForm({
               <Briefcase className="h-4 w-4" />
               Employeur
             </CardTitle>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setZefixOpen(true)}>
-              <Search className="mr-1.5 h-3.5 w-3.5" />
-              Chercher au registre
-            </Button>
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {zefixOpen && (
-            <ZefixLookup
-              initialName={str("employer_name")}
-              canton={str("work_canton") || null}
-              onPicked={pickFromZefix}
-              onClose={() => setZefixOpen(false)}
-            />
-          )}
           <Field label="Nom de l'employeur">
             <Input value={str("employer_name")} onChange={(e) => set("employer_name", e.target.value)} />
           </Field>
-          <Field label="IDE" hint="Format CHE-123.456.789">
+          <Field
+            label="IDE"
+            hint={
+              <>
+                Format CHE-123.456.789. Introuvable sur votre fiche de salaire ?{" "}
+                <ZefixHint />
+              </>
+            }
+          >
             <Input
               value={str("employer_uid")}
               onChange={(e) => set("employer_uid", e.target.value)}

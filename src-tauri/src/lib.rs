@@ -138,8 +138,6 @@ pub fn run() {
             commands::payroll::get_income_tax_summary,
             commands::payroll::get_contributions_history,
             commands::payroll::infer_payroll_params,
-            commands::zefix::zefix_search,
-            commands::zefix::zefix_company,
             commands::payroll::get_cantonal_rates,
             commands::payroll::upsert_cantonal_rates,
             commands::pending_reimbursements::list_pending_reimbursements,
