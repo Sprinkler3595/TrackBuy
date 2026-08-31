@@ -18,6 +18,7 @@ import { CareerPage } from "@/pages/career"
 import { IncomeDetailPage } from "@/pages/income-detail"
 import { ReimbursementsPage } from "@/pages/reimbursements"
 import { SettingsPage } from "@/pages/settings"
+import { HelpPage } from "@/pages/help"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
 import { PayrollSettings } from "@/pages/settings-payroll"
@@ -205,6 +206,7 @@ function AppContent() {
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
             <Route path="baremes" element={<ErrorBoundary><PayrollSettings /></ErrorBoundary>} />
           </Route>
+          <Route path="/aide" element={<ErrorBoundary><HelpPage /></ErrorBoundary>} />
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
           <Route path="*" element={<Navigate to="/ce-mois" replace />} />
         </Route>

@@ -4,6 +4,7 @@ import {
   Inbox,
   FileText,
   Settings,
+  HelpCircle,
   Lock,
   Moon,
   Sun,
@@ -55,7 +56,7 @@ interface SidebarProps {
 
 export function Sidebar({ onLock, vaultName }: SidebarProps) {
   const { theme, setTheme } = useTheme()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
 
   const nextTheme = () => {
     const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"]
@@ -126,6 +127,22 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
           >
             <Settings className="h-4 w-4" />
             {t("nav.settings")}
+          </NavLink>
+          {/* L'aide vit à côté des réglages, en bas : on la cherche quand on
+              bloque, pas quand on navigue. */}
+          <NavLink
+            to="/aide"
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+              )
+            }
+          >
+            <HelpCircle className="h-4 w-4" />
+            {locale === "fr" ? "Aide" : "Help"}
           </NavLink>
         </div>
       </nav>
