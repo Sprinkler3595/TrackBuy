@@ -287,6 +287,21 @@ export function PayrollSettings() {
     }
   }
 
+  /// Reprendre un canton déjà saisi le RECHARGE dans le formulaire.
+  ///
+  /// Sans cela, corriger un seul des deux taux effaçait l'autre : le
+  /// formulaire repartait vide et l'enregistrement envoie toujours les deux
+  /// champs, donc `null` pour celui qu'on n'avait pas retapé. Une correction
+  /// de routine détruisait une valeur juste.
+  const pickCanton = (canton: string) => {
+    const known = cantonal.find((c) => c.canton === canton)
+    setCantonalDraft({
+      canton,
+      af: known?.family_allowance_employee_pct?.toString() ?? "",
+      amat: known?.maternity_employee_pct?.toString() ?? "",
+    })
+  }
+
   const saveCantonal = async () => {
     const canton = cantonalDraft.canton.trim().toUpperCase()
     if (canton.length !== 2) {
@@ -539,6 +554,12 @@ export function PayrollSettings() {
             avec l'application, votre décompte annuel de caisse ou votre fiche de salaire les
             porte.
           </p>
+          <p className="text-xs text-muted-foreground">
+            Saisis une fois, ils s'appliquent d'eux-mêmes à tous les bulletins de l'année dès
+            que le canton est choisi sur le contrat — il n'y a rien à recopier revenu par
+            revenu. « Recopier sur {year + 1} », plus haut, les emporte aussi : la nouvelle
+            année démarre avec les taux de la précédente, signalés comme à vérifier.
+          </p>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap items-end gap-3">
@@ -547,7 +568,7 @@ export function PayrollSettings() {
               <select
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
                 value={cantonalDraft.canton}
-                onChange={(e) => setCantonalDraft((d) => ({ ...d, canton: e.target.value }))}
+                onChange={(e) => pickCanton(e.target.value)}
               >
                 <option value="">—</option>
                 {CANTONS.map((c) => (
@@ -604,6 +625,9 @@ export function PayrollSettings() {
                       {c.maternity_employee_pct != null &&
                         `maternité ${c.maternity_employee_pct} %`}
                     </p>
+                    {c.note && (
+                      <p className="text-xs text-amber-600">{c.note}</p>
+                    )}
                   </div>
                   <Button
                     variant="ghost"

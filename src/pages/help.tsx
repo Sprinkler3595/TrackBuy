@@ -350,13 +350,25 @@ export function HelpPage() {
         <div className="space-y-1.5">
           <p className="font-medium">Rien à saisir</p>
           <p className="text-muted-foreground">
-            AVS/AI/APG, assurance-chômage et retenues cantonales sont fixées par la loi,
-            identiques pour tout le monde. L'app les connaît et les affiche. Elles changent
-            au 1ᵉʳ janvier ; si un chiffre vous paraît faux, il se corrige dans{" "}
+            AVS/AI/APG et assurance-chômage sont fixées par la loi fédérale, identiques
+            pour tout le monde. L'app les connaît et les affiche. Elles changent au
+            1ᵉʳ janvier ; si un chiffre vous paraît faux, il se corrige dans{" "}
             <Link to="/settings/baremes" className="underline underline-offset-2">
               Paramètres → Barèmes
             </Link>
             .
+          </p>
+          <p className="text-muted-foreground">
+            <strong>Les retenues cantonales</strong> obéissent à la même règle, à une
+            nuance près : elles dépendent du canton et de la caisse de compensation, donc
+            personne ne peut les livrer d'avance. Vous les saisissez <em>une fois par
+            année</em> au même endroit, et elles s'appliquent ensuite d'elles-mêmes à
+            chaque bulletin dès que le canton figure sur le contrat — il n'y a rien à
+            recopier revenu par revenu. Trois cantons sont concernés : <strong>Vaud</strong>{" "}
+            et <strong>Valais</strong> font cotiser l'employé aux allocations familiales,{" "}
+            <strong>Genève</strong> prélève l'assurance maternité. Ailleurs, seul
+            l'employeur cotise et il n'y a rien à renseigner. L'écran du contrat vous dit
+            lequel des deux cas est le vôtre, sous le champ Canton.
           </p>
         </div>
 

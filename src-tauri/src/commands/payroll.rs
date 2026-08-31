@@ -514,7 +514,39 @@ fn duplicate_year_inner(
         // année à l'autre, c'est précisément pourquoi on duplique.
         confirmed: Some(false),
     };
-    upsert_overrides_inner(conn, to_year, &values)
+    upsert_overrides_inner(conn, to_year, &values)?;
+    copy_cantonal_year(conn, from_year, to_year)
+}
+
+/// Recopie les taux cantonaux d'une année sur la suivante.
+///
+/// Ils changent d'année en année, mais rarement de canton : retaper chaque
+/// janvier les trois cantons qui prélèvent quelque chose au salarié est une
+/// corvée que rien ne justifie, et qu'on oublie — auquel cas la retenue
+/// cantonale tombe silencieusement à zéro pour toute l'année.
+///
+/// `INSERT OR IGNORE` et non un upsert : si l'année cible porte déjà un
+/// canton, c'est que l'utilisateur l'a saisi. Une valeur qu'il a vérifiée ne
+/// se fait pas écraser par une recopie.
+///
+/// La note dit d'où vient le chiffre. Recopier ne vérifie rien : c'est le
+/// même avertissement que pour les barèmes fédéraux, qui naissent non
+/// confirmés pour la même raison.
+fn copy_cantonal_year(
+    conn: &rusqlite::Connection,
+    from_year: i32,
+    to_year: i32,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO cantonal_payroll_params
+            (canton, year, family_allowance_employee_pct, maternity_employee_pct, note)
+         SELECT canton, ?2, family_allowance_employee_pct, maternity_employee_pct,
+                'Repris de ' || ?1 || ' — à vérifier'
+         FROM cantonal_payroll_params WHERE year = ?1",
+        rusqlite::params![from_year, to_year],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -4759,6 +4791,82 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM cantonal_payroll_params", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// Dupliquer une année emporte les taux cantonaux. Sans cela, chaque
+    /// 1er janvier ramène la retenue cantonale à zéro en silence — le pire
+    /// des défauts, puisque rien ne le signale.
+    #[test]
+    fn duplicating_a_year_carries_the_cantonal_rates_over() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        for (canton, af, amat) in [
+            ("VD", Some(0.06), None),
+            ("GE", None, Some(0.043)),
+        ] {
+            upsert_cantonal_inner(
+                &conn,
+                &CantonalRates {
+                    canton: canton.into(),
+                    year: 2025,
+                    family_allowance_employee_pct: af,
+                    maternity_employee_pct: amat,
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
+        copy_cantonal_year(&conn, 2025, 2026).unwrap();
+
+        let ge = load_cantonal(&conn, "GE", 2026).unwrap();
+        assert_eq!(ge.maternity_employee_pct, 0.043);
+        let vd = load_cantonal(&conn, "VD", 2026).unwrap();
+        assert_eq!(vd.family_allowance_employee_pct, 0.06);
+
+        // La note dit d'où vient le chiffre : recopier ne le vérifie pas.
+        let note: String = conn
+            .query_row(
+                "SELECT note FROM cantonal_payroll_params WHERE canton = 'GE' AND year = 2026",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(note.contains("2025"), "{note}");
+    }
+
+    /// Une valeur déjà saisie pour l'année cible ne se fait pas écraser par
+    /// une recopie : l'utilisateur l'a vérifiée, la recopie non.
+    #[test]
+    fn duplicating_never_overwrites_a_rate_already_entered() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "GE".into(),
+                year: 2025,
+                family_allowance_employee_pct: None,
+                maternity_employee_pct: Some(0.043),
+                note: None,
+            },
+        )
+        .unwrap();
+        upsert_cantonal_inner(
+            &conn,
+            &CantonalRates {
+                canton: "GE".into(),
+                year: 2026,
+                family_allowance_employee_pct: None,
+                maternity_employee_pct: Some(0.048),
+                note: None,
+            },
+        )
+        .unwrap();
+
+        copy_cantonal_year(&conn, 2025, 2026).unwrap();
+
+        assert_eq!(load_cantonal(&conn, "GE", 2026).unwrap().maternity_employee_pct, 0.048);
     }
 
     /// Les taux sont propres à une ANNÉE : celui de 2026 ne doit pas

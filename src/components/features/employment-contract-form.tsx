@@ -12,6 +12,7 @@ import * as api from "@/lib/tauri"
 import { RateField } from "@/components/features/rate-field"
 import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
 import { ZefixHint } from "@/components/features/zefix-hint"
+import { CantonalRatesNote } from "@/components/features/cantonal-rates-note"
 import { formatDate } from "@/lib/utils"
 import { diffVersions } from "@/lib/contract-changes"
 
@@ -298,6 +299,12 @@ export function EmploymentContractForm({
 
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }))
   const str = (k: string) => String(form[k] ?? "")
+
+  /// L'année dont les taux cantonaux s'appliqueront : celle où cette version
+  /// prend effet, pas l'année en cours. Saisir un avenant au 1ᵉʳ janvier 2027
+  /// en décembre 2026 doit montrer les taux de 2027.
+  const effectYear =
+    Number(str("started_on").slice(0, 4)) || new Date().getFullYear()
 
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
@@ -590,7 +597,11 @@ export function EmploymentContractForm({
               placeholder="756.1234.5678.90"
             />
           </Field>
-          <Field label="Canton de travail" hint={WORK_CANTON_HINT}>
+          <Field
+            label="Canton de travail"
+            hint={WORK_CANTON_HINT}
+            className="space-y-2 sm:col-span-2 lg:col-span-1"
+          >
             <select
               className={inputCls}
               value={str("work_canton")}
@@ -599,6 +610,10 @@ export function EmploymentContractForm({
               <option value="">—</option>
               {CANTONS.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
+            {/* Choisir un canton doit se VOIR. Sans cette ligne, rien à
+                l'écran ne dit que les retenues cantonales en découlent — ni,
+                pire, qu'elles vaudront zéro faute de taux enregistrés. */}
+            <CantonalRatesNote canton={str("work_canton")} year={effectYear} />
           </Field>
           {(versions.length > 1 || isAmendment) && (
             <Field label="Nom de cette version" hint="Ex. « Avenant 2021 — augmentation ».">

@@ -14,6 +14,7 @@ import { formatPrice } from "@/lib/utils"
 import * as api from "@/lib/tauri"
 import { CANTONS, WORK_CANTON_HINT } from "@/lib/cantons"
 import { ZefixHint } from "@/components/features/zefix-hint"
+import { CantonalRatesNote } from "@/components/features/cantonal-rates-note"
 
 /// Guided creation of an income.
 ///
@@ -792,6 +793,10 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
                     {CANTONS.map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
                   <p className="text-xs text-muted-foreground">{WORK_CANTON_HINT}</p>
+                  {/* Ce que le canton choisi déclenche, dit tout de suite : les
+                      retenues cantonales en découlent, et si les taux de
+                      l'année manquent elles vaudront zéro sans le dire. */}
+                  {fr && <CantonalRatesNote canton={canton} year={payYear} />}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{fr ? "Date de naissance" : "Date of birth"}</label>
