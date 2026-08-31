@@ -1,10 +1,14 @@
 /// Les identifiants d'accès au registre du commerce suisse (Zefix).
 ///
-/// L'API publique de Zefix exige une authentification HTTP Basic. L'accès est
-/// gratuit mais NOMINATIF : il s'obtient en écrivant à zefix@bj.admin.ch.
-/// Aucun identifiant n'est donc livré avec l'application — en embarquer un le
-/// partagerait entre tous les utilisateurs, ce que les conditions d'accès
-/// n'autorisent pas.
+/// FACULTATIFS. L'API publique de Zefix s'interroge sans authentification :
+/// dans le cas ordinaire, ce fichier ne contient rien et la recherche marche
+/// quand même. Ils ne servent qu'aux accès nominatifs, que l'OFRC délivre
+/// gratuitement contre un courriel à zefix@bj.admin.ch, si le registre venait
+/// à refuser les appels anonymes.
+///
+/// Aucun identifiant n'est livré avec l'application : un compte nominatif
+/// embarqué serait partagé entre tous ses utilisateurs, ce que les conditions
+/// d'accès n'autorisent pas.
 ///
 /// Ils vivent dans le stockage local du navigateur, comme les réglages d'IA :
 /// ce sont des identifiants de service, pas des données personnelles, et les
@@ -41,8 +45,3 @@ export function saveZefixSettings(s: ZefixSettings): void {
     /* stockage indisponible : la recherche le dira au premier appel */
   }
 }
-
-/// Vrai quand une recherche a une chance d'aboutir. Sert à proposer le bouton
-/// plutôt qu'à le griser en silence.
-export const hasZefixCredentials = (s: ZefixSettings): boolean =>
-  s.username.trim().length > 0 && s.password.length > 0

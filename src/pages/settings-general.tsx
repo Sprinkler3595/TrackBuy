@@ -17,12 +17,7 @@ import {
   defaultAiSettings,
   isCloudProvider,
 } from "@/lib/ai-settings"
-import {
-  type ZefixSettings,
-  getZefixSettings,
-  saveZefixSettings,
-  hasZefixCredentials,
-} from "@/lib/zefix-settings"
+import { type ZefixSettings, getZefixSettings, saveZefixSettings } from "@/lib/zefix-settings"
 
 function formatBytes(n: number, locale: "fr" | "en"): string {
   if (n < 1024) return `${n} B`
@@ -480,26 +475,30 @@ export function GeneralSettings() {
           </CardTitle>
           <CardDescription>
             {locale === "fr"
-              ? "Retrouve l'IDE et l'adresse du siège d'une entreprise à partir de son nom, lors de la création d'un revenu ou d'un contrat."
-              : "Looks up a company's UID and registered address from its name, when creating an income or a contract."}
+              ? "Retrouve l'IDE et l'adresse du siège d'une entreprise à partir de son nom, lors de la création d'un revenu ou d'un contrat. Rien à régler ici dans le cas ordinaire."
+              : "Looks up a company's UID and registered address from its name, when creating an income or a contract. Nothing to configure here in the ordinary case."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
             {locale === "fr" ? (
               <>
-                L'accès à l'API est <strong>gratuit</strong>, mais nominatif : il se demande par
-                courriel à{" "}
+                <strong>Ces champs sont facultatifs.</strong> Le registre est public : la
+                recherche fonctionne sans rien saisir ici. Ne les remplissez que si Zefix
+                refuse vos requêtes — un accès nominatif s'obtient alors gratuitement à{" "}
                 <code className="rounded bg-muted px-1 py-0.5 text-xs">zefix@bj.admin.ch</code>.
-                Aucun identifiant n'est livré avec l'application — il serait alors partagé entre
-                tous ses utilisateurs, ce que les conditions d'accès n'autorisent pas.
+                Aucun identifiant n'est livré avec l'application : un compte nominatif embarqué
+                serait partagé entre tous ses utilisateurs, ce que les conditions d'accès
+                n'autorisent pas.
               </>
             ) : (
               <>
-                API access is <strong>free</strong> but personal: request it by email from{" "}
+                <strong>These fields are optional.</strong> The register is public: lookups work
+                without entering anything here. Fill them in only if Zefix starts refusing your
+                requests — a named account is then free to obtain from{" "}
                 <code className="rounded bg-muted px-1 py-0.5 text-xs">zefix@bj.admin.ch</code>.
-                No credentials ship with the app — they would be shared between all its users,
-                which the terms of access do not allow.
+                No credentials ship with the app: a named account embedded in it would be shared
+                between all its users, which the terms of access do not allow.
               </>
             )}
           </p>
@@ -553,15 +552,16 @@ export function GeneralSettings() {
             </Button>
             <Button
               variant="outline"
-              disabled={zefixTesting || !hasZefixCredentials(zefix)}
+              disabled={zefixTesting}
               onClick={async () => {
                 setZefixTesting(true)
                 try {
                   // Une recherche réelle est le seul test qui prouve quelque
                   // chose : l'API ne propose pas de point d'entrée « qui
-                  // suis-je », et un mot de passe faux ne se voit qu'au
-                  // premier appel. « Migros » a l'avantage de renvoyer à coup
-                  // sûr des résultats.
+                  // suis-je », et un accès refusé ne se voit qu'au premier
+                  // appel. « Migros » a l'avantage de renvoyer à coup sûr des
+                  // résultats. Le test vaut aussi sans identifiants : il dit
+                  // alors si l'accès anonyme suffit.
                   const hits = await api.zefixSearch(zefix, "Migros", null)
                   toast(
                     locale === "fr"

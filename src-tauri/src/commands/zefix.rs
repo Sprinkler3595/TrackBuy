@@ -14,20 +14,50 @@ use crate::commands::auth::AppState;
 /// liste allégée (`CompanyShort`) qui ne porte PAS l'adresse, seulement la
 /// commune du siège. L'adresse complète demande le détail par IDE.
 ///
-/// ## Identifiants
+/// ## Identifiants : facultatifs
 ///
-/// L'API exige une authentification HTTP Basic, gratuite mais nominative : elle
-/// s'obtient en écrivant à `zefix@bj.admin.ch`. Aucun identifiant n'est donc
-/// livré avec l'application — en embarquer un le partagerait entre tous les
-/// utilisateurs, ce que les conditions d'accès n'autorisent pas. L'utilisateur
-/// saisit les siens dans les réglages.
+/// L'API est publique et s'interroge sans authentification. Certains accès sont
+/// néanmoins nominatifs (quotas, usage intensif) ; l'OFRC les délivre
+/// gratuitement contre un courriel à `zefix@bj.admin.ch`.
+///
+/// D'où la règle ici : on appelle SANS authentification tant qu'aucun
+/// identifiant n'est enregistré, et on n'en ajoute un que s'il y en a un. Le
+/// cas ordinaire ne demande donc aucun réglage. Si le registre refuse l'appel
+/// anonyme, le 401 le dit et renvoie vers les réglages — plutôt que d'exiger
+/// d'avance des identifiants dont l'immense majorité des utilisateurs n'a pas
+/// besoin.
+///
+/// Aucun identifiant n'est livré avec l'application : un compte nominatif
+/// embarqué serait partagé entre tous ses utilisateurs, ce que les conditions
+/// d'accès n'autorisent pas.
 
 const ZEFIX_BASE: &str = "https://www.zefix.admin.ch/ZefixPublicREST/api/v1";
 
-#[derive(Debug, Deserialize)]
+/// Vides quand l'utilisateur n'a rien saisi — le cas normal. `#[serde(default)]`
+/// pour qu'une charge partielle, ou absente, décode au lieu d'échouer.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
 pub struct ZefixCredentials {
     pub username: String,
     pub password: String,
+}
+
+/// Les identifiants à envoyer, ou `None` pour un appel anonyme.
+///
+/// Un mot de passe sans identifiant, ou l'inverse, ne vaut rien : une
+/// authentification à moitié remplie serait refusée par le registre alors que
+/// l'appel anonyme, lui, aurait abouti.
+fn auth(c: &ZefixCredentials) -> Option<(&str, &str)> {
+    let user = c.username.trim();
+    (!user.is_empty() && !c.password.is_empty()).then_some((user, c.password.as_str()))
+}
+
+/// Pose l'authentification seulement s'il y en a une.
+fn signed(rb: reqwest::RequestBuilder, c: &ZefixCredentials) -> reqwest::RequestBuilder {
+    match auth(c) {
+        Some((user, pass)) => rb.basic_auth(user, Some(pass)),
+        None => rb,
+    }
 }
 
 /// Une entreprise telle que la recherche la rend. `legal_seat` est la commune
@@ -66,7 +96,7 @@ fn client() -> Result<reqwest::Client, String> {
 /// personne ; savoir qu'il manque des identifiants, si.
 fn explain(status: reqwest::StatusCode, body: &str) -> String {
     match status.as_u16() {
-        401 | 403 => "Zefix refuse ces identifiants. Vérifiez-les dans Paramètres → Registre du commerce. L'accès est gratuit mais nominatif : il se demande à zefix@bj.admin.ch.".into(),
+        401 | 403 => "Zefix a refusé cette requête. Le registre demande ici des identifiants : ils sont gratuits et s'obtiennent auprès de zefix@bj.admin.ch, puis se saisissent dans Paramètres → Registre du commerce. Si vous en avez déjà saisi, vérifiez-les.".into(),
         404 => "Zefix ne connaît pas cette entreprise.".into(),
         429 => "Trop de requêtes envoyées à Zefix. Patientez un instant.".into(),
         500..=599 => format!("Zefix est momentanément indisponible ({status})."),
@@ -135,18 +165,15 @@ pub async fn zefix_search(
     if query.len() < 3 {
         return Err("Donnez au moins trois lettres du nom.".into());
     }
-    if credentials.username.trim().is_empty() || credentials.password.is_empty() {
-        return Err("Aucun identifiant Zefix enregistré. Renseignez-les dans Paramètres → Registre du commerce.".into());
-    }
-
     let mut body = serde_json::json!({ "name": query, "activeOnly": true });
     if let Some(c) = canton.as_deref().map(str::trim).filter(|c| c.len() == 2) {
         body["canton"] = serde_json::Value::String(c.to_uppercase());
     }
 
-    let resp = client()?
-        .post(format!("{ZEFIX_BASE}/company/search"))
-        .basic_auth(credentials.username.trim(), Some(&credentials.password))
+    let resp = signed(
+        client()?.post(format!("{ZEFIX_BASE}/company/search")),
+        &credentials,
+    )
         .json(&body)
         .send()
         .await
@@ -183,9 +210,10 @@ pub async fn zefix_company(
         return Err("Numéro IDE vide.".into());
     }
 
-    let resp = client()?
-        .get(format!("{ZEFIX_BASE}/company/uid/{id}"))
-        .basic_auth(credentials.username.trim(), Some(&credentials.password))
+    let resp = signed(
+        client()?.get(format!("{ZEFIX_BASE}/company/uid/{id}")),
+        &credentials,
+    )
         .send()
         .await
         .map_err(|e| format!("Requête Zefix : {e}"))?;
@@ -292,6 +320,31 @@ mod tests {
         assert!(parse_company(&json!("bonjour")).is_err());
         assert!(parse_company(&json!([])).is_err());
         assert!(parse_company(&json!({ "uid": "CHE123456789" })).is_err());
+    }
+
+    /// L'appel anonyme est le cas normal : rien de saisi, rien d'envoyé.
+    /// Une authentification à moitié remplie est traitée comme absente — la
+    /// poser ferait échouer un appel qui, sans elle, aboutissait.
+    #[test]
+    fn credentials_are_only_sent_when_they_are_complete() {
+        let creds = |u: &str, p: &str| ZefixCredentials {
+            username: u.into(),
+            password: p.into(),
+        };
+        assert_eq!(auth(&ZefixCredentials::default()), None);
+        assert_eq!(auth(&creds("  ", "secret")), None);
+        assert_eq!(auth(&creds("moi", "")), None);
+        assert_eq!(auth(&creds(" moi ", "secret")), Some(("moi", "secret")));
+    }
+
+    /// Une charge partielle décode : le front n'envoie pas toujours les deux
+    /// champs, et un revenu ne doit pas se perdre sur un réglage absent.
+    #[test]
+    fn a_partial_payload_decodes_to_no_credentials() {
+        let c: ZefixCredentials = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(auth(&c), None);
+        let c: ZefixCredentials = serde_json::from_value(json!({ "username": "moi" })).unwrap();
+        assert_eq!(auth(&c), None);
     }
 
     /// La liste de recherche : ce qui distingue deux homonymes doit survivre.

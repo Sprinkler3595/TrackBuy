@@ -163,11 +163,11 @@ export function HelpPage() {
               <strong>« Chercher au registre »</strong> évite de recopier l'IDE à la main :
               le nom suffit, et l'IDE comme l'adresse du <em>siège</em> viennent de Zefix,
               le registre officiel du commerce. Le siège compte : c'est lui, et non votre
-              domicile, qui détermine les retenues sociales cantonales. La recherche demande
-              des identifiants Zefix, gratuits mais nominatifs, à demander à{" "}
-              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code> puis à
-              saisir dans <strong>Paramètres → Général</strong>. Sans eux, tout se saisit à la
-              main comme avant.
+              domicile, qui détermine les retenues sociales cantonales. Rien à régler — le
+              registre est public. S'il refusait vos requêtes, le message vous renverra vers
+              <strong> Paramètres → Registre du commerce</strong>, où se saisissent des
+              identifiants gratuits obtenus à{" "}
+              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code>.
             </p>
           </Step>
 
