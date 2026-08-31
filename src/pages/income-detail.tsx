@@ -62,6 +62,9 @@ export function IncomeDetailPage() {
   /// Toutes les versions du contrat : le formulaire de bulletin y prend le
   /// barème de suppléments en vigueur à la date de la fiche.
   const [contractVersions, setContractVersions] = useState<api.EmploymentContract[]>([])
+  /// Combien de bulletins chaque version juge : une version qui en porte déjà
+  /// voit son plan de prévoyance et son barème de suppléments verrouillés.
+  const [versionUsage, setVersionUsage] = useState<api.ContractVersionUsage[]>([])
   /// Incrémenté à chaque rechargement : les panneaux qui interrogent la base
   /// eux-mêmes (le décompte annuel des suppléments) s'y raccrochent.
   const [dataVersion, setDataVersion] = useState(0)
@@ -85,16 +88,18 @@ export function IncomeDetailPage() {
     if (!id) return
     setLoading(true)
     try {
-      const [inc, recs, ctr, versions] = await Promise.all([
+      const [inc, recs, ctr, versions, usage] = await Promise.all([
         api.getIncome(id),
         api.getIncomeReceipts(id),
         api.getEmploymentContract(id),
         api.getEmploymentContractVersions(id),
+        api.getContractVersionUsage(id).catch(() => [] as api.ContractVersionUsage[]),
       ])
       setIncome(inc)
       setReceipts(recs)
       setContract(ctr)
       setContractVersions(versions)
+      setVersionUsage(usage)
       setDataVersion((v) => v + 1)
       setError(null)
     } catch (err) {
@@ -159,6 +164,11 @@ export function IncomeDetailPage() {
 
   const i = income
   const isSalary = i.income_type === "salary"
+  /// La version en vigueur juge-t-elle déjà des bulletins ? Si oui, son plan
+  /// et son barème sont verrouillés : les changer modifierait le contrôle de
+  /// fiches déjà validées.
+  const contractLocked =
+    (versionUsage.find((u) => u.contract_id === contract?.id)?.receipt_count ?? 0) > 0
   const typeKey = `incomes.type.${i.income_type}` as keyof TranslationKeys
   const cycleKey = (
     i.billing_cycle === "monthly"   ? "engagements.cycleMonthly" :
@@ -532,11 +542,13 @@ export function IncomeDetailPage() {
                 currency={i.currency}
                 birthDate={contract.birth_date}
                 flatRate={contract.lpp_employee_share_pct}
+                readOnly={contractLocked}
                 onChanged={() => setChecks({})}
               />
               <SupplementRates
                 contractId={contract.id}
                 currency={i.currency}
+                readOnly={contractLocked}
                 onChanged={() => setChecks({})}
               />
             </>

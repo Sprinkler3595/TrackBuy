@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { CalendarClock, Plus, Trash2 } from "lucide-react"
+import { CalendarClock, Lock, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -37,12 +37,17 @@ const pct = (n: number) => `${Math.round(n * 1000) / 1000} %`
 export function LppPlanEditor({
   contractId,
   currency = "CHF",
+  readOnly = false,
   birthDate,
   flatRate,
   onChanged,
 }: {
   contractId: string
   currency?: string
+  /// Verrouillé quand cette version de contrat juge déjà des bulletins :
+  /// changer un taux ici modifierait leur contrôle. Le plan se change en
+  /// annonçant un changement, qui le recopie sur la nouvelle version.
+  readOnly?: boolean
   /// Sans elle, aucun âge n'est calculable : le plan se saisit quand même,
   /// mais rien ne peut dire quelle tranche s'applique.
   birthDate: string | null
@@ -184,6 +189,15 @@ export function LppPlanEditor({
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
+        {readOnly && (
+          <p className="flex gap-2 rounded-md border p-3 text-xs text-muted-foreground">
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Des bulletins sont déjà contrôlés avec cette version : son plan est verrouillé.
+            Pour le modifier, annoncez un changement — le plan sera recopié sur la nouvelle
+            version, où vous pourrez l'ajuster.
+          </p>
+        )}
+        <fieldset disabled={readOnly} className="contents">
         {/* Ce qui s'applique aujourd'hui, et ce qui viendra ensuite. C'est la
             réponse à « est-ce que ça va vraiment changer tout seul ? ». */}
         {plan.length > 0 && (
@@ -445,6 +459,7 @@ export function LppPlanEditor({
             l'épargne calculée — ajoutez-la comme une tranche si vous connaissez son taux.
           </p>
         </div>
+        </fieldset>
       </CardContent>
     </Card>
   )

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react"
-import { AlertTriangle, Briefcase, Plus, Save, ShieldCheck } from "lucide-react"
+import {
+  AlertTriangle, Briefcase, ChevronLeft, ChevronRight, Lock, Plus, Save, ShieldCheck,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +12,7 @@ import * as api from "@/lib/tauri"
 import { RateField } from "@/components/features/rate-field"
 import { CANTONS, RESIDENCE_CANTON_HINT, WORK_CANTON_HINT } from "@/lib/cantons"
 import { formatDate } from "@/lib/utils"
+import { diffVersions } from "@/lib/contract-changes"
 
 type FormState = Record<string, string | boolean>
 
@@ -232,6 +235,24 @@ export function EmploymentContractForm({
   /// Incrémenté par « Réessayer » : l'identifiant du revenu n'a pas changé,
   /// il faut donc autre chose pour relancer le chargement.
   const [reloadKey, setReloadKey] = useState(0)
+  /// Trois régimes, et un seul par défaut.
+  ///
+  /// `view` — les conditions enregistrées sont en lecture seule. C'est l'état
+  /// normal : un contrat signé ne se retouche pas, et une modification par
+  /// inadvertance changerait le contrôle de bulletins déjà validés.
+  ///
+  /// `wizard` — annoncer un changement, section par section, avec un
+  /// récapitulatif de ce qui bouge avant d'enregistrer.
+  ///
+  /// `fix` — corriger une erreur de saisie. Nécessaire : forcer un
+  /// « changement » pour un IDE mal tapé inventerait un événement qui n'a pas
+  /// eu lieu. Explicite, jamais par défaut, et bruyamment averti quand des
+  /// bulletins en dépendent.
+  const [mode, setMode] = useState<"view" | "wizard" | "fix">("view")
+  const [step, setStep] = useState(0)
+  /// La version dont le changement part, gardée pour le récapitulatif : sans
+  /// elle, impossible de dire CE QUI change avant d'enregistrer.
+  const [before, setBefore] = useState<api.EmploymentContract | null>(null)
   /// Combien de bulletins chaque version juge déjà. Sert aux deux moitiés de
   /// la promesse : rassurer avant d'annoncer un changement, avertir avant de
   /// corriger une version qui a déjà servi.
@@ -295,7 +316,13 @@ export function EmploymentContractForm({
       // relue, sinon elle afficherait deux périodes qui se chevauchent.
       setVersions(await api.getEmploymentContractVersions(incomeId))
       setUsage(await api.getContractVersionUsage(incomeId).catch(() => []))
-      toast(isAmendment ? "Avenant enregistré" : "Contrat enregistré", "success")
+      toast(
+        mode === "wizard" ? "Changement enregistré" : "Contrat enregistré",
+        "success",
+      )
+      setMode("view")
+      setStep(0)
+      setBefore(null)
       onSaved?.(saved)
     } catch (e) {
       toast(`Erreur: ${e}`, "error")
@@ -309,13 +336,30 @@ export function EmploymentContractForm({
   /// surtout, de perdre un taux qu'on aurait oublié de recopier.
   const startAmendment = () => {
     const today = new Date().toISOString().slice(0, 10)
+    // Les conditions en vigueur servent de point de départ : on ne renégocie
+    // jamais tout, et repartir de zéro ferait perdre un taux qu'on aurait
+    // oublié de recopier.
+    setBefore(versions.find((v) => v.ended_on == null) ?? versions[0] ?? null)
     setForm((f) => ({
       ...f,
       id: "",
-      label: `Avenant ${today.slice(0, 4)}`,
+      label: `Changement ${today.slice(0, 4)}`,
       started_on: today,
       ended_on: "",
     }))
+    setMode("wizard")
+    setStep(0)
+  }
+
+  /// Corriger une saisie : tout redevient modifiable d'un coup, sans créer de
+  /// version. Réservé aux fautes de frappe — l'écran le rappelle.
+  const startFix = () => setMode("fix")
+
+  const cancelEdit = () => {
+    const v = versions.find((c) => c.id === str("id")) ?? versions.find((c) => c.ended_on == null)
+    setForm(v ? toForm(v) : emptyForm(incomeId))
+    setMode("view")
+    setStep(0)
   }
 
   const selectVersion = (id: string) => {
@@ -323,6 +367,7 @@ export function EmploymentContractForm({
     if (!v) return
     setForm(toForm(v))
     setOtherCanton(!!v.residence_canton && v.residence_canton !== v.work_canton)
+    setMode("view")
   }
 
   const removeVersion = async (id: string) => {
@@ -347,6 +392,33 @@ export function EmploymentContractForm({
   /// Ce qu'un changement annoncé laissera intact : tout ce qui est déjà
   /// enregistré, puisqu'une nouvelle version ne juge que ce qui suit sa date.
   const frozenBefore = usage.reduce((n, u) => n + u.receipt_count, 0)
+
+  /// Le parcours d'annonce, dans l'ordre où on relit un contrat : quand, chez
+  /// qui, pour combien, avec quelles assurances, quels frais, quel régime
+  /// fiscal — puis ce qui change, avant d'enregistrer.
+  const STEPS = [
+    { key: "when", title: "Date d'effet" },
+    { key: "employer", title: "L'entreprise" },
+    { key: "pay", title: "La rémunération" },
+    { key: "insurance", title: "Vos assurances" },
+    { key: "expenses", title: "Frais et avantages" },
+    { key: "tax", title: "Régime fiscal" },
+    { key: "recap", title: "Ce qui change" },
+  ] as const
+
+  const wizard = mode === "wizard"
+  /// Une section est visible hors parcours (tout à la fois), ou à son tour.
+  const shows = (key: (typeof STEPS)[number]["key"]) =>
+    !wizard || STEPS[step]?.key === key
+  // Un contrat encore inexistant doit pouvoir être saisi : le verrou protège
+  // ce qui a été enregistré, pas la page blanche.
+  const readOnly = mode === "view" && versions.length > 0
+  const lastStep = step === STEPS.length - 1
+
+  /// Ce que l'enregistrement va changer, calculé sur la version de départ.
+  /// Le montrer AVANT d'écrire est tout l'intérêt d'« annoncer » : on vérifie
+  /// qu'on annonce bien ce qu'on croit annoncer.
+  const pendingChanges = before ? diffVersions(before, toContract(form)) : []
 
   if (loading) {
     return (
@@ -376,67 +448,111 @@ export function EmploymentContractForm({
         onDelete={removeVersion}
       />
 
-      {/* Annoncer un changement est le geste normal — modifier une version
-          existante est l'exception. Le bouton est donc toujours là, et non
-          caché dans la frise qui disparaît tant qu'il n'y a qu'une version. */}
-      {!isAmendment && versions.length > 0 && (
+      {/* Une fois enregistrées, les conditions sont verrouillées. Un contrat
+          signé ne se retouche pas, et une modification par inadvertance
+          changerait le contrôle de bulletins déjà validés. */}
+      {readOnly && versions.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium">Vos conditions ont changé ?</p>
+            <p className="flex items-center gap-1.5 text-sm font-medium">
+              <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+              Conditions enregistrées
+            </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Salaire, taux de cotisation, plan de prévoyance, nom ou IDE de l'entreprise,
-              canton… Déclarez-le à partir d'une date : ce qui précède ne bouge pas.
+              Elles ne se modifient plus directement. Salaire, taux de cotisation, plan de
+              prévoyance, nom ou IDE de l'entreprise, canton… tout changement se déclare à
+              partir d'une date, et ce qui précède ne bouge pas.
             </p>
           </div>
-          <Button type="button" onClick={startAmendment} className="shrink-0">
-            <Plus className="mr-1.5 h-4 w-4" />
-            Annoncer un changement
-          </Button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button type="button" onClick={startAmendment}>
+              <Plus className="mr-1.5 h-4 w-4" />
+              Annoncer un changement
+            </Button>
+          </div>
         </div>
       )}
 
-      {isAmendment && (
+      {wizard && (
         <div className="rounded-lg border border-primary/40 bg-primary/5 p-3">
-          <p className="text-sm font-medium">Nouveau changement de conditions</p>
+          <p className="text-sm font-medium">
+            Étape {step + 1}/{STEPS.length} — {STEPS[step].title}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Les conditions actuelles sont reprises : ne changez que ce qui change, et fixez
-            la <strong>date d'effet</strong> dans « Début du contrat » ci-dessous. À
-            l'enregistrement, la version précédente sera close la veille.
+            Les conditions en vigueur sont reprises : ne changez que ce qui change.
           </p>
           {frozenBefore > 0 && (
             <p className="mt-1.5 flex gap-1.5 text-xs text-emerald-700 dark:text-emerald-500">
               <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {frozenBefore === 1
-                ? "1 bulletin déjà enregistré garde ses conditions actuelles."
-                : `${frozenBefore} bulletins déjà enregistrés gardent leurs conditions actuelles.`}
+                ? "1 bulletin déjà enregistré gardera ses conditions actuelles."
+                : `${frozenBefore} bulletins déjà enregistrés garderont leurs conditions actuelles.`}
             </p>
           )}
         </div>
       )}
 
-      {/* Le vrai danger n'est pas d'annoncer un changement, c'est de corriger
-          une version qui juge déjà des bulletins : leur contrôle changerait
-          sans qu'on l'ait demandé. */}
-      {!isAmendment && editedUsage != null && editedUsage.receipt_count > 0 && (
+      {/* Corriger reste possible — forcer un « changement » pour un IDE mal
+          tapé inventerait un événement qui n'a pas eu lieu — mais jamais par
+          défaut, et bruyamment averti quand des bulletins en dépendent. */}
+      {mode === "fix" && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
           <p className="flex gap-2 text-sm">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
             <span>
-              <strong>
-                {editedUsage.receipt_count === 1
-                  ? "1 bulletin est contrôlé avec cette version"
-                  : `${editedUsage.receipt_count} bulletins sont contrôlés avec cette version`}
-              </strong>
-              {editedUsage.first_period && editedUsage.last_period && (
-                <> ({formatDate(editedUsage.first_period)} → {formatDate(editedUsage.last_period)})</>
+              <strong>Correction d'une erreur de saisie.</strong> Réservé aux fautes de
+              frappe : cette version est modifiée sur place, sans trace de changement.
+              {editedUsage != null && editedUsage.receipt_count > 0 && (
+                <>
+                  {" "}
+                  <strong>
+                    {editedUsage.receipt_count === 1
+                      ? "1 bulletin est contrôlé avec cette version"
+                      : `${editedUsage.receipt_count} bulletins sont contrôlés avec cette version`}
+                  </strong>
+                  {editedUsage.first_period && editedUsage.last_period && (
+                    <> ({formatDate(editedUsage.first_period)} → {formatDate(editedUsage.last_period)})</>
+                  )}{" "}
+                  : leur contrôle changera. Si vos conditions ont réellement évolué, revenez
+                  en arrière et annoncez un changement.
+                </>
               )}
-              . Ce que vous modifiez ici changera leur contrôle. Pour un changement qui ne
-              vaut qu'à partir d'une date, utilisez « Annoncer un changement ».
             </span>
           </p>
         </div>
       )}
 
+      {/* En lecture seule, `fieldset` neutralise d'un coup tous les champs
+          qu'il contient — sans toucher aux boutons d'action, qui vivent
+          dehors : « Annoncer un changement » doit rester cliquable. */}
+      <fieldset disabled={readOnly} className="contents">
+
+      {/* La date d'effet, première question du parcours : c'est elle qui
+          sépare ce qui change de ce qui ne bouge pas. */}
+      {wizard && shows("when") && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">À partir de quand ?</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="Date d'effet"
+              hint="Les bulletins antérieurs restent contrôlés avec les conditions actuelles."
+            >
+              <Input
+                type="date"
+                value={str("started_on")}
+                onChange={(e) => set("started_on", e.target.value)}
+              />
+            </Field>
+            <Field label="Nom de ce changement" hint="Ex. « Avenant 2026 — augmentation ».">
+              <Input value={str("label")} onChange={(e) => set("label", e.target.value)} />
+            </Field>
+          </CardContent>
+        </Card>
+      )}
+
+      {shows("employer") && (
       <Card>
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -533,7 +649,9 @@ export function EmploymentContractForm({
           </div>
         </CardContent>
       </Card>
+      )}
 
+      {shows("pay") && (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Rémunération</CardTitle>
@@ -601,7 +719,9 @@ export function EmploymentContractForm({
           </div>
         </CardContent>
       </Card>
+      )}
 
+      {shows("insurance") && (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Taux de vos assurances</CardTitle>
@@ -667,7 +787,9 @@ export function EmploymentContractForm({
           />
         </CardContent>
       </Card>
+      )}
 
+      {shows("expenses") && (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Frais et avantages</CardTitle>
@@ -725,7 +847,9 @@ export function EmploymentContractForm({
           </div>
         </CardContent>
       </Card>
+      )}
 
+      {shows("tax") && (
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Régime fiscal</CardTitle>
@@ -771,12 +895,92 @@ export function EmploymentContractForm({
           </Field>
         </CardContent>
       </Card>
+      )}
 
-      <div className="flex justify-end">
-        <Button type="submit" disabled={saving}>
-          <Save className="h-4 w-4" />
-          {saving ? "Enregistrement…" : "Enregistrer le contrat"}
-        </Button>
+      {/* Le récapitulatif : ce que l'enregistrement va réellement changer.
+          Le montrer AVANT d'écrire est tout l'intérêt d'« annoncer » — on
+          vérifie qu'on annonce bien ce qu'on croit annoncer. */}
+      {wizard && shows("recap") && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Ce qui change</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              À partir du {str("started_on") ? formatDate(str("started_on")) : "…"}. Tout ce
+              qui précède cette date reste jugé avec les conditions actuelles.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {pendingChanges.length === 0 ? (
+              <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                Rien ne change par rapport aux conditions en vigueur. Revenez en arrière pour
+                modifier quelque chose, ou annulez : enregistrer une version identique
+                n'apporterait rien.
+              </p>
+            ) : (
+              <ul className="divide-y rounded-md border">
+                {pendingChanges.map((c) => (
+                  <li key={c.label} className="flex flex-wrap items-baseline gap-x-2 p-2.5 text-sm">
+                    <span className="min-w-48 flex-1 font-medium">{c.label}</span>
+                    <span className="text-muted-foreground line-through">{c.before}</span>
+                    <span className="text-muted-foreground">→</span>
+                    <span className="font-medium">{c.after}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      </fieldset>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {wizard && step > 0 && (
+            <Button type="button" variant="outline" onClick={() => setStep((n) => n - 1)}>
+              <ChevronLeft className="mr-1 h-4 w-4" />
+              Retour
+            </Button>
+          )}
+          {mode !== "view" && (
+            <Button type="button" variant="ghost" onClick={cancelEdit} disabled={saving}>
+              Annuler
+            </Button>
+          )}
+          {/* Discret et nommé sans ambiguïté : ce n'est pas la porte qu'on
+              prend quand ses conditions ont changé. */}
+          {readOnly && versions.length > 0 && (
+            <button
+              type="button"
+              onClick={startFix}
+              className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              Corriger une erreur de saisie
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          {wizard && !lastStep && (
+            <Button type="button" onClick={() => setStep((n) => n + 1)}>
+              Suivant
+              <ChevronRight className="ml-1 h-4 w-4" />
+            </Button>
+          )}
+          {(!wizard || lastStep) && !readOnly && (
+            <Button
+              type="submit"
+              disabled={saving || (wizard && pendingChanges.length === 0)}
+            >
+              <Save className="h-4 w-4" />
+              {saving
+                ? "Enregistrement…"
+                : wizard
+                  ? "Enregistrer le changement"
+                  : "Enregistrer la correction"}
+            </Button>
+          )}
+        </div>
       </div>
     </form>
   )

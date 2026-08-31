@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Plus, Trash2 } from "lucide-react"
+import { Lock, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,10 +26,14 @@ const SUGGESTIONS = [
 export function SupplementRates({
   contractId,
   currency = "CHF",
+  readOnly = false,
   onChanged,
 }: {
   contractId: string
   currency?: string
+  /// Verrouillé quand cette version de contrat juge déjà des bulletins :
+  /// changer un tarif ici modifierait le contrôle de fiches déjà validées.
+  readOnly?: boolean
   onChanged?: () => void
 }) {
   const { toast } = useToast()
@@ -104,6 +108,15 @@ export function SupplementRates({
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
+        {readOnly && (
+          <p className="flex gap-2 rounded-md border p-3 text-xs text-muted-foreground">
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Des bulletins sont déjà contrôlés avec cette version : son barème est verrouillé.
+            Pour changer un tarif, annoncez un changement — le barème sera recopié sur la
+            nouvelle version.
+          </p>
+        )}
+        <fieldset disabled={readOnly} className="contents">
         {loading ? (
           <p className="text-sm text-muted-foreground">Chargement…</p>
         ) : rates.length === 0 ? (
@@ -223,6 +236,7 @@ export function SupplementRates({
             ))}
           </div>
         )}
+        </fieldset>
       </CardContent>
     </Card>
   )

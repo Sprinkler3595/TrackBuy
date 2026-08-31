@@ -415,15 +415,27 @@ export function HelpPage() {
             partiel.
           </p>
           <p className="text-muted-foreground">
-            Les conditions actuelles sont reprises — ne changez que ce qui change — et vous
-            fixez la <strong>date d'effet</strong>. Vos bulletins antérieurs restent
-            contrôlés avec les conditions de leur époque, et l'écran vous dit combien sont
-            ainsi protégés. La version précédente se clôt toute seule à la veille.
+            Vous êtes guidé section par section : la date d'effet, l'entreprise, la
+            rémunération, vos assurances, les frais, le régime fiscal. Les conditions
+            actuelles sont reprises — ne changez que ce qui change. La dernière étape
+            récapitule <strong>ce qui bouge</strong>, ligne par ligne, avant d'enregistrer.
           </p>
           <p className="text-muted-foreground">
-            Ne modifiez la version existante que pour <em>corriger une saisie</em>. Si elle
-            juge déjà des bulletins, l'écran vous avertit : les modifier changerait leur
-            contrôle.
+            Vos bulletins antérieurs restent contrôlés avec les conditions de leur époque, et
+            l'écran vous dit combien sont ainsi protégés. La version précédente se clôt toute
+            seule à la veille de la date d'effet.
+          </p>
+          <p className="text-muted-foreground">
+            <strong>Les conditions enregistrées sont en lecture seule.</strong> Un contrat
+            signé ne se retouche pas : c'est ce qui garantit qu'une fiche validée l'an dernier
+            le reste. Un lien discret, « Corriger une erreur de saisie », existe pour les
+            fautes de frappe — il modifie la version sur place, sans trace de changement, et
+            vous avertit lourdement si des bulletins en dépendent.
+          </p>
+          <p className="text-muted-foreground">
+            Même verrou sur le plan de prévoyance et le barème d'astreintes : dès qu'une
+            version juge des bulletins, ils se figent. Annoncez un changement — ils seront
+            recopiés sur la nouvelle version, où vous pourrez les ajuster.
           </p>
           <p className="text-muted-foreground">
             Les taux <strong>légaux</strong> — AVS, chômage, cantonaux — ne dépendent pas de
