@@ -2064,6 +2064,41 @@ export const previewLppPlan = (contractId: string, year: number) =>
 export const getContractVersionUsage = (incomeId: string) =>
   invoke<ContractVersionUsage[]>("get_contract_version_usage", { incomeId })
 
+// --- Registre du commerce suisse (Zefix) ---
+
+/// Une entreprise telle que la recherche la rend. `legal_seat` est la commune
+/// du siège — l'adresse complète demande `zefixCompany`.
+export interface ZefixMatch {
+  name: string
+  uid: string | null
+  legal_seat: string | null
+  legal_form: string | null
+  /// `ACTIVE` | `CANCELLED` | `BEING_CANCELLED`
+  status: string | null
+}
+
+export interface ZefixCompany {
+  name: string
+  uid: string | null
+  address: string | null
+  legal_seat: string | null
+  status: string | null
+}
+
+/// Cherche par nom (début de nom accepté). Les identifiants sont ceux de
+/// l'utilisateur : l'API Zefix les exige, et aucun n'est livré avec l'app.
+export const zefixSearch = (
+  credentials: { username: string; password: string },
+  name: string,
+  canton?: string | null,
+) => invoke<ZefixMatch[]>("zefix_search", { credentials, name, canton: canton ?? null })
+
+/// Le détail d'une entreprise — c'est le seul appel qui donne l'adresse.
+export const zefixCompany = (
+  credentials: { username: string; password: string },
+  uid: string,
+) => invoke<ZefixCompany>("zefix_company", { credentials, uid })
+
 /// Barème de suppléments d'une version de contrat.
 export const getSupplementRates = (contractId: string) =>
   invoke<SupplementRate[]>("get_supplement_rates", { contractId })

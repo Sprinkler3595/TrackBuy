@@ -159,6 +159,16 @@ export function HelpPage() {
               L'entreprise est enregistrée une fois pour toutes. Elle sera proposée
               automatiquement pour vos primes et vos notes de frais.
             </p>
+            <p>
+              <strong>« Chercher au registre »</strong> évite de recopier l'IDE à la main :
+              le nom suffit, et l'IDE comme l'adresse du <em>siège</em> viennent de Zefix,
+              le registre officiel du commerce. Le siège compte : c'est lui, et non votre
+              domicile, qui détermine les retenues sociales cantonales. La recherche demande
+              des identifiants Zefix, gratuits mais nominatifs, à demander à{" "}
+              <code className="rounded bg-muted px-1 py-0.5">zefix@bj.admin.ch</code> puis à
+              saisir dans <strong>Paramètres → Général</strong>. Sans eux, tout se saisit à la
+              main comme avant.
+            </p>
           </Step>
 
           <Step n={2} title="Le contrat">

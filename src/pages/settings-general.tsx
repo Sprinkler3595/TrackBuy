@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff, KeyRound, AlertTriangle } from "lucide-react"
+import { Moon, Sun, Monitor, Languages, Lock, Database, FolderOpen, Copy, Check, Sparkles, Eye, EyeOff, KeyRound, AlertTriangle, Building2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,6 +17,12 @@ import {
   defaultAiSettings,
   isCloudProvider,
 } from "@/lib/ai-settings"
+import {
+  type ZefixSettings,
+  getZefixSettings,
+  saveZefixSettings,
+  hasZefixCredentials,
+} from "@/lib/zefix-settings"
 
 function formatBytes(n: number, locale: "fr" | "en"): string {
   if (n < 1024) return `${n} B`
@@ -58,6 +64,9 @@ export function GeneralSettings() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [testing, setTesting] = useState(false)
   const [aiUsage, setAiUsage] = useState<api.AiUsageMonth[]>([])
+  const [zefix, setZefix] = useState<ZefixSettings>(() => getZefixSettings())
+  const [showZefixPwd, setShowZefixPwd] = useState(false)
+  const [zefixTesting, setZefixTesting] = useState(false)
   // Rotation du mot de passe maître.
   const [oldPwd, setOldPwd] = useState("")
   const [newPwd, setNewPwd] = useState("")
@@ -460,6 +469,118 @@ export function GeneralSettings() {
               </div>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Building2 className="h-5 w-5" />
+            {locale === "fr" ? "Registre du commerce (Zefix)" : "Commercial register (Zefix)"}
+          </CardTitle>
+          <CardDescription>
+            {locale === "fr"
+              ? "Retrouve l'IDE et l'adresse du siège d'une entreprise à partir de son nom, lors de la création d'un revenu ou d'un contrat."
+              : "Looks up a company's UID and registered address from its name, when creating an income or a contract."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+            {locale === "fr" ? (
+              <>
+                L'accès à l'API est <strong>gratuit</strong>, mais nominatif : il se demande par
+                courriel à{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">zefix@bj.admin.ch</code>.
+                Aucun identifiant n'est livré avec l'application — il serait alors partagé entre
+                tous ses utilisateurs, ce que les conditions d'accès n'autorisent pas.
+              </>
+            ) : (
+              <>
+                API access is <strong>free</strong> but personal: request it by email from{" "}
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">zefix@bj.admin.ch</code>.
+                No credentials ship with the app — they would be shared between all its users,
+                which the terms of access do not allow.
+              </>
+            )}
+          </p>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">
+                {locale === "fr" ? "Identifiant" : "Username"}
+              </label>
+              <Input
+                value={zefix.username}
+                onChange={(e) => setZefix({ ...zefix, username: e.target.value })}
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">
+                {locale === "fr" ? "Mot de passe" : "Password"}
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  type={showZefixPwd ? "text" : "password"}
+                  value={zefix.password}
+                  onChange={(e) => setZefix({ ...zefix, password: e.target.value })}
+                  autoComplete="off"
+                />
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowZefixPwd((v) => !v)}
+                  aria-label={
+                    showZefixPwd
+                      ? locale === "fr" ? "Masquer" : "Hide"
+                      : locale === "fr" ? "Afficher" : "Show"
+                  }
+                >
+                  {showZefixPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() => {
+                saveZefixSettings(zefix)
+                toast(locale === "fr" ? "Identifiants enregistrés" : "Credentials saved", "success")
+              }}
+            >
+              {locale === "fr" ? "Enregistrer" : "Save"}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={zefixTesting || !hasZefixCredentials(zefix)}
+              onClick={async () => {
+                setZefixTesting(true)
+                try {
+                  // Une recherche réelle est le seul test qui prouve quelque
+                  // chose : l'API ne propose pas de point d'entrée « qui
+                  // suis-je », et un mot de passe faux ne se voit qu'au
+                  // premier appel. « Migros » a l'avantage de renvoyer à coup
+                  // sûr des résultats.
+                  const hits = await api.zefixSearch(zefix, "Migros", null)
+                  toast(
+                    locale === "fr"
+                      ? `Connexion établie — ${hits.length} résultat(s) pour un essai.`
+                      : `Connected — ${hits.length} result(s) for a test query.`,
+                    "success",
+                  )
+                } catch (e) {
+                  toast(`${e}`, "error")
+                } finally {
+                  setZefixTesting(false)
+                }
+              }}
+            >
+              {zefixTesting
+                ? locale === "fr" ? "Test en cours…" : "Testing…"
+                : locale === "fr" ? "Tester la connexion" : "Test connection"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

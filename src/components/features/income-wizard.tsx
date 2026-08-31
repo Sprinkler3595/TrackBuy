@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from "react"
-import { Award, Briefcase, Check, ChevronLeft, ChevronRight, FileText, HandCoins, Wallet, X } from "lucide-react"
+import { Award, Briefcase, Check, ChevronLeft, ChevronRight, FileText, HandCoins, Search, Wallet, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/components/ui/toast"
@@ -8,6 +8,7 @@ import { I18nContext } from "@/lib/i18n"
 import { AttachmentsPanel } from "@/components/features/attachments-panel"
 import { InlineCreateSelect, type InlineOption } from "@/components/ui/inline-create-select"
 import { GrossToNetSummary } from "@/components/features/gross-to-net-summary"
+import { ZefixLookup } from "@/components/features/zefix-lookup"
 import { RateField } from "@/components/features/rate-field"
 import { useNetFromGross } from "@/hooks/use-net-from-gross"
 import { formatPrice } from "@/lib/utils"
@@ -149,6 +150,7 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
   // --- écran 2 : l'entreprise ---
   const [employerUid, setEmployerUid] = useState("")
   const [employerAddress, setEmployerAddress] = useState("")
+  const [zefixOpen, setZefixOpen] = useState(false)
 
   // --- écran 3 : le contrat ---
   /// Le brut ANNUEL, parce que c'est lui qui est écrit au contrat : « 50 000
@@ -304,6 +306,27 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
     const known = knownEmployers.find((e) => e.id === employerId)
     if (known?.address) setEmployerAddress((v) => v || (known.address as string))
   }, [employerId, knownEmployers])
+
+  /// Ce que le registre renvoie a valeur d'original : c'est de là que
+  /// viennent l'IDE et l'adresse du siège. On écrase donc ce qui était saisi,
+  /// contrairement aux préremplissages ci-dessus qui, eux, devinent.
+  ///
+  /// Le nom devient un employeur enregistré tout de suite : sans cela l'IDE
+  /// rapporté se rattacherait à un champ vide.
+  async function pickFromZefix(c: api.ZefixCompany) {
+    setZefixOpen(false)
+    if (c.uid) setEmployerUid(c.uid)
+    if (c.address) setEmployerAddress(c.address)
+    const existing = employers.find(
+      (e) => e.name.trim().toLowerCase() === c.name.trim().toLowerCase(),
+    )
+    if (existing && !existing.id.startsWith("legacy:")) {
+      setEmployerId(existing.id)
+      return
+    }
+    const created = await createEmployer(c.name)
+    if (created) setEmployerId(created.id)
+  }
 
   /// A "legacy:" option is an employer that only existed as free text on an
   /// old income — promote it to a real creditor the first time it's used, so
@@ -530,7 +553,13 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
           {step === 2 && path === "salary" && (
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">{fr ? "Nom de l'entreprise" : "Company name"} *</label>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-sm font-medium">{fr ? "Nom de l'entreprise" : "Company name"} *</label>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setZefixOpen(true)}>
+                    <Search className="mr-1.5 h-3.5 w-3.5" />
+                    {fr ? "Chercher au registre" : "Search the register"}
+                  </Button>
+                </div>
                 <InlineCreateSelect
                   value={employerId}
                   onChange={setEmployerId}
@@ -575,6 +604,15 @@ export function IncomeWizard({ incomes, cards, onClose }: IncomeWizardProps) {
                   ? "L'IDE et l'adresse sont facultatifs. Ils ne servent à aucun calcul — seulement à retrouver l'entreprise et à adresser un courrier."
                   : "The UID and address are optional. No calculation uses them — they only help identify the company and address a letter."}
               </p>
+
+              {zefixOpen && (
+                <ZefixLookup
+                  initialName={employerName}
+                  canton={canton || null}
+                  onPicked={pickFromZefix}
+                  onClose={() => setZefixOpen(false)}
+                />
+              )}
             </div>
           )}
 
