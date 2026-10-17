@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
 import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, X } from "lucide-react"
+import { Plus, Trash2, Edit, FileText, Search, Download, Home, Car, ShieldCheck, HeartPulse, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -18,6 +18,8 @@ import { CancellationLetterModal } from "@/components/features/cancellation-lett
 import { RentWizard } from "@/components/features/rent-wizard"
 import { LeasingWizard } from "@/components/features/leasing-wizard"
 import { CarInsuranceWizard } from "@/components/features/car-insurance-wizard"
+import { HealthInsuranceWizard } from "@/components/features/health-insurance-wizard"
+import { HealthSeasonBanner } from "@/components/features/health-season-banner"
 import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { AlarmClock } from "lucide-react"
 import * as api from "@/lib/tauri"
@@ -127,12 +129,13 @@ export function EngagementsPage() {
   const [search, setSearch] = useState("")
   const [letterTarget, setLetterTarget] = useState<api.Engagement | null>(null)
   // Creation happens only through a guided assistant — the chooser lists the
-  // three domains the app actually supports. The full form below is reachable
+  // domains the app actually supports. The full form below is reachable
   // from the pencil button only, to fix an existing position.
   const [showChooser, setShowChooser] = useState(false)
   const [showRentWizard, setShowRentWizard] = useState(false)
   const [showLeasingWizard, setShowLeasingWizard] = useState(false)
   const [showCarInsuranceWizard, setShowCarInsuranceWizard] = useState(false)
+  const [showHealthWizard, setShowHealthWizard] = useState(false)
   const { toast } = useToast()
 
   // Parking number/type only make sense for the "parking" type.
@@ -215,7 +218,7 @@ export function EngagementsPage() {
   }
 
   // Edit-only: new engagements come from the guided assistants (rent, leasing,
-  // car insurance), never from this form.
+  // car insurance, health insurance), never from this form.
   const handleSubmit = async (ev: React.FormEvent) => {
     ev.preventDefault()
     if (!editing || !form.name.trim()) return
@@ -388,6 +391,8 @@ export function EngagementsPage() {
           </Button>
         </div>
       </div>
+
+      <HealthSeasonBanner />
 
       {cancellations.length > 0 && (
         <Card className="border-amber-500/40 bg-amber-500/5">
@@ -792,6 +797,18 @@ export function EngagementsPage() {
                   </span>
                 </span>
               </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent/40"
+                onClick={() => { setShowChooser(false); setShowHealthWizard(true) }}
+              >
+                <span className="rounded-lg bg-primary/10 p-2 text-primary"><HeartPulse className="h-5 w-5" /></span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">{locale === "fr" ? "Assurance maladie" : "Health insurance"}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {locale === "fr" ? "Assistant guidé : LAMal par personne, franchise, modèle, complémentaires" : "Guided assistant: LAMal per person, deductible, model, supplementary"}
+                  </span>
+                </span>
+              </button>
             </div>
           </div>
         </div>
@@ -810,6 +827,14 @@ export function EngagementsPage() {
           creditors={creditors}
           cards={cards}
           onClose={() => { setShowLeasingWizard(false); load() }}
+        />
+      )}
+
+      {showHealthWizard && (
+        <HealthInsuranceWizard
+          creditors={creditors}
+          cards={cards}
+          onClose={() => { setShowHealthWizard(false); load() }}
         />
       )}
 

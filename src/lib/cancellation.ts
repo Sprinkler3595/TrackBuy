@@ -39,13 +39,26 @@ function subtractDays(dateISO: string, days: number): string {
   return `${yy}-${mm}-${dd}`
 }
 
+/// Health insurance renews by itself every 1st of January: the basic cover
+/// (LAMal) by law, supplementary covers by tacit renewal. A 31 December term
+/// that has passed therefore means "this year's 31 December", not "too late
+/// forever" — without this, the 30 November reminder would fire once, then
+/// never again.
+function renewedEnd(e: Engagement): string {
+  const end = e.contract_end_date as string
+  if (e.engagement_type !== "insurance_health" || !end.endsWith("-12-31")) return end
+  const year = new Date().getFullYear()
+  return Number(end.slice(0, 4)) < year ? `${year}-12-31` : end
+}
+
 /// Compute the cancellation deadline for an engagement, or null when it's not
 /// applicable (not active, or missing the contract end / notice period).
 export function getCancellationInfo(e: Engagement): CancellationInfo | null {
   if (e.status !== "active") return null
   if (!e.contract_end_date || e.notice_period_days == null) return null
 
-  const deadlineISO = subtractDays(e.contract_end_date, e.notice_period_days)
+  const contractEnd = renewedEnd(e)
+  const deadlineISO = subtractDays(contractEnd, e.notice_period_days)
   const daysUntilDeadline = daysUntil(deadlineISO)
 
   const severity: CancellationSeverity =
@@ -54,7 +67,7 @@ export function getCancellationInfo(e: Engagement): CancellationInfo | null {
   return {
     deadlineISO,
     daysUntilDeadline,
-    contractEndISO: e.contract_end_date,
+    contractEndISO: contractEnd,
     noticeDays: e.notice_period_days,
     severity,
   }
@@ -100,6 +113,9 @@ export function buildCancellationLetter(
   const reference = e.contract_reference
     ? ` (réf. contrat : ${e.contract_reference})`
     : ""
+  if (e.engagement_type === "insurance_health") {
+    return buildHealthLetter(e, recipient, e.contract_reference)
+  }
   const endDateLabel = formatDate(e.contract_end_date as string)
 
   return `[Votre prénom et nom]
@@ -127,6 +143,57 @@ de cette résiliation ainsi que la date effective de fin du contrat.
 
 Dans l'attente de votre confirmation, je vous prie d'agréer, Madame,
 Monsieur, mes salutations distinguées.
+
+
+
+[Votre signature]
+
+[Votre prénom et nom]`
+}
+
+/// Health insurance letters differ on two points that matter. The basic cover
+/// (LAMal, a root engagement) is cancelled under art. 7 LAMal and only ends
+/// once the NEW insurer has announced the affiliation — the letter says so,
+/// so the old insurer doesn't treat it as a request to be uninsured. A
+/// supplementary cover (LCA, a child engagement) follows its own policy terms.
+function buildHealthLetter(e: Engagement, recipient: string, policyNo: string | null): string {
+  const end = e.contract_end_date ? formatDate(renewedEnd(e)) : "[date]"
+  const isBasic = !e.parent_engagement_id
+  const ref = policyNo ? `\nN° de police / d'assuré : ${policyNo}` : ""
+  const body = isBasic
+    ? `Par la présente, je résilie mon assurance obligatoire des soins (LAMal)
+pour le ${end}, conformément à l'art. 7 LAMal.
+
+Mon affiliation auprès de ma nouvelle caisse maladie vous sera communiquée
+par celle-ci, comme le prévoit l'art. 7 al. 5 LAMal. Mes éventuelles
+assurances complémentaires ne sont pas concernées par cette résiliation.`
+    : `Par la présente, je résilie les assurances complémentaires (LCA) désignées
+en objet pour leur prochaine échéance, soit le ${end}, dans le respect du
+délai de résiliation prévu par la police.`
+
+  return `[Votre prénom et nom]
+[Votre adresse]
+[NPA et localité]
+Date de naissance : [JJ.MM.AAAA]
+
+
+${recipient}
+
+
+[Lieu], le ${formatDate(new Date().toISOString())}
+
+Lettre recommandée
+
+Objet : Résiliation — ${e.name}${ref}
+
+Madame, Monsieur,
+
+${body}
+
+Je vous remercie de me confirmer par écrit la bonne réception de ce courrier
+et la date de fin de la couverture.
+
+Veuillez agréer, Madame, Monsieur, mes salutations distinguées.
 
 
 

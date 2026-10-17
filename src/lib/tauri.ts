@@ -554,6 +554,28 @@ export interface ExtractedCarInsurance {
 export const aiExtractCarInsurance = (ocrText: string, config: AiExtractionConfig) =>
   invoke<ExtractedCarInsurance>("ai_extract_car_insurance", { ocrText, config })
 
+export interface ExtractedHealthInsurance {
+  insurer_name: string | null
+  policy_number: string | null
+  insured_name: string | null
+  insured_birth_date: string | null
+  model: HealthModel | null
+  franchise: number | null
+  accident_covered: boolean | null
+  basic_monthly_premium: number | null
+  subsidy_monthly: number | null
+  supplementary_monthly_premium: number | null
+  supplementary_options: string[]
+  valid_from: string | null
+  canton: string | null
+  premium_region: string | null
+  payment_method: EngagementPaymentMethod | null
+  billing_cycle: EngagementBillingCycle | null
+}
+
+export const aiExtractHealthInsurance = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedHealthInsurance>("ai_extract_health_insurance", { ocrText, config })
+
 /// Fields extracted from a Swiss car-leasing contract/offer (text or OCR).
 export interface ExtractedLeasing {
   name: string | null
@@ -849,6 +871,10 @@ export interface EngagementRevision {
   change_reason: string | null
   notes: string | null
   created_at: string
+  /// Changes the amount of the charges from its effective date on, then
+  /// becomes the current amount once that date has passed (schema v36).
+  applies_on_roll: boolean
+  applied_at: string | null
 }
 
 // Creditors CRUD
@@ -993,6 +1019,7 @@ export const addEngagementRevision = (revision: {
   currency?: string
   change_reason?: string | null
   notes?: string | null
+  applies_on_roll?: boolean
 }) => invoke<EngagementRevision>("add_engagement_revision", { revision })
 
 export const deleteEngagementRevision = (id: string) =>
@@ -2755,3 +2782,204 @@ export const updateMerchantRule = (id: string, rule: MerchantRuleInput) =>
 
 export const deleteMerchantRule = (id: string) =>
   invoke<void>("delete_merchant_rule", { id })
+
+// ===========================================================================
+// Assurance maladie (LAMal / LCA) — schema v36, src-tauri/src/health/
+// ===========================================================================
+
+export type HealthKind = "basic" | "supplementary"
+export type HealthModel = "standard" | "family_doctor" | "hmo" | "telmed" | "other"
+export type HealthAgeClass = "child" | "young_adult" | "adult"
+export type HealthDecision = "pending" | "keep" | "change_franchise" | "change_model" | "switch_insurer"
+
+export interface HealthParams {
+  year: number
+  estimated: boolean
+  effective_year: number
+  source: string
+  verified_on: string
+  adult_ordinary_franchise: number
+  adult_franchises: number[]
+  child_ordinary_franchise: number
+  child_franchises: number[]
+  quote_part_pct: number
+  quote_part_original_drug_pct: number
+  quote_part_cap_adult: number
+  quote_part_cap_child: number
+  hospital_daily_contribution: number
+  child_max_age: number
+  young_adult_max_age: number
+  ofsp_average_monthly_premium: number | null
+  ofsp_average_change_pct: number | null
+}
+
+export const getHealthParams = (year: number) =>
+  invoke<{ params: HealthParams; known_years: number[] }>("get_health_params", { year })
+
+export interface HealthPolicy {
+  engagement_id: string
+  kind: HealthKind
+  insured_member_id: string | null
+  insured_name: string | null
+  insured_birth_date: string | null
+  canton: string | null
+  premium_region: string | null
+  model: HealthModel | null
+  franchise: number | null
+  accident_covered: boolean | null
+  subsidy_monthly: number | null
+  /// JSON array of supplementary (LCA) option slugs.
+  options_json: string | null
+}
+
+export const getHealthPolicy = (engagementId: string) =>
+  invoke<HealthPolicy | null>("get_health_policy", { engagementId })
+
+export const upsertHealthPolicy = (policy: HealthPolicy) =>
+  invoke<HealthPolicy>("upsert_health_policy", { policy })
+
+export interface HealthPremiumNotice {
+  id: string
+  engagement_id: string
+  /// Year the premium applies to (the notice arrives the autumn before).
+  year: number
+  monthly_premium: number | null
+  franchise: number | null
+  model: HealthModel | null
+  accident_covered: boolean | null
+  received_on: string | null
+  decision: HealthDecision
+  revision_id: string | null
+  notes: string | null
+}
+
+export const listHealthPremiumNotices = (engagementId: string) =>
+  invoke<HealthPremiumNotice[]>("list_health_premium_notices", { engagementId })
+
+export const saveHealthPremiumNotice = (notice: Omit<HealthPremiumNotice, "id" | "revision_id"> & { id?: string }) =>
+  invoke<HealthPremiumNotice>("save_health_premium_notice", { notice })
+
+export const deleteHealthPremiumNotice = (id: string) =>
+  invoke<void>("delete_health_premium_notice", { id })
+
+export interface HealthClaim {
+  id: string
+  engagement_id: string
+  year: number
+  statement_date: string | null
+  treatment_date: string | null
+  provider: string | null
+  invoiced: number
+  insurer_paid: number
+  franchise: number
+  quote_part: number
+  hospital: number
+  not_covered: number
+  notes: string | null
+}
+
+export const listHealthClaims = (engagementId: string, year: number) =>
+  invoke<HealthClaim[]>("list_health_claims", { engagementId, year })
+
+export const addHealthClaim = (claim: Omit<HealthClaim, "id">) =>
+  invoke<HealthClaim>("add_health_claim", { claim })
+
+export const deleteHealthClaim = (id: string) =>
+  invoke<void>("delete_health_claim", { id })
+
+export interface HealthParticipationStatus {
+  franchise: number
+  franchise_used: number
+  franchise_remaining: number
+  quote_part_cap: number
+  quote_part_used: number
+  quote_part_remaining: number
+  hospital_paid: number
+  not_covered: number
+  invoiced: number
+  insurer_paid: number
+  max_remaining: number
+  over_cap: boolean
+}
+
+export interface HealthFinding {
+  id: string
+  severity: FindingSeverity
+  message: string
+  legal_ref: string
+}
+
+export interface HealthSeasonEvent {
+  key: "premium_notice" | "switch_insurer" | "lower_franchise" | "raise_franchise" | "affiliation" | "mid_year_switch"
+  date: string
+  working_date: string
+  send_by: string | null
+  title: string
+  detail: string
+  legal_ref: string
+  applies: boolean
+}
+
+export interface HealthOverview {
+  year: number
+  policy: HealthPolicy | null
+  insured_label: string | null
+  birth_year: number | null
+  age_class: HealthAgeClass | null
+  allowed_franchises: number[]
+  monthly_gross: number | null
+  notice_next_year: HealthPremiumNotice | null
+  participation: HealthParticipationStatus | null
+  findings: HealthFinding[]
+  season_year: number
+  season_open: boolean
+  season: HealthSeasonEvent[]
+}
+
+export const getHealthOverview = (engagementId: string) =>
+  invoke<HealthOverview>("get_health_overview", { engagementId })
+
+export interface HealthSeason {
+  season_year: number
+  open: boolean
+  events: HealthSeasonEvent[]
+  policies: {
+    engagement_id: string
+    name: string
+    creditor_name: string | null
+    kind: HealthKind | null
+    insured_label: string | null
+    franchise: number | null
+    model: HealthModel | null
+    notice: HealthPremiumNotice | null
+  }[]
+  params: HealthParams
+}
+
+export const getHealthSeason = () => invoke<HealthSeason>("get_health_season")
+
+export interface FranchiseOption {
+  franchise: number
+  monthly_premium: number
+}
+
+export interface FranchiseComparison {
+  expected_costs: number
+  options: {
+    franchise: number
+    annual_premium: number
+    participation: { franchise: number; quote_part: number; total: number }
+    total: number
+  }[]
+  best_franchise: number | null
+  break_evens: { lower_franchise: number; higher_franchise: number; costs_above: number | null }[]
+  curve: [number, number[]][]
+  worst_cases: [number, number][]
+}
+
+export const compareHealthFranchises = (
+  year: number,
+  birthYear: number | null,
+  options: FranchiseOption[],
+  expectedCosts: number,
+) => invoke<FranchiseComparison>("compare_health_franchises", { year, birthYear, options, expectedCosts })

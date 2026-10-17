@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from "react"
-import { Link, useNavigate, useParams } from "react-router-dom"
-import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers, X, Receipt, Loader2, Eye, Download } from "lucide-react"
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
+import { ArrowLeft, Plus, Trash2, CheckCircle2, FileText, History, ListChecks, Paperclip, Layers, X, Receipt, Loader2, Eye, Download, HeartPulse } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -15,16 +15,17 @@ import { formatPrice, formatDate, daysUntil, cn } from "@/lib/utils"
 import { monthlyEquivalent } from "@/lib/finance"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import { ClausesEditor } from "@/components/features/clauses-editor"
+import { HealthInsurancePanel } from "@/components/features/health-insurance-panel"
 import * as api from "@/lib/tauri"
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-type Tab = "overview" | "charges" | "revisions" | "attachments" | "children"
+type Tab = "overview" | "health" | "charges" | "revisions" | "attachments" | "children"
 
 export function EngagementDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { t } = useContext(I18nContext)
+  const { t, locale } = useContext(I18nContext)
   const { toast } = useToast()
 
   const [engagement, setEngagement] = useState<api.Engagement | null>(null)
@@ -34,7 +35,9 @@ export function EngagementDetailPage() {
   const [cards, setCards] = useState<api.PaymentCard[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<Tab>("overview")
+  // `?tab=health` lands straight on the health tab (from the premium-season card).
+  const [searchParams] = useSearchParams()
+  const [tab, setTab] = useState<Tab>(searchParams.get("tab") === "health" ? "health" : "overview")
   const [deleteEngagementOpen, setDeleteEngagementOpen] = useState(false)
   const [deleteChargeTarget, setDeleteChargeTarget] = useState<string | null>(null)
   const [deleteRevisionTarget, setDeleteRevisionTarget] = useState<string | null>(null)
@@ -452,6 +455,7 @@ export function EngagementDetailPage() {
       <div className="flex flex-wrap gap-1 border-b">
         {([
           ["overview", ListChecks, t("engagements.tabOverview")],
+          ...(e.engagement_type === "insurance_health" ? [["health", HeartPulse, locale === "fr" ? "Santé" : "Health"] as const] : []),
           ["charges", History, `${t("engagements.tabCharges")} (${charges.length})`],
           ["revisions", FileText, `${t("engagements.tabRevisions")} (${revisions.length})`],
           ["attachments", Paperclip, t("engagements.tabAttachments")],
@@ -569,6 +573,10 @@ export function EngagementDetailPage() {
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {tab === "health" && e.engagement_type === "insurance_health" && (
+        <HealthInsurancePanel engagement={e} onChanged={load} />
       )}
 
       {tab === "charges" && (
