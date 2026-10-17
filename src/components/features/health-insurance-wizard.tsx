@@ -9,7 +9,7 @@ import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { getAiSettings } from "@/lib/ai-settings"
 import { documentToText } from "@/lib/document-scan"
 import { CANTONS } from "@/lib/cantons"
-import { formatPrice, cn } from "@/lib/utils"
+import { formatPrice, formatDate, cn } from "@/lib/utils"
 import {
   HEALTH_MODELS, HEALTH_SUPPLEMENTARY_OPTIONS, ageClassFor, ageClassLabel, healthModelLabel, yearOf,
 } from "@/lib/health"
@@ -158,6 +158,11 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
   // Step 3 — supplementary covers (LCA).
   const [hasLca, setHasLca] = useState(false)
   const [lcaSameInsurer, setLcaSameInsurer] = useState(true)
+  // Same insurer → one bill for both covers, by default. A different insurer
+  // bills on its own, possibly at another rhythm.
+  const [lcaOneBill, setLcaOneBill] = useState(true)
+  const [lcaCycle, setLcaCycle] = useState<api.EngagementBillingCycle>("monthly")
+  const [firstBill, setFirstBill] = useState<{ due: string; total: number; parts: string } | null>(null)
   const [lcaInsurerId, setLcaInsurerId] = useState("")
   const [lcaPolicyNo, setLcaPolicyNo] = useState("")
   const [lcaPremium, setLcaPremium] = useState("")
@@ -309,6 +314,8 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
       })
 
       let count = 1
+      const oneBill = hasLca && lcaSameInsurer && lcaOneBill
+      const lcaMonths = oneBill ? months : (CYCLE_MONTHS[lcaCycle] ?? 1)
       if (hasLca) {
         const selected = HEALTH_SUPPLEMENTARY_OPTIONS.filter((o) => lcaOptions[o.slug]).map((o) => o.slug)
         const lcaInsurer = lcaSameInsurer ? insurerId : lcaInsurerId
@@ -322,10 +329,10 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
           contract_reference: (lcaSameInsurer ? policyNo : lcaPolicyNo).trim() || null,
           contract_end_date: lcaEnd || null,
           notice_period_days: lcaNotice.trim() ? parseInt(lcaNotice, 10) : null,
-          billing_cycle: cycle,
+          billing_cycle: oneBill ? cycle : lcaCycle,
           cycle_interval: 1,
           next_due_date: nextDue || null,
-          current_amount: Math.round(lcaPremiumValue * months * 100) / 100,
+          current_amount: Math.round(lcaPremiumValue * lcaMonths * 100) / 100,
           currency: "CHF",
           payment_method: payMethod,
           auto_pay: auto,
@@ -345,8 +352,20 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
           subsidy_monthly: null,
           options_json: selected.length > 0 ? JSON.stringify(selected) : null,
         })
+        if (oneBill) await api.setBilledWithParent(lca.id, true)
+        else await api.planNextEngagementCharge(lca.id)
         count += 1
       }
+      // The first bill appears right away in the charges, at the date and
+      // rhythm chosen — with the supplementary on it when it is one bill.
+      await api.planNextEngagementCharge(base.id)
+      const baseBilled = Math.round(billedPerCycle * 100) / 100
+      const lcaBilled = hasLca ? Math.round(lcaPremiumValue * months * 100) / 100 : 0
+      setFirstBill(nextDue ? {
+        due: nextDue,
+        total: oneBill ? baseBilled + lcaBilled : baseBilled,
+        parts: oneBill ? `LAMal ${formatPrice(baseBilled)} + LCA ${formatPrice(lcaBilled)}` : "",
+      } : null)
       setCreatedId(base.id)
       setCreatedName(base.name)
       setCreatedCount((c) => c + count)
@@ -375,6 +394,7 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
     setLcaPremium("")
     setLcaPolicyNo("")
     setScanned(null)
+    setFirstBill(null)
     setCreatedId(null)
     setStep(1)
   }
@@ -630,6 +650,29 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
                     <input type="checkbox" checked={lcaSameInsurer} onChange={(e) => setLcaSameInsurer(e.target.checked)} />
                     {fr ? "Chez la même caisse que l'assurance de base" : "With the same insurer as the basic cover"}
                   </label>
+                  {lcaSameInsurer ? (
+                    <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm sm:col-span-2">
+                      <input type="checkbox" className="mt-1" checked={lcaOneBill} onChange={(e) => setLcaOneBill(e.target.checked)} />
+                      <span>
+                        <span className="font-medium">{fr ? "Une seule facture LAMal + LCA" : "One bill for LAMal + LCA"}</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {fr
+                            ? "Une échéance par période, du montant total, comme le bulletin de la caisse. Chaque part garde sa prime : leurs hausses du 1er janvier s'additionnent d'elles-mêmes."
+                            : "One charge per period for the total, like the insurer's bill. Each part keeps its own premium."}
+                        </span>
+                      </span>
+                    </label>
+                  ) : (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">{fr ? "Périodicité de la facture LCA" : "LCA billing frequency"}</label>
+                      <select className={fieldCls} value={lcaCycle} onChange={(e) => setLcaCycle(e.target.value as api.EngagementBillingCycle)}>
+                        <option value="monthly">{fr ? "Mensuelle" : "Monthly"}</option>
+                        <option value="quarterly">{fr ? "Trimestrielle" : "Quarterly"}</option>
+                        <option value="semiannual">{fr ? "Semestrielle" : "Half-yearly"}</option>
+                        <option value="yearly">{fr ? "Annuelle" : "Yearly"}</option>
+                      </select>
+                    </div>
+                  )}
                   {!lcaSameInsurer && (
                     <>
                       <div className="space-y-2">
@@ -680,6 +723,14 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
                     : "Each autumn, the Health tab will remind you to enter the premium notice and the 30 November deadlines."}
                 </span>
               </div>
+              {firstBill && (
+                <div className="rounded-md border px-3 py-2 text-sm">
+                  {fr ? "Première échéance planifiée : " : "First charge scheduled: "}
+                  <span className="font-semibold">{formatPrice(firstBill.total)}</span>
+                  {" "}{fr ? "le" : "on"} {formatDate(firstBill.due)}
+                  {firstBill.parts && <span className="block text-xs text-muted-foreground">{fr ? "Facture commune" : "Shared bill"} : {firstBill.parts}</span>}
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 {fr ? "Ajoutez la police d'assurance et, si vous l'avez, l'avis de prime." : "Attach the policy and, if you have it, the premium notice."}
               </p>

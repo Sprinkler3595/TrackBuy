@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 37;
+pub const CURRENT_SCHEMA_VERSION: i64 = 38;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -141,6 +141,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 37 {
         migrate_v37(conn)?;
+    }
+    if current_version < 38 {
+        migrate_v38(conn)?;
     }
 
     Ok(())
@@ -2498,6 +2501,31 @@ fn migrate_v37(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (37);
         "
     ).map_err(|e| format!("Migration v37 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v38 — une facture, plusieurs contrats.
+///
+/// - `engagements.billed_with_parent` : le sous-engagement est payé sur la
+///   facture du parent. LAMal et LCA chez la même caisse arrivent sur UN
+///   bulletin ; un loyer et sa place de parc souvent aussi. Le parent porte
+///   alors une seule échéance, du montant total, et l'enfant n'en génère
+///   aucune tant que le parent court. Chacun garde son montant et ses
+///   révisions : la prime LCA change au 1er janvier sans toucher à la LAMal.
+/// - `engagement_charges.auto_settle` : échéance PLANIFIÉE d'avance (dès la
+///   création du contrat) plutôt que générée après coup. Une fois sa date
+///   passée, le roll-forward la traite comme les siennes : présumée payée si
+///   l'engagement est prélevé automatiquement.
+fn migrate_v38(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE engagements ADD COLUMN billed_with_parent INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE engagement_charges ADD COLUMN auto_settle INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (38);
+        "
+    ).map_err(|e| format!("Migration v38 failed: {}", e))?;
 
     Ok(())
 }

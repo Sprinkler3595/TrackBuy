@@ -119,6 +119,29 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
     setEditing(true)
   }
 
+  // The shared bill: children paid on this policy's invoice (basic), or the
+  // switch that puts this supplementary on its parent's invoice.
+  const [billParts, setBillParts] = useState<api.Engagement[]>([])
+  useEffect(() => {
+    if (p?.kind !== "basic") return
+    api.getEngagementChildren(engagement.id)
+      .then((kids) => setBillParts(kids.filter((k) => k.billed_with_parent && k.status === "active")))
+      .catch(() => setBillParts([]))
+  }, [engagement.id, p?.kind])
+
+  async function toggleOneBill(combined: boolean) {
+    try {
+      await api.setBilledWithParent(engagement.id, combined)
+      if (!combined) await api.planNextEngagementCharge(engagement.id)
+      toast(combined
+        ? (fr ? "Payée désormais sur la facture de l'assurance de base." : "Now paid on the basic cover's bill.")
+        : (fr ? "Facturée séparément dès la prochaine échéance." : "Billed separately from the next charge."), "success")
+      await onSaved()
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+    }
+  }
+
   async function confirmAffiliation() {
     if (!p) return
     try {
@@ -291,6 +314,29 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
               ))}
             </div>
           </div>
+        )}
+        {p.kind === "basic" && billParts.length > 0 && engagement.current_amount != null && (
+          <div className="sm:col-span-3 rounded-md bg-muted/50 px-3 py-2">
+            <p className="text-xs text-muted-foreground">{fr ? "Facture commune (une échéance)" : "Shared bill (one charge)"}</p>
+            <p className="font-medium">
+              {formatPrice(engagement.current_amount + billParts.reduce((sum, k) => sum + (k.current_amount ?? 0), 0))}
+              <span className="font-normal text-muted-foreground">
+                {" "}= LAMal {formatPrice(engagement.current_amount)}
+                {billParts.map((k) => ` + ${k.name} ${formatPrice(k.current_amount ?? 0)}`).join("")}
+              </span>
+            </p>
+          </div>
+        )}
+        {p.kind === "supplementary" && engagement.parent_engagement_id && (
+          <label className="sm:col-span-3 flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
+            <input type="checkbox" className="mt-1" checked={!!engagement.billed_with_parent} onChange={(e) => void toggleOneBill(e.target.checked)} />
+            <span>
+              <span className="font-medium">{fr ? `Payée sur la facture de « ${engagement.parent_name ?? "l'assurance de base"} »` : `Paid on the bill of "${engagement.parent_name ?? "the basic cover"}"`}</span>
+              <span className="block text-xs text-muted-foreground">
+                {fr ? "Une seule échéance par période pour les deux, du montant total — cochez-le si la caisse vous envoie un seul bulletin." : "One charge per period for both — tick if the insurer sends a single bill."}
+              </span>
+            </span>
+          </label>
         )}
         {p.replaces_engagement_id && (
           <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3">

@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use tauri::State;
 use uuid::Uuid;
 
@@ -23,7 +23,8 @@ const ENG_SELECT_COLUMNS: &str =
      e.vehicle_category, e.vehicle_registration_number, e.vehicle_is_leasing,
      e.insurance_young_driver_franchise,
      e.created_at, e.updated_at,
-     cr.name as creditor_name, pc.name as card_name, p.name as parent_name";
+     cr.name as creditor_name, pc.name as card_name, p.name as parent_name,
+     e.billed_with_parent";
 
 const ENG_JOINS: &str =
     "LEFT JOIN creditors cr ON e.creditor_id = cr.id
@@ -83,6 +84,7 @@ fn row_to_engagement(row: &rusqlite::Row<'_>) -> rusqlite::Result<Engagement> {
         creditor_name: row.get(48)?,
         card_name: row.get(49)?,
         parent_name: row.get(50)?,
+        billed_with_parent: row.get(51)?,
     })
 }
 
@@ -205,6 +207,8 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
             continue;
         };
         let pending = pending_revisions(conn, &id)?;
+        let covered = parent_cover(conn, &id)?;
+        let parts = combined_parts(conn, &id)?;
         for _ in 0..1000 {
             let today: String = conn
                 .query_row("SELECT date('now')", [], |row| row.get(0))
@@ -225,7 +229,11 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
                     |row| row.get(0),
                 )
                 .map_err(|e| e.to_string())?;
-            if already == 0 {
+            // Payé sur la facture du parent à cette date : pas d'échéance à
+            // soi, mais la date avance quand même, pour reprendre au bon
+            // endroit le jour où le parent s'arrête.
+            let on_parent_bill = covered.as_ref().is_some_and(|c| c.covers(&current));
+            if already == 0 && !on_parent_bill {
                 let charge_id = Uuid::new_v4().to_string();
                 // auto_pay : marquée 'paid' mais PRÉSUMÉE (débit LSV/SEPA
                 // supposé, pas confirmé). Sinon 'scheduled' (rien n'est payé,
@@ -235,12 +243,13 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
                 } else {
                     ("scheduled", None::<String>, 0)
                 };
-                let amount = amount_on(&pending, &current).unwrap_or(amount);
+                let own = amount_on(&pending, &current).unwrap_or(amount);
+                let (amount, notes) = bill_total(own, &parts, &current);
                 conn.execute(
                     "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
-                     payment_card_id, paid_on, status, is_presumed)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status, is_presumed],
+                     payment_card_id, paid_on, status, is_presumed, notes)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![charge_id, id, current, amount, currency, card_id, paid_on, status, is_presumed, notes],
                 )
                 .map_err(|e| e.to_string())?;
                 inserted += 1;
@@ -254,9 +263,202 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
         .map_err(|e| e.to_string())?;
     }
 
+    settle_planned(conn)?;
     apply_due_revisions(conn)?;
     end_scheduled(conn)?;
     Ok(inserted)
+}
+
+/// Jusqu'où un sous-engagement est payé sur la facture de son parent.
+pub(crate) struct ParentCover {
+    parent_active: bool,
+    parent_end: Option<String>,
+}
+
+impl ParentCover {
+    /// Le parent facture-t-il encore cette part à `date` ? Tant qu'il court,
+    /// jusqu'à sa fin programmée ; terminé, seulement jusqu'à sa fin connue.
+    fn covers(&self, date: &str) -> bool {
+        match (&self.parent_active, &self.parent_end) {
+            (true, None) => true,
+            (_, Some(end)) => date <= end.as_str(),
+            (false, None) => false,
+        }
+    }
+}
+
+/// `Some` quand `id` est payé sur la facture de son parent.
+fn parent_cover(conn: &Connection, id: &str) -> Result<Option<ParentCover>, String> {
+    conn.query_row(
+        "SELECT p.status = 'active', p.ended_on FROM engagements c
+         JOIN engagements p ON p.id = c.parent_engagement_id
+         WHERE c.id = ?1 AND c.billed_with_parent = 1",
+        [id],
+        |r| Ok(ParentCover { parent_active: r.get(0)?, parent_end: r.get(1)? }),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Une part payée sur la facture d'un parent : son nom, son montant courant
+/// et ses révisions à venir.
+pub(crate) struct BillPart {
+    name: String,
+    amount: f64,
+    pending: Vec<(String, f64)>,
+}
+
+fn combined_parts(conn: &Connection, parent_id: &str) -> Result<Vec<BillPart>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, current_amount FROM engagements
+             WHERE parent_engagement_id = ?1 AND billed_with_parent = 1
+               AND status = 'active' AND current_amount IS NOT NULL
+             ORDER BY name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, f64)> = stmt
+        .query_map([parent_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    rows.into_iter()
+        .map(|(id, name, amount)| Ok(BillPart { name, amount, pending: pending_revisions(conn, &id)? }))
+        .collect()
+}
+
+/// Montant de la facture à `date` — la part du parent plus celles qui
+/// voyagent avec lui — et, quand il y en a, le détail à garder en note.
+fn bill_total(own: f64, parts: &[BillPart], date: &str) -> (f64, Option<String>) {
+    if parts.is_empty() {
+        return (own, None);
+    }
+    let mut total = own;
+    let mut detail = vec![format!("{own:.2}")];
+    for p in parts {
+        let a = amount_on(&p.pending, date).unwrap_or(p.amount);
+        total += a;
+        detail.push(format!("{} {a:.2}", p.name));
+    }
+    let total = (total * 100.0).round() / 100.0;
+    (total, Some(format!("Facture commune : {}", detail.join(" + "))))
+}
+
+/// Planifie l'échéance à venir d'un engagement (`next_due_date`) au lieu
+/// d'attendre qu'elle soit passée : à la création d'un contrat, l'utilisateur
+/// veut voir la première facture. Rien si l'échéance existe déjà, ou si
+/// l'engagement est payé sur la facture de son parent — c'est alors celle du
+/// parent qu'il faut planifier.
+pub(crate) fn plan_next_charge_inner(conn: &Connection, id: &str) -> Result<Option<String>, String> {
+    type NextRow = (Option<String>, Option<f64>, String, Option<String>, String);
+    let row: Option<NextRow> = conn
+        .query_row(
+            "SELECT next_due_date, current_amount, currency, payment_card_id, status
+             FROM engagements WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((Some(due), Some(amount), currency, card_id, status)) = row else {
+        return Ok(None);
+    };
+    if status != "active" {
+        return Ok(None);
+    }
+    if parent_cover(conn, id)?.is_some_and(|c| c.covers(&due)) {
+        return Ok(None);
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id = ?1 AND due_date = ?2",
+            rusqlite::params![id, due],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists > 0 {
+        return Ok(None);
+    }
+    let own = amount_on(&pending_revisions(conn, id)?, &due).unwrap_or(amount);
+    let (total, notes) = bill_total(own, &combined_parts(conn, id)?, &due);
+    let charge_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
+         payment_card_id, status, is_presumed, notes, auto_settle)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'scheduled', 0, ?7, 1)",
+        rusqlite::params![charge_id, id, due, total, currency, card_id, notes],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Some(charge_id))
+}
+
+/// Une échéance planifiée dont la date est passée devient ce que le
+/// roll-forward en aurait fait : présumée payée si l'engagement est prélevé
+/// automatiquement, à payer sinon. Elle cesse d'être « planifiée » dans les
+/// deux cas.
+fn settle_planned(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "UPDATE engagement_charges
+         SET status = 'paid', paid_on = due_date, is_presumed = 1, updated_at = datetime('now')
+         WHERE auto_settle = 1 AND status = 'scheduled' AND date(due_date) < date('now')
+           AND engagement_id IN (SELECT id FROM engagements WHERE auto_pay = 1);
+         UPDATE engagement_charges SET auto_settle = 0
+         WHERE auto_settle = 1 AND date(due_date) < date('now');",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn plan_next_engagement_charge(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    plan_next_charge_inner(&conn, &id)
+}
+
+/// Payer un sous-engagement sur la facture de son parent, ou cesser de le
+/// faire. Réuni, il prend la périodicité du parent : deux lignes d'une même
+/// facture tombent forcément ensemble. Séparé, il reprend à la prochaine
+/// échéance du parent — c'est là que sa propre facture commence.
+pub(crate) fn set_billed_with_parent_inner(conn: &Connection, id: &str, combined: bool) -> Result<(), String> {
+    let parent: Option<(String, String, i32, Option<String>)> = conn
+        .query_row(
+            "SELECT p.id, p.billing_cycle, p.cycle_interval, p.next_due_date
+             FROM engagements c JOIN engagements p ON p.id = c.parent_engagement_id
+             WHERE c.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((_, cycle, interval, parent_due)) = parent else {
+        return Err("Sans engagement parent, il n'y a pas de facture commune".to_string());
+    };
+    if combined {
+        conn.execute(
+            "UPDATE engagements SET billed_with_parent = 1, billing_cycle = ?1, cycle_interval = ?2,
+                next_due_date = COALESCE(?3, next_due_date), updated_at = datetime('now')
+             WHERE id = ?4",
+            rusqlite::params![cycle, interval, parent_due, id],
+        )
+    } else {
+        conn.execute(
+            "UPDATE engagements SET billed_with_parent = 0,
+                next_due_date = COALESCE(?1, next_due_date), updated_at = datetime('now')
+             WHERE id = ?2",
+            rusqlite::params![parent_due, id],
+        )
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_billed_with_parent(state: State<'_, AppState>, id: String, combined: bool) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|_| "lock poisoned".to_string())?;
+    let db = db_guard.as_ref().ok_or("Vault not unlocked")?;
+    let conn = db.conn.lock().map_err(|_| "lock poisoned".to_string())?;
+    set_billed_with_parent_inner(&conn, &id, combined)
 }
 
 /// Un engagement dont la date de fin programmée est passée se termine.
@@ -1037,6 +1239,85 @@ mod tests {
         assert_eq!(charge_count(&conn, "e1"), 4);
         let status: String = conn.query_row("SELECT status FROM engagements WHERE id = 'e1'", [], |r| r.get(0)).unwrap();
         assert_eq!(status, "ended");
+    }
+
+    /// LAMal et LCA chez la même caisse : une facture, une échéance du total,
+    /// chaque part avec sa propre révision ; le parent quitté, l'enfant
+    /// reprend ses propres échéances juste après.
+    #[test]
+    fn facture_commune_parent_et_enfant() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "lamal", "-70 days", "custom", 10, false, "active");
+        insert_eng(&conn, "lca", "-70 days", "custom", 10, false, "active");
+        conn.execute_batch(
+            "UPDATE engagements SET current_amount = 400 WHERE id = 'lamal';
+             UPDATE engagements SET current_amount = 40, parent_engagement_id = 'lamal', name = 'LCA' WHERE id = 'lca';
+             INSERT INTO engagement_revisions (id, engagement_id, effective_date, amount, currency, applies_on_roll)
+             VALUES ('r', 'lca', date('now', '-35 days'), 45.0, 'CHF', 1);",
+        )
+        .unwrap();
+        set_billed_with_parent_inner(&conn, "lca", true).unwrap();
+        roll_forward_inner(&conn).unwrap();
+
+        assert_eq!(charge_count(&conn, "lca"), 0, "l'enfant est sur la facture du parent");
+        let rows: Vec<(String, f64, Option<String>)> = conn
+            .prepare("SELECT due_date, amount, notes FROM engagement_charges WHERE engagement_id = 'lamal' ORDER BY due_date")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let eff: String = conn.query_row("SELECT date('now', '-35 days')", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows.len(), 7);
+        for (due, amount, notes) in &rows {
+            let lca = if due.as_str() >= eff.as_str() { 45.0 } else { 40.0 };
+            assert_eq!(*amount, 400.0 + lca, "échéance {due}");
+            assert!(notes.as_deref().unwrap().contains("LCA"), "détail gardé : {notes:?}");
+        }
+
+        // Le parent s'arrête (caisse quittée) : l'enfant facture lui-même ensuite.
+        conn.execute_batch(
+            "UPDATE engagements SET ended_on = date('now', '+5 days') WHERE id = 'lamal';
+             UPDATE engagements SET next_due_date = date('now', '-1 day') WHERE id = 'lamal';",
+        )
+        .unwrap();
+        assert!(parent_cover(&conn, "lca").unwrap().unwrap().covers(&eff));
+        let later: String = conn.query_row("SELECT date('now', '+6 days')", [], |r| r.get(0)).unwrap();
+        assert!(!parent_cover(&conn, "lca").unwrap().unwrap().covers(&later));
+    }
+
+    /// Une échéance planifiée à la création apparaît tout de suite, avec le
+    /// total de la facture commune, une seule fois ; sa date passée, elle est
+    /// présumée payée si l'engagement est prélevé.
+    #[test]
+    fn echeance_planifiee_puis_reglee() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "lamal", "+10 days", "monthly", 1, true, "active");
+        insert_eng(&conn, "lca", "+10 days", "monthly", 1, true, "active");
+        conn.execute_batch(
+            "UPDATE engagements SET current_amount = 400 WHERE id = 'lamal';
+             UPDATE engagements SET current_amount = 40, parent_engagement_id = 'lamal' WHERE id = 'lca';",
+        )
+        .unwrap();
+        set_billed_with_parent_inner(&conn, "lca", true).unwrap();
+        assert!(plan_next_charge_inner(&conn, "lca").unwrap().is_none(), "planifiée chez le parent");
+        let id = plan_next_charge_inner(&conn, "lamal").unwrap().expect("planifiée");
+        assert!(plan_next_charge_inner(&conn, "lamal").unwrap().is_none(), "une seule fois");
+        let (amount, status): (f64, String) = conn
+            .query_row("SELECT amount, status FROM engagement_charges WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((amount, status.as_str()), (440.0, "scheduled"));
+
+        // Sa date passe : réglée comme une échéance du roll-forward.
+        conn.execute("UPDATE engagement_charges SET due_date = date('now', '-1 day') WHERE id = ?1", [&id]).unwrap();
+        conn.execute("UPDATE engagements SET next_due_date = date('now', '+30 days')", []).unwrap();
+        roll_forward_inner(&conn).unwrap();
+        let (status, presumed): (String, bool) = conn
+            .query_row("SELECT status, is_presumed FROM engagement_charges WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((status.as_str(), presumed), ("paid", true));
     }
 
     #[test]

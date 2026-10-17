@@ -896,14 +896,19 @@ pub fn switch_insurer_inner(conn: &Connection, input: &SwitchInsurerInput) -> Re
             },
         )?;
 
+        // Une complémentaire payée sur la facture de l'ancienne caisse reste
+        // chez elle : la nouvelle caisse ne la facturera jamais. Elle reste
+        // donc rattachée à l'ancienne police, qui la facture jusqu'au 31.12,
+        // puis elle facture elle-même. Seules les autres suivent la personne.
         if input.move_supplementary {
             conn.execute(
                 "UPDATE engagements SET parent_engagement_id = ?1, updated_at = datetime('now')
-                 WHERE parent_engagement_id = ?2",
+                 WHERE parent_engagement_id = ?2 AND billed_with_parent = 0",
                 rusqlite::params![new_id, input.engagement_id],
             )
             .map_err(|e| e.to_string())?;
         }
+        crate::commands::engagements::plan_next_charge_inner(conn, &new_id)?;
         Ok(new_id)
     })();
     match result {
@@ -1400,6 +1405,11 @@ mod tests {
         assert_eq!(start, "2027-01-01");
         assert_eq!(member.as_deref(), Some("m1"));
         assert_eq!(parent_of_lca, new_id);
+        let planned: (String, f64) = conn.query_row(
+            "SELECT due_date, amount FROM engagement_charges WHERE engagement_id = ?1", [&new_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(planned, ("2027-01-01".to_string(), 372.10), "première facture de la nouvelle caisse planifiée");
         let p = get_policy_inner(&conn, &new_id).unwrap().unwrap();
         assert_eq!(p.franchise, Some(2000.0));
         assert_eq!(p.model.as_deref(), Some("telmed"), "repris de l'ancienne");
@@ -1454,5 +1464,26 @@ mod tests {
         assert!(bad.is_err());
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM health_claims", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn complementaire_sur_la_facture_reste_chez_l_ancienne_caisse() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_health(&conn, "old", 389.40);
+        upsert_policy_inner(&conn, &HealthPolicy { engagement_id: "old".into(), kind: "basic".into(), franchise: Some(300.0), ..Default::default() }).unwrap();
+        conn.execute(
+            "INSERT INTO engagements (id, name, engagement_type, parent_engagement_id, billing_cycle, cycle_interval, current_amount, currency, auto_pay, status)
+             VALUES ('lca', 'LCA', 'insurance_health', 'old', 'monthly', 1, 38.5, 'CHF', 1, 'active')",
+            [],
+        ).unwrap();
+        crate::commands::engagements::set_billed_with_parent_inner(&conn, "lca", true).unwrap();
+        let new_id = switch_insurer_inner(&conn, &SwitchInsurerInput {
+            engagement_id: "old".into(), year: 2027, monthly_premium: 372.10, move_supplementary: true, ..Default::default()
+        }).unwrap();
+        let parent: String = conn.query_row("SELECT parent_engagement_id FROM engagements WHERE id = 'lca'", [], |r| r.get(0)).unwrap();
+        assert_eq!(parent, "old");
+        let planned: f64 = conn.query_row("SELECT amount FROM engagement_charges WHERE engagement_id = ?1", [&new_id], |r| r.get(0)).unwrap();
+        assert_eq!(planned, 372.10, "la nouvelle caisse ne facture pas la LCA de l'ancienne");
     }
 }

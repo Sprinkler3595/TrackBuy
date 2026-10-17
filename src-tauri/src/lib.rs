@@ -206,6 +206,8 @@ pub fn run() {
             commands::health::get_health_season,
             commands::health::compare_health_franchises,
             commands::health::switch_health_insurer,
+            commands::engagements::plan_next_engagement_charge,
+            commands::engagements::set_billed_with_parent,
             commands::health::add_health_claims,
             commands::ai::ai_extract_premium_notice,
             commands::ai::ai_extract_health_claims,

@@ -705,6 +705,7 @@ export function EngagementsPage() {
                     <p className="font-medium truncate">{e.name}</p>
                     {statusBadge(e.status)}
                     {e.parent_name && <Badge variant="secondary">↳ {e.parent_name}</Badge>}
+                    {e.billed_with_parent && <Badge variant="outline">{locale === "fr" ? "sur la même facture" : "same bill"}</Badge>}
                   </div>
                   <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
                     <span>{t(typeKey(e.engagement_type))}</span>
@@ -719,7 +720,7 @@ export function EngagementsPage() {
                     </p>
                   )}
                   <p className="text-xs text-muted-foreground">{cycleLabel(e)}</p>
-                  {dueBadge(e)}
+                  {!e.billed_with_parent && dueBadge(e)}
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <Button variant="ghost" size="icon" onClick={() => handleEdit(e)}><Edit className="h-4 w-4" /></Button>

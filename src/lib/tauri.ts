@@ -826,6 +826,8 @@ export interface Engagement {
   creditor_name?: string | null
   card_name?: string | null
   parent_name?: string | null
+  /// Paid on the parent's bill (schema v38): no charge of its own while the parent runs.
+  billed_with_parent?: boolean
 }
 
 // Parking spot location, for parking engagements (usually a child of a rent).
@@ -910,6 +912,16 @@ export const getEngagement = (id: string) =>
 
 export const getEngagementChildren = (parentId: string) =>
   invoke<Engagement[]>("get_engagement_children", { parentId })
+
+/// Schedule the engagement's upcoming charge now (with the total of a shared
+/// bill), instead of waiting for its date to pass. Returns null when nothing
+/// was planned (already there, or paid on the parent's bill).
+export const planNextEngagementCharge = (id: string) =>
+  invoke<string | null>("plan_next_engagement_charge", { id })
+
+/// Pay a sub-engagement on its parent's bill (one invoice), or stop doing so.
+export const setBilledWithParent = (id: string, combined: boolean) =>
+  invoke<void>("set_billed_with_parent", { id, combined })
 
 export const createEngagement = (engagement: {
   name: string

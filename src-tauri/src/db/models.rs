@@ -421,6 +421,10 @@ pub struct Engagement {
     pub card_name: Option<String>,
     #[serde(skip_deserializing)]
     pub parent_name: Option<String>,
+    /// Payé sur la facture du parent (v38). Lu partout, écrit seulement par
+    /// `set_billed_with_parent` : le formulaire d'édition ne le touche pas.
+    #[serde(default)]
+    pub billed_with_parent: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
