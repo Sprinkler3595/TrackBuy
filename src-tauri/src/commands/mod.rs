@@ -8,6 +8,7 @@ pub mod cards;
 pub mod classify;
 pub mod creditors;
 pub mod engagements;
+pub mod health;
 pub mod household;
 pub mod incomes;
 pub mod filename_templates;

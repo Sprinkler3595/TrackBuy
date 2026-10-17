@@ -127,8 +127,14 @@ fn row_to_revision(row: &rusqlite::Row<'_>) -> rusqlite::Result<EngagementRevisi
         change_reason: row.get(5)?,
         notes: row.get(6)?,
         created_at: row.get(7)?,
+        applies_on_roll: row.get(8)?,
+        applied_at: row.get(9)?,
     })
 }
+
+pub(crate) const REVISION_SELECT_COLUMNS: &str =
+    "id, engagement_id, effective_date, amount, currency, change_reason, notes, created_at,
+     applies_on_roll, applied_at";
 
 /// SQLite `date()` modifier for one engagement billing cycle. Supports
 /// `semiannual` and `one_shot`: `one_shot` never rolls forward (returns an
@@ -196,6 +202,7 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
         let Some(modifier) = cycle_modifier(&cycle, interval) else {
             continue;
         };
+        let pending = pending_revisions(conn, &id)?;
         for _ in 0..1000 {
             let today: String = conn
                 .query_row("SELECT date('now')", [], |row| row.get(0))
@@ -224,6 +231,7 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
                 } else {
                     ("scheduled", None::<String>, 0)
                 };
+                let amount = amount_on(&pending, &current).unwrap_or(amount);
                 conn.execute(
                     "INSERT INTO engagement_charges (id, engagement_id, due_date, amount, currency,
                      payment_card_id, paid_on, status, is_presumed)
@@ -242,7 +250,55 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
         .map_err(|e| e.to_string())?;
     }
 
+    apply_due_revisions(conn)?;
     Ok(inserted)
+}
+
+/// Révisions marquées `applies_on_roll` et pas encore reportées, par date
+/// d'effet croissante.
+fn pending_revisions(conn: &Connection, engagement_id: &str) -> Result<Vec<(String, f64)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT effective_date, amount FROM engagement_revisions
+             WHERE engagement_id = ?1 AND applies_on_roll = 1 AND applied_at IS NULL
+             ORDER BY effective_date",
+        )
+        .map_err(|e| e.to_string())?;
+    stmt.query_map([engagement_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// Montant de la dernière révision en vigueur à `date`, s'il y en a une.
+fn amount_on(pending: &[(String, f64)], date: &str) -> Option<f64> {
+    pending
+        .iter()
+        .rfind(|(eff, _)| eff.as_str() <= date)
+        .map(|(_, a)| *a)
+}
+
+/// Reporte sur le montant courant les révisions dont la date d'effet est
+/// passée — la nouvelle prime du 1er janvier devient LA prime — puis les
+/// marque, pour ne jamais les rejouer.
+fn apply_due_revisions(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "UPDATE engagements
+         SET current_amount = (
+                 SELECT r.amount FROM engagement_revisions r
+                 WHERE r.engagement_id = engagements.id AND r.applies_on_roll = 1
+                   AND r.applied_at IS NULL AND date(r.effective_date) <= date('now')
+                 ORDER BY r.effective_date DESC LIMIT 1),
+             updated_at = datetime('now')
+         WHERE id IN (
+                 SELECT engagement_id FROM engagement_revisions
+                 WHERE applies_on_roll = 1 AND applied_at IS NULL
+                   AND date(effective_date) <= date('now'));
+         UPDATE engagement_revisions SET applied_at = datetime('now')
+         WHERE applies_on_roll = 1 AND applied_at IS NULL
+           AND date(effective_date) <= date('now');",
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -775,10 +831,11 @@ pub fn get_engagement_revisions(
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, engagement_id, effective_date, amount, currency, change_reason, notes, created_at
-             FROM engagement_revisions
-             WHERE engagement_id = ?1
-             ORDER BY effective_date DESC",
+            &format!(
+                "SELECT {REVISION_SELECT_COLUMNS} FROM engagement_revisions
+                 WHERE engagement_id = ?1
+                 ORDER BY effective_date DESC"
+            ),
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -804,8 +861,8 @@ pub fn add_engagement_revision(
 
     conn.execute(
         "INSERT INTO engagement_revisions (id, engagement_id, effective_date, amount, currency,
-         change_reason, notes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         change_reason, notes, applies_on_roll)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             id,
             revision.engagement_id,
@@ -814,13 +871,13 @@ pub fn add_engagement_revision(
             currency,
             revision.change_reason,
             revision.notes,
+            revision.applies_on_roll.unwrap_or(false),
         ],
     )
     .map_err(|e| e.to_string())?;
 
     conn.query_row(
-        "SELECT id, engagement_id, effective_date, amount, currency, change_reason, notes, created_at
-         FROM engagement_revisions WHERE id = ?1",
+        &format!("SELECT {REVISION_SELECT_COLUMNS} FROM engagement_revisions WHERE id = ?1"),
         [&id],
         row_to_revision,
     )
@@ -892,6 +949,54 @@ mod tests {
         let inserted = roll_forward_inner(&conn).unwrap();
         assert_eq!(inserted, 4);
         assert_eq!(charge_count(&conn, "e1"), 4);
+    }
+
+    /// Une nouvelle prime posée en révision `applies_on_roll` vaut pour les
+    /// échéances dès sa date d'effet, devient le montant courant une fois la
+    /// date passée, et n'est appliquée qu'une fois. Une révision ordinaire,
+    /// ou à venir, ne touche à rien.
+    #[test]
+    fn revision_appliquee_a_partir_de_sa_date_d_effet() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-70 days", "custom", 10, false, "active");
+        conn.execute_batch(
+            "INSERT INTO engagement_revisions (id, engagement_id, effective_date, amount, currency, applies_on_roll)
+             VALUES ('r_old', 'e1', date('now', '-65 days'), 999.0, 'CHF', 0),
+                    ('r_new', 'e1', date('now', '-35 days'), 60.0, 'CHF', 1),
+                    ('r_future', 'e1', date('now', '+20 days'), 70.0, 'CHF', 1);",
+        )
+        .unwrap();
+        roll_forward_inner(&conn).unwrap();
+
+        let amounts: Vec<(String, f64)> = conn
+            .prepare("SELECT due_date, amount FROM engagement_charges WHERE engagement_id = 'e1' ORDER BY due_date")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let eff: String = conn
+            .query_row("SELECT date('now', '-35 days')", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(amounts.len(), 7);
+        for (due, amount) in &amounts {
+            let expected = if due.as_str() >= eff.as_str() { 60.0 } else { 50.0 };
+            assert_eq!(*amount, expected, "échéance {due}");
+        }
+
+        let current: f64 = conn
+            .query_row("SELECT current_amount FROM engagements WHERE id = 'e1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(current, 60.0);
+        let applied: Vec<String> = conn
+            .prepare("SELECT id FROM engagement_revisions WHERE applied_at IS NOT NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(applied, vec!["r_new".to_string()]);
     }
 
     #[test]

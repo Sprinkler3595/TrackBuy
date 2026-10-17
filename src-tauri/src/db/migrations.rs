@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 35;
+pub const CURRENT_SCHEMA_VERSION: i64 = 36;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -135,6 +135,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 35 {
         migrate_v35(conn)?;
+    }
+    if current_version < 36 {
+        migrate_v36(conn)?;
     }
 
     Ok(())
@@ -2344,6 +2347,125 @@ fn migrate_v35(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v36 — l'assurance maladie a sa propre fiche.
+///
+/// Les colonnes `lamal_*` de la v14 décrivaient UNE police d'adulte sans dire
+/// pour qui elle était, ni ce qui change chaque automne. Trois tables les
+/// remplacent :
+///
+/// - `health_policies` : la fiche d'une police, 1:1 avec son engagement —
+///   l'assuré (membre du ménage, ou nom et date de naissance quand il n'en
+///   est pas un), base LAMal ou complémentaire LCA, modèle, franchise,
+///   couverture accidents, réduction de primes. L'année de naissance décide
+///   de la classe d'âge, donc des franchises permises ;
+/// - `health_premium_notices` : l'avis de prime reçu chaque automne, un par
+///   police et par année, avec la décision prise. La police garde les termes
+///   en cours ; l'avis porte ceux de l'année qu'il annonce ;
+/// - `health_claims` : les décomptes de prestations, pour suivre la franchise
+///   et la quote-part consommées dans l'année.
+///
+/// Les colonnes `lamal_*` restent en place (SQLite ne les retire pas sans
+/// reconstruire `engagements`) ; celles qui étaient renseignées sont reprises.
+///
+/// `engagement_revisions.applies_on_roll` : une révision ainsi marquée change
+/// le montant des échéances à partir de sa date d'effet, et devient le
+/// montant courant une fois cette date passée. Sans elle, une nouvelle prime
+/// au 1er janvier restait une note : le roll-forward continuait de générer
+/// l'ancien montant. Les révisions existantes ne sont pas marquées, rien ne
+/// change pour elles.
+fn migrate_v36(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE health_policies (
+            engagement_id TEXT PRIMARY KEY,
+            -- 'basic' (LAMal) | 'supplementary' (LCA)
+            kind TEXT NOT NULL DEFAULT 'basic',
+            insured_member_id TEXT
+                REFERENCES household_members(id) ON DELETE SET NULL,
+            insured_name TEXT,
+            insured_birth_date TEXT,
+            canton TEXT,
+            -- Région de primes : '0', '1', '2' ou '3' selon la commune.
+            premium_region TEXT,
+            -- 'standard' | 'family_doctor' | 'hmo' | 'telmed' | 'other'
+            model TEXT,
+            franchise REAL,
+            accident_covered INTEGER,
+            -- Réduction individuelle de primes versée par le canton, par mois.
+            subsidy_monthly REAL,
+            -- Complémentaires LCA : tableau JSON de slugs.
+            options_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_health_policies_member ON health_policies(insured_member_id)
+            WHERE insured_member_id IS NOT NULL;
+
+        INSERT INTO health_policies
+            (engagement_id, kind, insured_member_id, canton, model, franchise, accident_covered)
+        SELECT id,
+               CASE WHEN parent_engagement_id IS NULL THEN 'basic' ELSE 'supplementary' END,
+               attributed_to_member_id, canton, lamal_model, lamal_franchise_chf,
+               lamal_accident_covered
+        FROM engagements
+        WHERE engagement_type = 'insurance_health'
+          AND (lamal_model IS NOT NULL OR lamal_franchise_chf IS NOT NULL
+               OR lamal_accident_covered IS NOT NULL);
+
+        CREATE TABLE health_premium_notices (
+            id TEXT PRIMARY KEY,
+            engagement_id TEXT NOT NULL,
+            -- Année pour laquelle la prime vaut (l'avis arrive l'automne d'avant).
+            year INTEGER NOT NULL,
+            monthly_premium REAL,
+            franchise REAL,
+            model TEXT,
+            accident_covered INTEGER,
+            received_on TEXT,
+            -- 'pending' | 'keep' | 'change_franchise' | 'change_model'
+            -- | 'switch_insurer'
+            decision TEXT NOT NULL DEFAULT 'pending',
+            revision_id TEXT
+                REFERENCES engagement_revisions(id) ON DELETE SET NULL,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (engagement_id, year),
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE health_claims (
+            id TEXT PRIMARY KEY,
+            engagement_id TEXT NOT NULL,
+            -- Année de TRAITEMENT : c'est elle qui compte pour la franchise.
+            year INTEGER NOT NULL,
+            statement_date TEXT,
+            treatment_date TEXT,
+            provider TEXT,
+            invoiced REAL NOT NULL DEFAULT 0,
+            insurer_paid REAL NOT NULL DEFAULT 0,
+            franchise REAL NOT NULL DEFAULT 0,
+            quote_part REAL NOT NULL DEFAULT 0,
+            hospital REAL NOT NULL DEFAULT 0,
+            not_covered REAL NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_health_claims_eng_year ON health_claims(engagement_id, year);
+
+        ALTER TABLE engagement_revisions
+            ADD COLUMN applies_on_roll INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE engagement_revisions ADD COLUMN applied_at TEXT;
+
+        INSERT INTO schema_version (version) VALUES (36);
+        "
+    ).map_err(|e| format!("Migration v36 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3083,5 +3205,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, Some(250.0));
+    }
+
+    /// v36 reprend les colonnes `lamal_*` déjà renseignées, ignore les
+    /// engagements santé vides, et supprime la fiche avec son engagement.
+    #[test]
+    fn v36_backfills_legacy_lamal_columns_and_cascades() {
+        let conn = conn_at_v31();
+        migrate_v32(&conn).unwrap();
+        migrate_v33(&conn).unwrap();
+        migrate_v34(&conn).unwrap();
+        migrate_v35(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO engagements (id, name, engagement_type, billing_cycle, cycle_interval,
+                currency, auto_pay, status, lamal_model, lamal_franchise_chf, lamal_accident_covered)
+             VALUES ('e1', 'CSS', 'insurance_health', 'monthly', 1, 'CHF', 0, 'active',
+                'hmo', 2500, 0);
+             INSERT INTO engagements (id, name, engagement_type, billing_cycle, cycle_interval,
+                currency, auto_pay, status)
+             VALUES ('e2', 'Vide', 'insurance_health', 'monthly', 1, 'CHF', 0, 'active');",
+        )
+        .unwrap();
+        migrate_v36(&conn).unwrap();
+
+        let (kind, model, franchise, accident): (String, Option<String>, Option<f64>, Option<bool>) = conn
+            .query_row(
+                "SELECT kind, model, franchise, accident_covered FROM health_policies
+                 WHERE engagement_id = 'e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "basic");
+        assert_eq!(model.as_deref(), Some("hmo"));
+        assert_eq!(franchise, Some(2500.0));
+        assert_eq!(accident, Some(false));
+
+        let empty: i64 = conn
+            .query_row("SELECT COUNT(*) FROM health_policies WHERE engagement_id = 'e2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(empty, 0, "rien à reprendre, pas de fiche inventée");
+
+        conn.execute("DELETE FROM engagements WHERE id = 'e1'", []).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM health_policies", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 }

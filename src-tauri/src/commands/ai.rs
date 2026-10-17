@@ -473,6 +473,200 @@ fn parse_car_insurance(v: &Value) -> ExtractedCarInsurance {
 }
 
 // ===========================================================================
+// Extraction d'une police d'assurance maladie (Suisse)
+// ===========================================================================
+//
+// Une police LAMal suisse tient souvent sur une page par personne : modèle,
+// franchise, couverture accidents, prime de base, puis les complémentaires
+// LCA. On n'extrait que la PREMIÈRE personne : une police familiale se saisit
+// personne par personne, et l'assistant le dit.
+
+const HEALTH_INSURANCE_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les polices d'assurance maladie suisses (assurance obligatoire des soins LAMal et assurances complémentaires LCA). Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : si un champ est introuvable ou ambigu, mets null (ou un tableau vide).";
+
+const HEALTH_INSURANCE_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est une POLICE, un CERTIFICAT D'ASSURANCE ou un AVIS DE PRIME d'assurance maladie suisse (CSS, Helsana, Swica, Groupe Mutuel, Visana, Sanitas, Concordia, Assura, KPT, Atupri, Sympany, ÖKK, EGK, Philos, Avenir, Mutuel…). Extrais les champs de la PREMIÈRE personne assurée uniquement.
+
+RÈGLES D'EXTRACTION :
+1. `insurer_name` = nom de la caisse (ex : « CSS », « Helsana »). Pas un courtier.
+2. `policy_number` = numéro de police / d'assuré (« Police n° », « N° d'assuré », « Versichertennummer »).
+3. `insured_name` = prénom et nom de la première personne assurée ; `insured_birth_date` = sa date de naissance.
+4. `model` ∈ {"standard","family_doctor","hmo","telmed","other"} pour l'assurance de base :
+   - "standard" = libre choix du médecin (modèle de base, « Standard », « Basis ») ;
+   - "family_doctor" = médecin de famille (« Hausarzt », « Medpharm », « Premed », « Casamed »…) ;
+   - "hmo" = cabinet HMO / centre de santé ;
+   - "telmed" = télémédecine (« Telmed », « Callmed », « Medcall », « Telecare »…) ;
+   - "other" = autre modèle à choix limité (pharmacie, réseau…).
+5. `franchise` = franchise annuelle de l'assurance de base en CHF (300, 500, 1000, 1500, 2000, 2500 ; enfants 0 à 600).
+6. `accident_covered` = true si la couverture accidents est INCLUSE dans l'assurance de base, false si elle est suspendue / exclue (« sans accident », « ohne Unfall », « accident exclu »). null si non indiqué.
+7. `basic_monthly_premium` = prime MENSUELLE de l'assurance de base LAMal seule, avant réduction de primes. Si seule une prime annuelle est donnée, divise par 12.
+8. `subsidy_monthly` = réduction individuelle de primes / subside cantonal déduit, par mois. null si absent.
+9. `supplementary_monthly_premium` = total MENSUEL des assurances complémentaires (LCA). null si aucune.
+10. `supplementary_options` = complémentaires incluses, EXCLUSIVEMENT parmi ces slugs :
+    - "hospital_general" (hospitalisation division commune toute la Suisse)
+    - "hospital_semi_private" (demi-privée)
+    - "hospital_private" (privée)
+    - "outpatient" (complémentaire ambulatoire, soins non couverts par la LAMal)
+    - "alternative_medicine" (médecines complémentaires / alternatives)
+    - "dental" (soins dentaires)
+    - "glasses" (lunettes, lentilles)
+    - "travel" (couverture à l'étranger, assistance voyage)
+    - "prevention" (prévention, fitness, bien-être)
+    - "daily_allowance" (indemnité journalière)
+    - "capital" (capital décès / invalidité)
+11. `valid_from` = début de validité de la police ou de la nouvelle prime, YYYY-MM-DD (les dates suisses s'écrivent JJ.MM.AAAA).
+12. `canton` = canton de domicile en code à deux lettres (VD, GE, ZH…) ; `premium_region` = région de primes « 0 », « 1 », « 2 » ou « 3 » si indiquée.
+13. `payment_method` ∈ {"qr_bill","direct_debit","standing_order"} ; `billing_cycle` ∈ {"monthly","quarterly","semiannual","yearly"} = périodicité de paiement des primes.
+
+FORMAT DE RÉPONSE (JSON strict, sans markdown) :
+{
+  "insurer_name": string|null,
+  "policy_number": string|null,
+  "insured_name": string|null,
+  "insured_birth_date": "YYYY-MM-DD"|null,
+  "model": "standard"|"family_doctor"|"hmo"|"telmed"|"other"|null,
+  "franchise": number|null,
+  "accident_covered": boolean|null,
+  "basic_monthly_premium": number|null,
+  "subsidy_monthly": number|null,
+  "supplementary_monthly_premium": number|null,
+  "supplementary_options": string[],
+  "valid_from": "YYYY-MM-DD"|null,
+  "canton": string|null,
+  "premium_region": string|null,
+  "payment_method": "qr_bill"|"direct_debit"|"standing_order"|null,
+  "billing_cycle": "monthly"|"quarterly"|"semiannual"|"yearly"|null
+}
+
+TEXTE DE LA POLICE (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedHealthInsurance {
+    pub insurer_name: Option<String>,
+    pub policy_number: Option<String>,
+    pub insured_name: Option<String>,
+    pub insured_birth_date: Option<String>,
+    pub model: Option<String>,
+    pub franchise: Option<f64>,
+    pub accident_covered: Option<bool>,
+    pub basic_monthly_premium: Option<f64>,
+    pub subsidy_monthly: Option<f64>,
+    pub supplementary_monthly_premium: Option<f64>,
+    pub supplementary_options: Vec<String>,
+    pub valid_from: Option<String>,
+    pub canton: Option<String>,
+    pub premium_region: Option<String>,
+    pub payment_method: Option<String>,
+    pub billing_cycle: Option<String>,
+}
+
+/// Miroir de HEALTH_SUPPLEMENTARY_OPTIONS côté frontend.
+const HEALTH_SUPPLEMENTARY_SLUGS: &[&str] = &[
+    "hospital_general",
+    "hospital_semi_private",
+    "hospital_private",
+    "outpatient",
+    "alternative_medicine",
+    "dental",
+    "glasses",
+    "travel",
+    "prevention",
+    "daily_allowance",
+    "capital",
+];
+
+fn health_insurance_schema() -> Value {
+    let s = || json!({"type": ["string", "null"]});
+    let n = || json!({"type": ["number", "null"]});
+    json!({
+        "type": "object",
+        "properties": {
+            "insurer_name": s(),
+            "policy_number": s(),
+            "insured_name": s(),
+            "insured_birth_date": s(),
+            "model": {"type": ["string", "null"], "enum": ["standard", "family_doctor", "hmo", "telmed", "other", null]},
+            "franchise": n(),
+            "accident_covered": {"type": ["boolean", "null"]},
+            "basic_monthly_premium": n(),
+            "subsidy_monthly": n(),
+            "supplementary_monthly_premium": n(),
+            "supplementary_options": {"type": "array", "items": {"type": "string"}},
+            "valid_from": s(),
+            "canton": s(),
+            "premium_region": s(),
+            "payment_method": {"type": ["string", "null"], "enum": ["qr_bill", "direct_debit", "standing_order", null]},
+            "billing_cycle": {"type": ["string", "null"], "enum": ["monthly", "quarterly", "semiannual", "yearly", null]}
+        },
+        "required": [
+            "insurer_name", "policy_number", "insured_name", "insured_birth_date", "model",
+            "franchise", "accident_covered", "basic_monthly_premium", "subsidy_monthly",
+            "supplementary_monthly_premium", "supplementary_options", "valid_from", "canton",
+            "premium_region", "payment_method", "billing_cycle"
+        ],
+        "additionalProperties": false
+    })
+}
+
+#[tauri::command]
+pub async fn ai_extract_health_insurance(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedHealthInsurance, String> {
+    let prompt = HEALTH_INSURANCE_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = health_insurance_schema();
+    let (raw, usage) =
+        call_provider(&config, HEALTH_INSURANCE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(parse_health_insurance(&value))
+}
+
+fn parse_health_insurance(v: &Value) -> ExtractedHealthInsurance {
+    let mut options: Vec<String> = Vec::new();
+    if let Some(arr) = v["supplementary_options"].as_array() {
+        for it in arr {
+            if let Some(s) = it.as_str() {
+                let slug = s.trim().to_lowercase();
+                if HEALTH_SUPPLEMENTARY_SLUGS.contains(&slug.as_str()) && !options.contains(&slug) {
+                    options.push(slug);
+                }
+            }
+        }
+    }
+    // Un modèle hors liste, une région fantaisiste : on les écarte plutôt que
+    // de les laisser atteindre un <select> qui ne saurait pas les afficher.
+    let model = as_opt_string(&v["model"])
+        .filter(|m| ["standard", "family_doctor", "hmo", "telmed", "other"].contains(&m.as_str()));
+    let premium_region = as_opt_string(&v["premium_region"])
+        .map(|r| r.trim().to_string())
+        .filter(|r| ["0", "1", "2", "3"].contains(&r.as_str()));
+    let canton = as_opt_string(&v["canton"])
+        .map(|c| c.trim().to_uppercase())
+        .filter(|c| c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()));
+    ExtractedHealthInsurance {
+        insurer_name: as_opt_string(&v["insurer_name"]),
+        policy_number: as_opt_string(&v["policy_number"]),
+        insured_name: as_opt_string(&v["insured_name"]),
+        insured_birth_date: as_opt_string(&v["insured_birth_date"]),
+        model,
+        franchise: v["franchise"].as_f64().filter(|f| *f >= 0.0),
+        accident_covered: v["accident_covered"].as_bool(),
+        basic_monthly_premium: v["basic_monthly_premium"].as_f64().filter(|f| *f > 0.0),
+        subsidy_monthly: v["subsidy_monthly"].as_f64().filter(|f| *f > 0.0),
+        supplementary_monthly_premium: v["supplementary_monthly_premium"].as_f64().filter(|f| *f > 0.0),
+        supplementary_options: options,
+        valid_from: as_opt_string(&v["valid_from"]),
+        canton,
+        premium_region,
+        payment_method: as_opt_string(&v["payment_method"]),
+        billing_cycle: as_opt_string(&v["billing_cycle"]),
+    }
+}
+
+// ===========================================================================
 // Extraction d'un contrat de leasing véhicule (Suisse)
 // ===========================================================================
 
@@ -1996,5 +2190,33 @@ fn normalize_category(raw: Option<&str>) -> String {
         Some("voucher") | Some("bon") | Some("coupon") | Some("discount") | Some("remise") | Some("rabais") => "voucher".into(),
         Some("other") | Some("autre") => "other".into(),
         _ => "purchase".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn police_maladie_filtre_les_valeurs_hors_liste() {
+        let v = json!({
+            "insurer_name": "CSS",
+            "model": "hausarzt",
+            "franchise": 2500,
+            "accident_covered": false,
+            "basic_monthly_premium": 389.4,
+            "subsidy_monthly": 0,
+            "supplementary_options": ["dental", "DENTAL", "spa", "hospital_general"],
+            "canton": "vd",
+            "premium_region": "R1",
+        });
+        let x = parse_health_insurance(&v);
+        assert_eq!(x.model, None, "slug inconnu écarté");
+        assert_eq!(x.franchise, Some(2500.0));
+        assert_eq!(x.accident_covered, Some(false));
+        assert_eq!(x.subsidy_monthly, None, "un subside nul n'en est pas un");
+        assert_eq!(x.supplementary_options, vec!["dental", "hospital_general"]);
+        assert_eq!(x.canton.as_deref(), Some("VD"));
+        assert_eq!(x.premium_region, None);
     }
 }

@@ -533,6 +533,11 @@ pub struct EngagementRevision {
     pub change_reason: Option<String>,
     pub notes: Option<String>,
     pub created_at: String,
+    /// La révision change le montant des échéances dès sa date d'effet et
+    /// devient le montant courant une fois cette date passée (v36).
+    pub applies_on_roll: bool,
+    /// Date à laquelle le roll-forward l'a reportée sur le montant courant.
+    pub applied_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -543,6 +548,8 @@ pub struct CreateEngagementRevisionRequest {
     pub currency: Option<String>,
     pub change_reason: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub applies_on_roll: Option<bool>,
 }
 
 // =====================================================================

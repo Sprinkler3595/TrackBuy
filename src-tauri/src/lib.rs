@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod db;
+mod health;
 mod payroll;
 mod storage;
 mod util;
@@ -192,6 +193,19 @@ pub fn run() {
             commands::files::read_binary_file_base64,
             commands::ai::ai_extract_receipt,
             commands::ai::ai_extract_car_insurance,
+            commands::health::get_health_params,
+            commands::health::get_health_policy,
+            commands::health::upsert_health_policy,
+            commands::health::list_health_premium_notices,
+            commands::health::save_health_premium_notice,
+            commands::health::delete_health_premium_notice,
+            commands::health::list_health_claims,
+            commands::health::add_health_claim,
+            commands::health::delete_health_claim,
+            commands::health::get_health_overview,
+            commands::health::get_health_season,
+            commands::health::compare_health_franchises,
+            commands::ai::ai_extract_health_insurance,
             commands::ai::ai_extract_leasing,
             commands::ai::ai_extract_payslip,
             commands::ai::ai_extract_salary_certificate,
