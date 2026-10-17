@@ -110,10 +110,12 @@ pub fn check_policy(f: &PolicyFacts) -> Vec<HealthFinding> {
     }
 
     // --- Changement de classe d'âge au 1er janvier ---
+    let mut class_changes = false;
     if let (Some(birth), Some(class)) = (f.birth_year, class) {
         let next_params = params_for_year(year + 1);
         let next_class = age_class(&next_params, birth, year + 1);
         if next_class != class {
+            class_changes = true;
             let msg = match next_class {
                 AgeClass::YoungAdult => format!(
                     "Au 1.1.{} l'assuré passe en catégorie « jeunes adultes » : la prime augmente \
@@ -176,9 +178,11 @@ pub fn check_policy(f: &PolicyFacts) -> Vec<HealthFinding> {
         (None, Some(false)) => out.push(finding(
             "accident_suspended_no_job",
             Severity::Warn,
-            "Couverture accidents suspendue, mais aucun emploi en cours n'est saisi. Elle doit être \
-             réactivée dès la fin de l'emploi : la LAA ne couvre plus que 31 jours après la fin du \
-             droit au salaire."
+            "Couverture accidents suspendue, et aucun emploi en cours n'est saisi pour cette \
+             personne. Sans employeur, rien ne la couvre contre les accidents si la caisse maladie \
+             ne le fait pas : indépendante, sans emploi ou en fin de contrat (la LAA ne couvre que \
+             31 jours après la fin du droit au salaire), demandez la réactivation. Salariée, \
+             saisissez son contrat dans Revenus pour que ce contrôle soit exact."
                 .to_string(),
             "art. 8 LAMal ; art. 3 al. 2 LAA",
         )),
@@ -203,6 +207,14 @@ pub fn check_policy(f: &PolicyFacts) -> Vec<HealthFinding> {
                 let pct = (new - old) / old * 100.0;
                 let avg = params_for_year(year + 1).ofsp_average_change_pct;
                 let (severity, tail) = match avg {
+                    // Le saut de classe d'âge explique la hausse : la comparer à
+                    // la moyenne suisse ne ferait qu'alarmer à tort.
+                    _ if class_changes => (
+                        Severity::Info,
+                        " — hausse due au changement de classe d'âge, pas à la caisse. Comparez \
+                         tout de même les primes de jeune adulte ou d'adulte des autres caisses."
+                            .to_string(),
+                    ),
                     Some(a) if pct > a + 1.0 => (
                         Severity::Warn,
                         format!(" — au-dessus de la moyenne suisse annoncée par l'OFSP ({a:+.1} %). Comparez avant le 30 novembre."),

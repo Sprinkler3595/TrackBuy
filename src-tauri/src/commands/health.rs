@@ -535,7 +535,20 @@ pub fn overview_inner(conn: &Connection, engagement_id: &str, on: NaiveDate) -> 
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|_| "Engagement introuvable".to_string())?;
-    let policy = get_policy_inner(conn, engagement_id)?;
+    // Les termes en vigueur : ceux de la fiche, sauf ce que l'avis de prime de
+    // l'année a changé (franchise, modèle, accidents). Sans cela, le 1er
+    // janvier, la fiche continue de juger l'ancienne franchise — et accuse un
+    // jeune adulte de garder sa franchise d'enfant qu'il a justement quittée.
+    let notice_this_year = notice_for_year(conn, engagement_id, year)?
+        .filter(|n| n.decision != "switch_insurer");
+    let policy = get_policy_inner(conn, engagement_id)?.map(|mut p| {
+        if let Some(n) = &notice_this_year {
+            p.franchise = n.franchise.or(p.franchise);
+            p.model = n.model.clone().or(p.model);
+            p.accident_covered = n.accident_covered.or(p.accident_covered);
+        }
+        p
+    });
 
     let (insured_label, birth_date) = match &policy {
         Some(p) => match &p.insured_member_id {
@@ -547,7 +560,10 @@ pub fn overview_inner(conn: &Connection, engagement_id: &str, on: NaiveDate) -> 
                 .map_err(|e| e.to_string())?
                 .map(|(n, b)| (n, b.or_else(|| p.insured_birth_date.clone())))
                 .unwrap_or((p.insured_name.clone(), p.insured_birth_date.clone())),
-            None => (p.insured_name.clone(), p.insured_birth_date.clone()),
+            // Ni membre ni nom : c'est le titulaire du coffre, pas encore inscrit
+            // au ménage. Le nom reste vide en base — c'est ce qui le désigne
+            // comme titulaire pour le contrôle des accidents.
+            None => (p.insured_name.clone().or_else(|| Some("Moi".to_string())), p.insured_birth_date.clone()),
         },
         None => (None, None),
     };
@@ -562,9 +578,7 @@ pub fn overview_inner(conn: &Connection, engagement_id: &str, on: NaiveDate) -> 
 
     let participation = match &policy {
         Some(p) if p.kind == "basic" => {
-            let notice_this_year = notice_for_year(conn, engagement_id, year)?;
-            let franchise = notice_this_year.and_then(|n| n.franchise).or(p.franchise);
-            match franchise {
+            match p.franchise {
                 Some(f) => {
                     let claims: Vec<ClaimAmounts> = list_claims_inner(conn, engagement_id, year)?
                         .into_iter()
@@ -934,5 +948,94 @@ mod tests {
         .unwrap();
         assert_eq!(c.year, 2026);
         assert!(add_claim_inner(&conn, &HealthClaim { engagement_id: "e1".into(), invoiced: -1.0, ..Default::default() }).is_err());
+    }
+
+    /// Une famille lausannoise de bout en bout : salariée, conjoint
+    /// indépendant, une fille qui devient jeune adulte au 1.1.2027. Chaque
+    /// constat ici est un faux pas qu'un vrai assuré aurait fait ou subi.
+    #[test]
+    fn parcours_d_une_famille_vaudoise() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO household_members (id, name, relation, birth_date) VALUES
+               ('sophie', 'Sophie', 'self', '1988-04-12'),
+               ('marc', 'Marc', 'spouse', '1986-09-30'),
+               ('lea', 'Léa', 'child', '2008-02-03');
+             INSERT INTO incomes (id, name, income_type, billing_cycle, status)
+                 VALUES ('i1', 'Salaire Sophie', 'salary', 'monthly', 'active');
+             INSERT INTO employment_contracts (id, income_id, started_on, weekly_hours)
+                 VALUES ('c1', 'i1', '2020-01-01', 42);",
+        )
+        .unwrap();
+        for (id, who, amount, franchise, accident) in [
+            ("e_sophie", "sophie", 389.40, 2500.0, true),
+            ("e_marc", "marc", 455.10, 300.0, false),
+            ("e_lea", "lea", 112.30, 0.0, true),
+        ] {
+            insert_health(&conn, id, amount);
+            upsert_policy_inner(
+                &conn,
+                &HealthPolicy {
+                    engagement_id: id.into(),
+                    kind: "basic".into(),
+                    insured_member_id: Some(who.into()),
+                    franchise: Some(franchise),
+                    accident_covered: Some(accident),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let ids = |id: &str, on: NaiveDate| -> Vec<&'static str> {
+            overview_inner(&conn, id, on).unwrap().findings.iter().map(|f| f.id).collect()
+        };
+        let oct = date(2026, 10, 17);
+
+        // Sophie paie les accidents deux fois ; Marc, sans employeur, n'est pas couvert.
+        assert!(ids("e_sophie", oct).contains(&"accident_double_cover"));
+        assert!(ids("e_marc", oct).contains(&"accident_suspended_no_job"));
+        // Le salaire de Sophie ne vaut pas pour Marc.
+        assert!(!ids("e_marc", oct).contains(&"accident_double_cover"));
+
+        // Léa passe en jeune adulte : la hausse est expliquée, pas dénoncée.
+        save_notice_inner(
+            &conn,
+            &PremiumNotice {
+                engagement_id: "e_lea".into(),
+                year: 2027,
+                monthly_premium: Some(318.50),
+                franchise: Some(300.0),
+                decision: "keep".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let o = overview_inner(&conn, "e_lea", oct).unwrap();
+        let change = o.findings.iter().find(|f| f.id == "notice_change").unwrap();
+        assert_eq!(change.severity, crate::payroll::checks::Severity::Info, "{}", change.message);
+        assert!(o.findings.iter().any(|f| f.id == "age_class_change"));
+
+        // Sophie choisit 1000 CHF pour 2027.
+        save_notice_inner(
+            &conn,
+            &PremiumNotice {
+                engagement_id: "e_sophie".into(),
+                year: 2027,
+                monthly_premium: Some(421.60),
+                franchise: Some(1000.0),
+                decision: "change_franchise".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // En janvier, les termes de l'avis sont ceux en vigueur.
+        let jan = date(2027, 1, 15);
+        let sophie = overview_inner(&conn, "e_sophie", jan).unwrap();
+        assert_eq!(sophie.policy.unwrap().franchise, Some(1000.0));
+        assert_eq!(sophie.participation.unwrap().franchise, 1000.0);
+        let lea = ids("e_lea", jan);
+        assert!(!lea.contains(&"franchise_not_allowed"), "franchise d'enfant quittée par l'avis : {lea:?}");
     }
 }
