@@ -3,6 +3,7 @@ import {
   Settings as SettingsIcon,
   Vault,
   FileSignature,
+  Percent,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useI18n } from "@/lib/i18n"
@@ -21,6 +22,7 @@ export function SettingsPage() {
     },
     { to: "/settings/coffres", end: false, icon: Vault, label: locale === "fr" ? "Coffres" : "Vaults" },
     { to: "/settings/nommage", end: false, icon: FileSignature, label: locale === "fr" ? "Nommage" : "Naming" },
+    { to: "/settings/baremes", end: false, icon: Percent, label: locale === "fr" ? "Barèmes" : "Rates" },
   ]
 
   return (

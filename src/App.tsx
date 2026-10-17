@@ -14,11 +14,14 @@ import { EngagementDetailPage } from "@/pages/engagement-detail"
 import { VehiclesPage } from "@/pages/vehicles"
 import { VehicleDetailPage } from "@/pages/vehicle-detail"
 import { IncomesPage } from "@/pages/incomes"
+import { CareerPage } from "@/pages/career"
 import { IncomeDetailPage } from "@/pages/income-detail"
 import { ReimbursementsPage } from "@/pages/reimbursements"
 import { SettingsPage } from "@/pages/settings"
+import { HelpPage } from "@/pages/help"
 import { GeneralSettings } from "@/pages/settings-general"
 import { NamingSettings } from "@/pages/settings-naming"
+import { PayrollSettings } from "@/pages/settings-payroll"
 import { PurchaseWizardPage } from "@/pages/purchase-wizard"
 import { CeMoisPage } from "@/pages/ce-mois"
 import { InboxPage } from "@/pages/inbox"
@@ -190,6 +193,10 @@ function AppContent() {
           <Route path="/vehicules" element={<ErrorBoundary><VehiclesPage /></ErrorBoundary>} />
           <Route path="/vehicules/:id" element={<ErrorBoundary><VehicleDetailPage /></ErrorBoundary>} />
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
+          {/* Statique avant dynamique : « carriere » n'est pas un identifiant
+              de revenu, et React Router classe de toute façon les segments
+              littéraux au-dessus des paramètres. */}
+          <Route path="/incomes/carriere" element={<ErrorBoundary><CareerPage /></ErrorBoundary>} />
           <Route path="/incomes/:id" element={<ErrorBoundary><IncomeDetailPage /></ErrorBoundary>} />
           <Route path="/reimbursements" element={<ErrorBoundary><ReimbursementsPage /></ErrorBoundary>} />
           <Route path="/warranties" element={<ErrorBoundary><WarrantiesPage /></ErrorBoundary>} />
@@ -197,7 +204,9 @@ function AppContent() {
             <Route index element={<ErrorBoundary><GeneralSettings /></ErrorBoundary>} />
             <Route path="coffres" element={<ErrorBoundary><VaultsPage onSwitchVault={handleSwitchVault} /></ErrorBoundary>} />
             <Route path="nommage" element={<ErrorBoundary><NamingSettings /></ErrorBoundary>} />
+            <Route path="baremes" element={<ErrorBoundary><PayrollSettings /></ErrorBoundary>} />
           </Route>
+          <Route path="/aide" element={<ErrorBoundary><HelpPage /></ErrorBoundary>} />
           <Route path="/vaults" element={<Navigate to="/settings/coffres" replace />} />
           <Route path="*" element={<Navigate to="/ce-mois" replace />} />
         </Route>

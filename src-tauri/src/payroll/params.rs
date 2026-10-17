@@ -10,6 +10,7 @@
 //! muet fondé sur des chiffres périmés.
 
 use serde::Serialize;
+use std::borrow::Cow;
 
 /// Tranche de bonification LPP : `(âge_min, âge_max, taux_total_pct)`.
 /// Le taux est le TOTAL employeur + employé (art. 16 LPP) ; l'employeur doit
@@ -55,7 +56,11 @@ pub struct PayrollParams {
     pub lpp_avs_upper_limit: f64,
     /// Plancher du salaire coordonné pour un assuré au-dessus du seuil d'entrée.
     pub lpp_min_coordinated: f64,
-    pub lpp_credit_brackets: &'static [LppCreditBracket],
+    /// `Cow` et non `&'static` : l'utilisateur peut redéfinir les tranches
+    /// depuis Paramètres → Barèmes (la réforme LPP remplacerait ces quatre
+    /// paliers par deux taux). Les années livrées restent empruntées, donc
+    /// sans allocation.
+    pub lpp_credit_brackets: Cow<'static, [LppCreditBracket]>,
 
     // --- Pilier 3a (OPP3) ---
     pub pillar3a_with_lpp: f64,
@@ -86,6 +91,36 @@ pub struct PayrollParams {
     // --- Allocations familiales (LAFam), minimums fédéraux ---
     pub family_allowance_min_child: f64,
     pub family_allowance_min_training: f64,
+
+    /// Retenues salariales propres au canton de travail. Vides par défaut :
+    /// le droit fédéral ne les connaît pas, elles se renseignent par canton et
+    /// par année dans Paramètres → Barèmes.
+    pub cantonal: CantonalParams,
+}
+
+/// Les prélèvements cantonaux qui tombent sur la fiche du SALARIÉ.
+///
+/// La plupart des cantons ne chargent que l'employeur. Trois font exception, et
+/// les ignorer fausse deux fois : le net annoncé est trop élevé, et le contrôle
+/// de bulletin prend une cotisation légitime pour une anomalie.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CantonalParams {
+    /// Canton de travail auquel ces taux se rapportent.
+    pub canton: Option<String>,
+    /// Cotisation salariée aux allocations familiales — Vaud et Valais.
+    pub family_allowance_employee_pct: f64,
+    /// Assurance maternité cantonale, part employé — Genève.
+    pub maternity_employee_pct: f64,
+}
+
+impl CantonalParams {
+    /// Aucun prélèvement cantonal. Utilisable en contexte `const`, ce que
+    /// `Default::default()` ne permet pas dans la table des années.
+    pub const EMPTY: CantonalParams = CantonalParams {
+        canton: None,
+        family_allowance_employee_pct: 0.0,
+        maternity_employee_pct: 0.0,
+    };
 }
 
 /// Tranches de bonification LPP — inchangées depuis l'entrée en vigueur de
@@ -118,7 +153,7 @@ const YEARS: &[PayrollParams] = &[
         lpp_coordination_deduction: 26_460.0,
         lpp_avs_upper_limit: 90_720.0,
         lpp_min_coordinated: 3_780.0,
-        lpp_credit_brackets: LPP_BRACKETS_CLASSIC,
+        lpp_credit_brackets: Cow::Borrowed(LPP_BRACKETS_CLASSIC),
         pillar3a_with_lpp: 7_258.0,
         pillar3a_without_lpp_pct: 20.0,
         pillar3a_without_lpp_cap: 36_288.0,
@@ -135,6 +170,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2025,
@@ -153,7 +189,7 @@ const YEARS: &[PayrollParams] = &[
         lpp_coordination_deduction: 26_460.0,
         lpp_avs_upper_limit: 90_720.0,
         lpp_min_coordinated: 3_780.0,
-        lpp_credit_brackets: LPP_BRACKETS_CLASSIC,
+        lpp_credit_brackets: Cow::Borrowed(LPP_BRACKETS_CLASSIC),
         pillar3a_with_lpp: 7_258.0,
         pillar3a_without_lpp_pct: 20.0,
         pillar3a_without_lpp_cap: 36_288.0,
@@ -170,6 +206,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2024,
@@ -188,7 +225,7 @@ const YEARS: &[PayrollParams] = &[
         lpp_coordination_deduction: 25_725.0,
         lpp_avs_upper_limit: 88_200.0,
         lpp_min_coordinated: 3_675.0,
-        lpp_credit_brackets: LPP_BRACKETS_CLASSIC,
+        lpp_credit_brackets: Cow::Borrowed(LPP_BRACKETS_CLASSIC),
         pillar3a_with_lpp: 7_056.0,
         pillar3a_without_lpp_pct: 20.0,
         pillar3a_without_lpp_cap: 35_280.0,
@@ -205,6 +242,44 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 215.0,
         family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
+    },
+    PayrollParams {
+        year: 2023,
+        estimated: false,
+        effective_year: 2023,
+        source: "OFAS/AFC — chiffres clés assurances sociales 2023",
+        verified_on: "2026-08-27",
+        avs_ai_apg_employee_pct: 5.3,
+        avs_ai_apg_employer_pct: 5.3,
+        ac_employee_pct: 1.1,
+        ac_ceiling: 148_200.0,
+        // Première année sans le pour-cent de solidarité (supprimé au 1.1.2023).
+        ac_solidarity_employee_pct: 0.0,
+        laa_max_insured: 148_200.0,
+        laa_nonoccupational_min_weekly_hours: 8.0,
+        lpp_entry_threshold: 22_050.0,
+        lpp_coordination_deduction: 25_725.0,
+        lpp_avs_upper_limit: 88_200.0,
+        lpp_min_coordinated: 3_675.0,
+        lpp_credit_brackets: Cow::Borrowed(LPP_BRACKETS_CLASSIC),
+        pillar3a_with_lpp: 7_056.0,
+        pillar3a_without_lpp_pct: 20.0,
+        pillar3a_without_lpp_cap: 35_280.0,
+        pro_lump_sum_pct: 3.0,
+        pro_lump_sum_min: 2_000.0,
+        pro_lump_sum_max: 4_000.0,
+        meals_full_year: 3_200.0,
+        meals_subsidized_year: 1_600.0,
+        meals_full_day: 15.0,
+        meals_subsidized_day: 7.5,
+        commute_cap_ifd: 3_000.0,
+        commute_private_car_per_km: 0.7,
+        private_car_monthly_pct: 0.9,
+        private_car_monthly_min: 150.0,
+        family_allowance_min_child: 215.0,
+        family_allowance_min_training: 268.0,
+        cantonal: CantonalParams::EMPTY,
     },
     PayrollParams {
         year: 2022,
@@ -225,7 +300,7 @@ const YEARS: &[PayrollParams] = &[
         lpp_coordination_deduction: 25_095.0,
         lpp_avs_upper_limit: 86_040.0,
         lpp_min_coordinated: 3_585.0,
-        lpp_credit_brackets: LPP_BRACKETS_CLASSIC,
+        lpp_credit_brackets: Cow::Borrowed(LPP_BRACKETS_CLASSIC),
         pillar3a_with_lpp: 6_883.0,
         pillar3a_without_lpp_pct: 20.0,
         pillar3a_without_lpp_cap: 34_416.0,
@@ -242,6 +317,7 @@ const YEARS: &[PayrollParams] = &[
         private_car_monthly_min: 150.0,
         family_allowance_min_child: 200.0,
         family_allowance_min_training: 250.0,
+        cantonal: CantonalParams::EMPTY,
     },
 ];
 

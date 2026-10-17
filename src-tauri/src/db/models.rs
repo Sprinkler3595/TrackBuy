@@ -593,6 +593,9 @@ pub struct CreateIncomeRequest {
     pub currency: Option<String>,
     pub status: Option<String>,
     pub started_on: Option<String>,
+    /// Renseigné quand on saisit un emploi déjà terminé : c'est ce qui permet
+    /// de reprendre une carrière employeur par employeur.
+    pub ended_on: Option<String>,
     pub attributed_to_member_id: Option<String>,
     pub notes: Option<String>,
 }
@@ -656,6 +659,12 @@ pub struct IncomeReceipt {
     pub expense_reimbursement_amount: Option<f64>,
     pub expense_lump_sum_amount: Option<f64>,
 
+    /// Ce qui s'ajoute au net APRÈS les retenues, sans être un remboursement
+    /// de frais. Hors assiette AVS : le mettre dans une colonne de brut
+    /// ferait réclamer des cotisations que l'employeur a eu raison de ne pas
+    /// prélever.
+    pub net_addition_amount: Option<f64>,
+
     pub notes: Option<String>,
     pub created_at: String,
 }
@@ -691,6 +700,7 @@ pub struct CreateIncomeReceiptRequest {
     pub other_deductions_amount: Option<f64>,
     pub expense_reimbursement_amount: Option<f64>,
     pub expense_lump_sum_amount: Option<f64>,
+    pub net_addition_amount: Option<f64>,
     pub notes: Option<String>,
 }
 
@@ -704,6 +714,9 @@ pub struct CreateIncomeReceiptRequest {
 pub struct EmploymentContract {
     pub id: String,
     pub income_id: String,
+    /// Ce qui distingue cette version des autres à l'écran : « Contrat
+    /// initial », « Avenant 2021 — augmentation ».
+    pub label: Option<String>,
     pub employer_name: Option<String>,
     /// IDE de l'employeur, format CHE-123.456.789.
     pub employer_uid: Option<String>,
@@ -711,9 +724,15 @@ pub struct EmploymentContract {
     pub avs_number: Option<String>,
     /// Sert uniquement à déterminer la tranche de bonification LPP.
     pub birth_date: Option<String>,
-    /// Canton de travail : c'est lui qui fixe le barème des allocations
-    /// familiales, pas le canton de domicile.
+    /// Siège de l'employeur : retenues sociales cantonales et caisse
+    /// d'allocations familiales.
     pub work_canton: Option<String>,
+    /// Domicile du salarié : barème d'impôt à la source, qui suit le domicile
+    /// et non le lieu de travail (art. 38 al. 4 let. a LHID).
+    pub residence_canton: Option<String>,
+    /// `residence` ou `work` — certains employeurs retiennent selon le canton
+    /// de leur siège puis reversent. Seule la fiche de salaire tranche.
+    pub tax_at_source_canton_source: String,
     pub activity_rate_pct: Option<f64>,
     pub annual_gross_agreed: Option<f64>,
     /// 12 ou 13 selon que le 13ᵉ salaire est versé séparément.
@@ -723,11 +742,23 @@ pub struct EmploymentContract {
     pub thirteenth_salary: bool,
     pub lpp_fund_name: Option<String>,
     pub lpp_employee_share_pct: Option<f64>,
+    /// `total` = le brut entier est assuré, suppléments compris ; `base` = seul
+    /// le salaire contractuel l'est. La réponse tient au règlement de la caisse
+    /// de pension : elle ne se devine pas, elle se lit.
+    pub lpp_insured_scope: String,
+    /// La caisse réduit-elle la déduction de coordination au taux
+    /// d'occupation ? La loi ne l'impose pas, beaucoup de caisses le
+    /// pratiquent, et le règlement du plan le dit noir sur blanc.
+    #[serde(default)]
+    pub lpp_coordination_part_time: bool,
     pub laa_insurer: Option<String>,
     pub laa_nonoccupational_pct: Option<f64>,
     pub ijm_employee_pct: Option<f64>,
     pub tax_at_source: bool,
     pub tax_at_source_scale: Option<String>,
+    /// Taux effectif d'impôt à la source, lu sur la fiche de salaire.
+    /// Repli utilisé tant qu'aucun barème cantonal n'est importé.
+    pub tax_at_source_rate_pct: Option<f64>,
     /// Prix d'achat HT du véhicule d'entreprise, pour la part privée.
     pub company_car_purchase_price: Option<f64>,
     pub subsidized_canteen: bool,
@@ -975,4 +1006,92 @@ pub struct CreateBankMatchRuleRequest {
     pub target_id: String,
     pub learned: Option<bool>,
     pub notes: Option<String>,
+}
+
+/// Une tranche du plan de prévoyance : « de 25 à 34 ans, 10 % au total dont
+/// 5 % à ma charge ».
+///
+/// Rattachée à UNE version de contrat, comme le barème de suppléments : un
+/// changement de plan se signe par un avenant, et une fiche de 2019 doit
+/// rester lue avec le plan de 2019.
+///
+/// `age_from` et `age_to` s'entendent au sens LPP — `année civile − année de
+/// naissance` — donc le passage d'un palier tombe au 1ᵉʳ janvier, pas le jour
+/// de l'anniversaire.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LppPlanBracket {
+    pub id: String,
+    pub contract_id: String,
+    /// Bornes incluses toutes les deux. Quand deux tranches se recouvrent sur
+    /// une année — « 18 à 25 » puis « 25 à 40 », ce que tout le monde écrit —
+    /// c'est celle qui commence le plus tard qui l'emporte : c'est ainsi qu'on
+    /// lit un plan de prévoyance.
+    pub age_from: i32,
+    pub age_to: i32,
+    /// Cotisation totale, employeur et salarié réunis. Sert au contrôle de
+    /// l'art. 66 al. 1 LPP.
+    pub total_pct: f64,
+    /// La part à votre charge. La part patronale s'en déduit : deux champs
+    /// indépendants finiraient par se contredire.
+    pub employee_pct: f64,
+    /// Sur QUEL salaire le taux porte : `coordinated` (le salaire coordonné,
+    /// cas de loin le plus courant), `excess` (la part au-delà de la limite
+    /// supérieure LPP) ou `full` (le salaire annuel entier, plafonné).
+    ///
+    /// Un plan réel empile des cotisations sur plusieurs assiettes — AXA
+    /// prélève selon l'âge sur le salaire coordonné ET 4 % sur la part
+    /// au-delà de la limite. Un modèle à une seule assiette sous-estime la
+    /// retenue de qui gagne davantage.
+    #[serde(default = "default_lpp_basis")]
+    pub basis: String,
+}
+
+fn default_lpp_basis() -> String {
+    "coordinated".to_string()
+}
+
+impl crate::payroll::AgeBracket for LppPlanBracket {
+    fn age_from(&self) -> i32 {
+        self.age_from
+    }
+    fn age_to(&self) -> i32 {
+        self.age_to
+    }
+}
+
+/// Une ligne du barème de suppléments d'une entreprise : astreinte à la
+/// semaine, samedi travaillé, dimanche travaillé…
+///
+/// Rattachée à UNE version de contrat, parce qu'un avenant peut changer le
+/// tarif du dimanche et que l'historique doit pouvoir dire ce qu'il valait en
+/// 2019.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SupplementRate {
+    pub id: String,
+    pub contract_id: String,
+    /// Identifiant stable dans le barème — c'est lui qui relie une quantité
+    /// saisie sur un bulletin au tarif qui lui était applicable.
+    pub code: String,
+    pub label: String,
+    /// `week` | `day` | `hour` | `flat`
+    pub unit: String,
+    pub amount: f64,
+    pub sort_order: i32,
+}
+
+/// Ce qui a réellement été accompli sur un mois : 1 semaine d'astreinte,
+/// 2 dimanches. Le MONTANT, lui, vit dans `income_receipts.other_gross_amount`,
+/// colonne que le moteur sait déjà soumettre à l'AVS et ranger en rubrique 1
+/// du certificat de salaire. Cette table ne fait qu'expliquer ce montant.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ReceiptSupplement {
+    pub id: String,
+    pub receipt_id: String,
+    pub code: String,
+    pub label: String,
+    pub quantity: f64,
+    /// Tarif appliqué, figé au moment de la saisie : un changement de barème
+    /// ne doit pas réécrire le passé.
+    pub unit_amount: f64,
+    pub amount: f64,
 }

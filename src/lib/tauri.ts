@@ -1292,6 +1292,11 @@ export interface IncomeReceipt {
   expense_reimbursement_amount: number | null
   expense_lump_sum_amount: number | null
 
+  /// Ce qui s'ajoute au net APRÈS les retenues sans être un remboursement de
+  /// frais. Hors assiette AVS : le ranger dans une colonne de brut ferait
+  /// réclamer des cotisations que l'employeur a eu raison de ne pas prélever.
+  net_addition_amount: number | null
+
   notes: string | null
   created_at: string
 }
@@ -1302,6 +1307,9 @@ export interface IncomeReceipt {
 export interface EmploymentContract {
   id: string
   income_id: string
+  /// Ce qui distingue cette version des autres : « Contrat initial »,
+  /// « Avenant 2021 — augmentation ».
+  label: string | null
   employer_name: string | null
   /// IDE, format CHE-123.456.789
   employer_uid: string | null
@@ -1311,7 +1319,14 @@ export interface EmploymentContract {
   birth_date: string | null
   /// Canton de travail — c'est lui qui fixe le barème des allocations
   /// familiales, pas le canton de domicile.
+  /// Siège de l'employeur : retenues sociales cantonales et caisse
+  /// d'allocations familiales.
   work_canton: string | null
+  /// Domicile du salarié : barème d'impôt à la source, qui suit le domicile et
+  /// non le lieu de travail.
+  residence_canton: string | null
+  /// `residence` (la règle) ou `work` (l'employeur retient selon son canton).
+  tax_at_source_canton_source: string
   activity_rate_pct: number | null
   annual_gross_agreed: number | null
   salary_periods_per_year: number | null
@@ -1320,11 +1335,20 @@ export interface EmploymentContract {
   thirteenth_salary: boolean
   lpp_fund_name: string | null
   lpp_employee_share_pct: number | null
+  /// `total` = tout le brut est assuré, suppléments compris ; `base` = seul le
+  /// salaire contractuel l'est.
+  lpp_insured_scope: string
+  /// La caisse réduit-elle la déduction de coordination au taux d'occupation ?
+  /// La loi ne l'impose pas ; le règlement du plan le dit.
+  lpp_coordination_part_time: boolean
   laa_insurer: string | null
   laa_nonoccupational_pct: number | null
   ijm_employee_pct: number | null
   tax_at_source: boolean
   tax_at_source_scale: string | null
+  /// Taux effectif lu sur la fiche de salaire, utilisé tant qu'aucun
+  /// barème cantonal n'est importé.
+  tax_at_source_rate_pct: number | null
   /// Prix d'achat HT : la part privée vaut 0.9 %/mois de ce montant.
   company_car_purchase_price: number | null
   subsidized_canteen: boolean
@@ -1412,7 +1436,335 @@ export interface PayrollParams {
   private_car_monthly_min: number
   family_allowance_min_child: number
   family_allowance_min_training: number
+  /// Retenues propres au canton de travail. Vides tant qu'aucun taux n'est
+  /// saisi — ce qui est exact dans la plupart des cantons.
+  cantonal: {
+    canton: string | null
+    /// Cotisation salariée aux allocations familiales (VD, VS).
+    family_allowance_employee_pct: number
+    /// Assurance maternité cantonale, part employé (GE).
+    maternity_employee_pct: number
+  }
+}
+
+/// Taux salariés d'un canton pour une année.
+export interface CantonalRates {
+  canton: string
+  year: number
+  family_allowance_employee_pct: number | null
+  maternity_employee_pct: number | null
+  note: string | null
+}
+
+/// Ce que rend `getPayrollParams` : le barème, plus de quoi le situer.
+///
+/// Distinct de `PayrollParams` parce que le contrôle d'un bulletin ne reçoit
+/// que le barème nu (`PayslipReport.params`) : déclarer ces champs sur le type
+/// de base ferait croire à leur présence là où ils n'existent pas.
+export interface PayrollParamsResponse extends PayrollParams {
+  /// Années publiées dans le code.
   known_years: number[]
+  /// Champs que l'utilisateur a redéfinis pour cette année dans
+  /// Paramètres → Barèmes. Le reste vient des valeurs livrées.
+  overridden_fields: string[]
+  /// Années pour lesquelles une saisie existe — elles s'ajoutent au
+  /// sélecteur, sinon une année créée à la main serait invisible.
+  edited_years: number[]
+  /// Années où des bulletins ou des certificats existent réellement. C'est ce
+  /// qui rend une carrière ancienne atteignable dans les sélecteurs d'année.
+  data_years: number[]
+  /// L'utilisateur a déclaré avoir vérifié cette année auprès d'une source.
+  confirmed: boolean
+  /// L'année est livrée avec l'application.
+  published: boolean
+  /// Ni publiée ni confirmée : les contrôles de conformité plafonnent en
+  /// avertissement, car un écart pourrait venir du barème lui-même.
+  provisional: boolean
+}
+
+/// Un taux tel que les bulletins d'une année le révèlent.
+export interface InferredRate {
+  field: string
+  label: string
+  value: number
+  /// Bulletins qui appliquent ce taux.
+  agreeing: number
+  total: number
+  /// Périodes qui s'en écartent — le mois à regarder de près.
+  outliers: string[]
+}
+
+export interface InferredParams {
+  year: number
+  rates: InferredRate[]
+  receipt_count: number
+}
+
+/// Valeurs surchargeables d'une année. `null` = « garder la valeur livrée ».
+export type PayrollOverrideInput = Partial<
+  Record<
+    | "avs_ai_apg_employee_pct" | "avs_ai_apg_employer_pct"
+    | "ac_employee_pct" | "ac_ceiling" | "ac_solidarity_employee_pct"
+    | "laa_max_insured" | "laa_nonoccupational_min_weekly_hours"
+    | "lpp_entry_threshold" | "lpp_coordination_deduction"
+    | "lpp_avs_upper_limit" | "lpp_min_coordinated"
+    | "pillar3a_with_lpp" | "pillar3a_without_lpp_pct" | "pillar3a_without_lpp_cap"
+    | "pro_lump_sum_pct" | "pro_lump_sum_min" | "pro_lump_sum_max"
+    | "meals_full_year" | "meals_subsidized_year" | "meals_full_day" | "meals_subsidized_day"
+    | "commute_cap_ifd" | "commute_private_car_per_km"
+    | "private_car_monthly_pct" | "private_car_monthly_min"
+    | "family_allowance_min_child" | "family_allowance_min_training",
+    number | null
+  >
+> & {
+  lpp_credit_brackets?: Array<[number, number, number]> | null
+  note?: string | null
+  /// « J'ai vérifié ces chiffres auprès de la source. »
+  confirmed?: boolean | null
+}
+
+/// Termes de l'emploi tels que le moteur de paie les attend.
+export interface EmploymentTerms {
+  birth_date?: string | null
+  activity_rate_pct?: number | null
+  weekly_hours?: number | null
+  annual_gross_agreed?: number | null
+  salary_periods_per_year?: number | null
+  hourly_paid?: boolean
+  lpp_employee_share_pct?: number | null
+  laa_nonoccupational_pct?: number | null
+  ijm_employee_pct?: number | null
+  /// `base` = seul le salaire contractuel est assuré ; sinon tout le brut.
+  lpp_insured_scope?: string | null
+  tax_at_source?: boolean
+  company_car_purchase_price?: number | null
+  subsidized_canteen?: boolean
+  thirteenth_salary?: boolean
+}
+
+/// Une période de paie projetée. `null` sur une retenue = taux inconnu, donc
+/// RIEN n'a été retenu et le net est surévalué d'autant. À ne pas confondre
+/// avec `0`, qui veut dire « rien n'est dû ».
+export interface ProjectedPeriod {
+  index: number
+  gross: number
+  avs_subject_gross: number
+  avs_ai_apg: number
+  ac: number
+  ac_solidarity: number
+  laa_nonoccupational: number | null
+  ijm: number | null
+  lpp_employee: number | null
+  tax_at_source: number | null
+  /// Prélèvements propres au canton de travail (allocations familiales en
+  /// VD/VS, assurance maternité en GE). Zéro ailleurs.
+  cantonal: number
+  total_deductions: number
+  net: number
+}
+
+export interface NetProjection {
+  periods: ProjectedPeriod[]
+  periods_per_year: number
+  annual_gross: number
+  annual_net: number
+  /// Tant que ce n'est pas vide, le net est un MAJORANT.
+  uncomputable: string[]
+  /// Vrai quand le plafond annuel de l'AC est franchi en cours d'année.
+  varies_across_year: boolean
+}
+
+/// D'où vient le montant d'impôt à la source affiché.
+export type TaxSource = "tariff" | "manual_rate" | "not_subject" | "unavailable"
+
+export interface NetFromGrossRequest {
+  year: number
+  gross_per_period: number
+  family_allowance?: number | null
+  /// Suppléments d'une période type — astreinte, week-ends.
+  supplements_per_period?: number | null
+  terms: EmploymentTerms
+  work_canton?: string | null
+  residence_canton?: string | null
+  tax_at_source_scale?: string | null
+  tax_at_source_rate_pct?: number | null
+  income_id?: string | null
+}
+
+export interface NetFromGrossResponse {
+  projection: NetProjection
+  params: PayrollParams
+  overridden_fields: string[]
+  tax_source: TaxSource
+  tax_tariff_code: string | null
+  tax_annual_model: boolean
+  /// Les deux cantons retenus, pour que l'écran dise lequel a servi à quoi.
+  tax_canton: string | null
+  social_canton: string | null
+  /// Net d'une période type — le montant à enregistrer pour le revenu.
+  net_per_period: number
+}
+
+/// Un barème cantonal d'impôt à la source importé par l'utilisateur.
+export interface TariffImport {
+  id: string
+  canton: string
+  fiscal_year: number
+  source_file: string
+  file_created_on: string | null
+  row_count: number
+  imported_at: string
+  /// FR, GE, TI, VD, VS taxent le revenu annualisé, pas le mois.
+  annual_model: boolean
+}
+
+/// Une année de cotisations chez un employeur.
+///
+/// Les postes détaillés sont `null` quand l'année n'est connue que par son
+/// certificat de salaire : celui-ci ne publie qu'un total (rubrique 9), pas la
+/// répartition. `null` veut donc dire « inconnu », jamais « zéro ».
+export interface ContributionYear {
+  year: number
+  income_id: string
+  income_name: string
+  employer_name: string | null
+  gross_total: number
+  /// Total des cotisations sociales (rubrique 9). Toujours connu.
+  social_total: number
+  avs_ai_apg: number | null
+  ac: number | null
+  ac_solidarity: number | null
+  laa_nonoccupational: number | null
+  lpp: number
+  /// Retenue réelle du bulletin, absente du certificat de salaire.
+  ijm: number | null
+  other_deductions: number | null
+  tax_at_source: number
+  net: number
+  receipt_count: number
+  /// `payslips` = reconstituée depuis les bulletins, avec le détail.
+  /// `certificate` = seul le certificat annuel subsiste.
+  source: "payslips" | "certificate"
+  /// Écart de brut entre le certificat reçu et la somme des bulletins :
+  /// le signal qu'un bulletin manque à l'année.
+  certificate_gap: number | null
+}
+
+export interface ContributionTotals {
+  gross_total: number
+  social_total: number
+  lpp: number
+  tax_at_source: number
+  net: number
+  avs_ai_apg: number
+  ac: number
+  /// Postes dont au moins une année n'a pas livré le détail : leur total est
+  /// donc incomplet, et l'écran doit le dire.
+  partial_fields: string[]
+  years_covered: number
+  receipt_count: number
+}
+
+export interface ContributionsHistory {
+  rows: ContributionYear[]
+  first_year: number | null
+  last_year: number | null
+  totals: ContributionTotals
+}
+
+/// Une tranche du plan de prévoyance : « de 25 à 39 ans, 10 % au total dont
+/// 5 % à ma charge ».
+///
+/// Les âges s'entendent au sens LPP — `année civile − année de naissance` —
+/// donc un palier se franchit au 1ᵉʳ janvier, pas le jour de l'anniversaire.
+export interface LppPlanBracket {
+  id: string
+  contract_id: string
+  /// Bornes incluses. Quand deux tranches se recouvrent sur une année — « 18 à
+  /// 25 » puis « 25 à 40 » — c'est celle qui commence le plus tard qui gagne.
+  age_from: number
+  age_to: number
+  /// Cotisation totale, employeur et salarié réunis.
+  total_pct: number
+  /// Votre part. La part patronale s'en déduit.
+  employee_pct: number
+  /// Sur QUEL salaire le taux porte. `coordinated` = le salaire coordonné (le
+  /// cas de loin le plus courant) ; `excess` = la part au-delà de la limite
+  /// supérieure LPP ; `full` = le salaire annuel entier, plafonné.
+  basis: string
+}
+
+/// Les bulletins qu'une version de contrat juge, et sur quelle période.
+export interface ContractVersionUsage {
+  contract_id: string
+  receipt_count: number
+  first_period: string | null
+  last_period: string | null
+}
+
+/// Le plan traduit en francs, pour le salaire du contrat.
+///
+/// « 3.2 % du salaire coordonné » ne dit rien à personne : ni combien de
+/// francs, ni quelle part du brut. C'est pourtant la seule question qu'on se
+/// pose — et c'est elle qui fait taper 50 dans un champ de taux.
+export interface LppPlanPreview {
+  year: number
+  age: number | null
+  annual_salary: number | null
+  coordinated_salary: number
+  /// Cotisation annuelle à votre charge, toutes assiettes confondues.
+  employee_annual: number | null
+  /// La même, en % du salaire annuel brut.
+  employee_pct_of_gross: number | null
+  /// Bonification minimale de l'art. 16 LPP à cet âge, en % du coordonné.
+  /// 0 avant 25 ans : la loi n'impose alors que la couverture des risques.
+  legal_credit_pct: number
+  /// Si le plan s'en tenait au minimum légal, la moitié de cette bonification
+  /// serait le maximum à votre charge (art. 66 al. 1 LPP).
+  legal_min_employee_annual: number
+  legal_min_employee_pct_of_gross: number | null
+  rates: Array<{ basis: string; employee_pct: number; total_pct: number }>
+  /// Aucune tranche ne couvre l'âge : c'est le taux fixe qui a servi.
+  used_flat_rate: boolean
+}
+
+/// Une ligne du barème de suppléments d'une entreprise : astreinte à la
+/// semaine, samedi travaillé, dimanche travaillé…
+///
+/// Rattachée à UNE version de contrat : un avenant peut changer le tarif du
+/// dimanche, et l'historique doit dire ce qu'il valait en 2019.
+export interface SupplementRate {
+  id: string
+  contract_id: string
+  /// Identifiant stable dans le barème, dérivé du libellé si on ne le fournit
+  /// pas. C'est lui qui relie une quantité saisie au tarif applicable.
+  code: string
+  label: string
+  /// `week` | `day` | `hour` | `flat`
+  unit: string
+  amount: number
+  sort_order: number
+}
+
+/// Ce qui a réellement été accompli sur un mois : 1 semaine d'astreinte,
+/// 2 dimanches. Le montant, lui, est reporté dans `other_gross_amount`.
+export interface ReceiptSupplement {
+  id: string
+  receipt_id: string
+  code: string
+  label: string
+  quantity: number
+  /// Tarif figé au moment de la saisie : changer le barème ne réécrit pas le
+  /// passé.
+  unit_amount: number
+  amount: number
+}
+
+export interface SupplementYearTotal {
+  code: string
+  label: string
+  quantity: number
+  amount: number
 }
 
 export type FindingSeverity = "ok" | "info" | "warn" | "error"
@@ -1442,6 +1794,8 @@ export interface ExpectedDeductions {
   lpp_employee: number | null
   /// L'employeur doit financer au moins la moitié de la bonification.
   lpp_employee_legal_cap: number
+  cantonal_family_allowance: number
+  cantonal_maternity: number
 }
 
 export interface PayslipReport {
@@ -1451,6 +1805,9 @@ export interface PayslipReport {
   /// Cumul annuel avant cette période, utilisé pour le plafond AC.
   ytd_before: number
   has_contract: boolean
+  /// Barème ni livré ni confirmé : les constats ont été rabattus en
+  /// avertissements, car un écart pourrait venir du barème lui-même.
+  params_provisional: boolean
 }
 
 export interface CertificateDiff {
@@ -1497,7 +1854,8 @@ export interface SalarySource {
 
 export interface IncomeTaxSummary {
   year: number
-  params: PayrollParams
+  /// Le barème de l'année, et de quoi alimenter le sélecteur d'année.
+  params: PayrollParamsResponse
   gross_total: number
   social_contributions: number
   lpp_contributions: number
@@ -1529,6 +1887,8 @@ export const createIncome = (income: {
   currency?: string
   status?: IncomeStatus
   started_on?: string | null
+  /// Emploi déjà terminé : date de fin.
+  ended_on?: string | null
   attributed_to_member_id?: string | null
   notes?: string | null
 }) => invoke<Income>("create_income", { income })
@@ -1579,9 +1939,33 @@ export type CreateIncomeReceipt = {
     | "other_deductions_amount"
     | "expense_reimbursement_amount"
     | "expense_lump_sum_amount"
+    | "net_addition_amount"
     | "notes"
   >
 >
+
+/// Verdict d'une ligne d'un import en lot. Un lot de deux cents fiches ne
+/// peut pas échouer en bloc pour un doublon : chaque ligne a son verdict.
+export interface BulkReceiptResult {
+  /// Position dans le lot envoyé — à utiliser pour recoller le verdict à sa
+  /// ligne, plutôt que l'ordre de retour.
+  index: number
+  status: "created" | "replaced" | "duplicate" | "rejected"
+  receipt_id: string | null
+  existing_id: string | null
+  message: string | null
+}
+
+/// Enregistre plusieurs bulletins en une transaction. Tout est validé avant
+/// la moindre écriture : un lot à moitié importé serait pire que rien.
+export const logIncomeReceiptsBulk = (
+  receipts: CreateIncomeReceipt[],
+  replaceDuplicates = false,
+) =>
+  invoke<BulkReceiptResult[]>("log_income_receipts_bulk", {
+    receipts,
+    replaceDuplicates,
+  })
 
 export const logIncomeReceipt = (receipt: CreateIncomeReceipt) =>
   invoke<IncomeReceipt>("log_income_receipt", { receipt })
@@ -1598,7 +1982,49 @@ export const deleteIncomeReceipt = (id: string) =>
 
 /// Barèmes légaux de l'année. Le front ne code aucun taux : il les lit ici.
 export const getPayrollParams = (year: number) =>
-  invoke<PayrollParams>("get_payroll_params", { year })
+  invoke<PayrollParamsResponse>("get_payroll_params", { year })
+
+/// Enregistre les corrections de barème d'une année. L'envoi est un
+/// remplacement complet : un champ omis redevient la valeur livrée.
+export const upsertPayrollOverrides = (year: number, values: PayrollOverrideInput) =>
+  invoke<PayrollParamsResponse>("upsert_payroll_overrides", { year, values })
+
+/// Rend une année à ses valeurs livrées.
+export const resetPayrollOverrides = (year: number) =>
+  invoke<PayrollParamsResponse>("reset_payroll_overrides", { year })
+
+/// Recopie une année sur une autre, corrections comprises — le geste du
+/// 1er janvier.
+export const duplicatePayrollYear = (fromYear: number, toYear: number) =>
+  invoke<PayrollParamsResponse>("duplicate_payroll_year", { fromYear, toYear })
+
+/// Propose les taux que les bulletins d'une année révèlent. Ne démontre pas
+/// que l'employeur avait raison — démontre qu'il a été cohérent, et désigne le
+/// mois qui sort du lot.
+/// Taux salariés cantonaux saisis pour une année.
+export const getCantonalRates = (year: number) =>
+  invoke<CantonalRates[]>("get_cantonal_rates", { year })
+
+/// Enregistre les taux d'un canton. Deux taux vides retirent le canton.
+export const upsertCantonalRates = (rates: CantonalRates) =>
+  invoke<CantonalRates[]>("upsert_cantonal_rates", { rates })
+
+export const inferPayrollParams = (year: number) =>
+  invoke<InferredParams>("infer_payroll_params", { year })
+
+/// Projette une année de paie à partir d'un brut par période.
+export const computeNetFromGross = (req: NetFromGrossRequest) =>
+  invoke<NetFromGrossResponse>("compute_net_from_gross", { req })
+
+export const listTaxAtSourceImports = () =>
+  invoke<TariffImport[]>("list_tax_at_source_imports")
+
+/// Importe un fichier de barèmes cantonal (TXT ou ZIP officiel).
+export const importTaxAtSourceTariff = (canton: string, fiscalYear: number, filePath: string) =>
+  invoke<TariffImport>("import_tax_at_source_tariff", { canton, fiscalYear, filePath })
+
+export const deleteTaxAtSourceImport = (canton: string, fiscalYear: number) =>
+  invoke<void>("delete_tax_at_source_import", { canton, fiscalYear })
 
 export const getEmploymentContract = (incomeId: string) =>
   invoke<EmploymentContract | null>("get_employment_contract", { incomeId })
@@ -1606,9 +2032,72 @@ export const getEmploymentContract = (incomeId: string) =>
 export const upsertEmploymentContract = (contract: EmploymentContract) =>
   invoke<EmploymentContract>("upsert_employment_contract", { contract })
 
+/// Toutes les versions d'un contrat, de la plus récente à la plus ancienne.
+/// Un avenant est une version ; il n'écrase pas la précédente, il lui succède.
+export const getEmploymentContractVersions = (incomeId: string) =>
+  invoke<EmploymentContract[]>("get_employment_contract_versions", { incomeId })
+
+export const deleteEmploymentContractVersion = (id: string) =>
+  invoke<void>("delete_employment_contract_version", { id })
+
+/// Plan de prévoyance d'une version de contrat.
+export const getLppPlan = (contractId: string) =>
+  invoke<LppPlanBracket[]>("get_lpp_plan", { contractId })
+
+/// Refuse une tranche dont votre part dépasse la moitié du total
+/// (art. 66 al. 1 LPP), ou dont les bornes sont inversées.
+export const upsertLppPlanBracket = (bracket: LppPlanBracket) =>
+  invoke<LppPlanBracket[]>("upsert_lpp_plan_bracket", { bracket })
+
+export const deleteLppPlanBracket = (id: string) =>
+  invoke<void>("delete_lpp_plan_bracket", { id })
+
+/// Ce que le plan donne concrètement pour le salaire du contrat : francs par
+/// an, et part du brut. Tout vient du moteur — le salaire coordonné n'a qu'une
+/// seule définition, et elle est en Rust.
+export const previewLppPlan = (contractId: string, year: number) =>
+  invoke<LppPlanPreview>("preview_lpp_plan", { contractId, year })
+
+/// Combien de bulletins déjà enregistrés dépendent de chaque version.
+/// Permet de dire « ces N fiches ne bougeront pas » avant d'annoncer un
+/// changement — et d'avertir avant de modifier une version qui en porte.
+export const getContractVersionUsage = (incomeId: string) =>
+  invoke<ContractVersionUsage[]>("get_contract_version_usage", { incomeId })
+
+/// Barème de suppléments d'une version de contrat.
+export const getSupplementRates = (contractId: string) =>
+  invoke<SupplementRate[]>("get_supplement_rates", { contractId })
+
+export const upsertSupplementRate = (rate: SupplementRate) =>
+  invoke<SupplementRate[]>("upsert_supplement_rate", { rate })
+
+export const deleteSupplementRate = (id: string) =>
+  invoke<void>("delete_supplement_rate", { id })
+
+/// Ce qui a été accompli sur un bulletin donné.
+export const getReceiptSupplements = (receiptId: string) =>
+  invoke<ReceiptSupplement[]>("get_receipt_supplements", { receiptId })
+
+/// Remplace les suppléments d'un bulletin et reporte leur total dans le brut.
+/// Rend le total enregistré.
+export const setReceiptSupplements = (receiptId: string, items: ReceiptSupplement[]) =>
+  invoke<number>("set_receipt_supplements", { receiptId, items })
+
+/// Combien d'astreintes cette année, et pour quel montant.
+export const getSupplementTotals = (incomeId: string, year: number) =>
+  invoke<SupplementYearTotal[]>("get_supplement_totals", { incomeId, year })
+
 /// Contrôle un bulletin déjà enregistré.
 export const checkIncomeReceipt = (receiptId: string) =>
   invoke<PayslipReport>("check_income_receipt", { receiptId })
+
+/// Contrôle tous les bulletins d'une année en un seul aller-retour. Un appel
+/// par bulletin rendait l'onglet inutilisable sur une carrière reprise.
+export const checkIncomeReceipts = (incomeId: string, year?: number) =>
+  invoke<Record<string, PayslipReport>>("check_income_receipts", {
+    incomeId,
+    year: year ?? null,
+  })
 
 /// Contrôle un bulletin en cours de saisie, avant enregistrement.
 export const previewPayslipCheck = (incomeId: string, draft: IncomeReceipt) =>
@@ -1631,6 +2120,11 @@ export const reconcileSalaryCertificate = (incomeId: string, year: number) =>
 /// Base imposable et déductions liées au revenu, pour une année fiscale.
 export const getIncomeTaxSummary = (year: number, options?: { working_days?: number }) =>
   invoke<IncomeTaxSummary>("get_income_tax_summary", { year, options: options ?? null })
+
+/// Cotisations de toute la carrière, une ligne par année et par employeur.
+/// Les employeurs quittés y figurent : c'est tout l'objet de l'écran.
+export const getContributionsHistory = () =>
+  invoke<ContributionsHistory>("get_contributions_history")
 
 // Polymorphic attachments
 export const getIncomeAttachments = (incomeId: string) =>

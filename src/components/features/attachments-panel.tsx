@@ -17,11 +17,16 @@ import * as api from "@/lib/tauri"
 
 interface AttachmentsPanelProps {
   /// Target entity. Exactly one of itemId / engagementId /
-  /// engagementChargeId / incomeId / reimbursementId must be set.
+  /// engagementChargeId / incomeId / incomeReceiptId / reimbursementId must
+  /// be set.
   itemId?: string
   engagementId?: string
   engagementChargeId?: string
   incomeId?: string
+  /// Un bulletin de salaire précis. Le PDF se range sur LUI et non sur le
+  /// revenu : c'est ce bulletin-là qu'il justifie, et c'est de là qu'on le
+  /// rouvrira pour vérifier un chiffre.
+  incomeReceiptId?: string
   reimbursementId?: string
   vehicleExpenseId?: string
   itemDescription: string
@@ -144,7 +149,7 @@ function TypePicker({ count, canShare, onPick, onCancel }: TypePickerProps) {
   )
 }
 
-export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, reimbursementId, vehicleExpenseId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
+export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, incomeId, incomeReceiptId, reimbursementId, vehicleExpenseId, itemDescription, orderId, templateContext }: AttachmentsPanelProps) {
   const [attachments, setAttachments] = useState<api.Attachment[]>([])
   const [loading, setLoading] = useState(true)
   const [dragging, setDragging] = useState(false)
@@ -160,6 +165,8 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
         setAttachments(await api.getEngagementAttachments(engagementId))
       } else if (engagementChargeId) {
         setAttachments(await api.getEngagementChargeAttachments(engagementChargeId))
+      } else if (incomeReceiptId) {
+        setAttachments(await api.getIncomeReceiptAttachments(incomeReceiptId))
       } else if (incomeId) {
         setAttachments(await api.getIncomeAttachments(incomeId))
       } else if (reimbursementId) {
@@ -176,7 +183,7 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
     }
   }
 
-  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, reimbursementId, vehicleExpenseId])
+  useEffect(() => { load() }, [itemId, engagementId, engagementChargeId, incomeId, incomeReceiptId, reimbursementId, vehicleExpenseId])
 
   const handleFileSelect = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -235,6 +242,8 @@ export function AttachmentsPanel({ itemId, engagementId, engagementChargeId, inc
           await api.addEngagementAttachment(engagementId, filePath, harmonized, typeSlug)
         } else if (engagementChargeId) {
           await api.addEngagementChargeAttachment(engagementChargeId, filePath, harmonized, typeSlug)
+        } else if (incomeReceiptId) {
+          await api.addIncomeReceiptAttachment(incomeReceiptId, filePath, harmonized, typeSlug)
         } else if (incomeId) {
           await api.addIncomeAttachment(incomeId, filePath, harmonized, typeSlug)
         } else if (reimbursementId) {

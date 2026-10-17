@@ -90,7 +90,7 @@ export function SalaryCertificatePanel({
 }) {
   const { toast } = useToast()
   const [reconciliation, setReconciliation] = useState<api.CertificateReconciliation | null>(null)
-  const [params, setParams] = useState<api.PayrollParams | null>(null)
+  const [params, setParams] = useState<api.PayrollParamsResponse | null>(null)
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [editing, setEditing] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -232,8 +232,12 @@ export function SalaryCertificatePanel({
   const { computed, declared, diffs, receipt_count } = reconciliation
   const mismatches = diffs.filter((d) => d.mismatch)
   const currentYear = new Date().getFullYear()
-  const years = params?.known_years?.length
-    ? Array.from(new Set([...params.known_years, currentYear])).sort((a, b) => b - a)
+  // Idem : un certificat de 2011 doit être atteignable, alors que les barèmes
+  // publiés s'arrêtent à 2022.
+  const years = params
+    ? Array.from(
+        new Set([...params.known_years, ...params.data_years, currentYear]),
+      ).sort((a, b) => b - a)
     : [currentYear]
 
   return (

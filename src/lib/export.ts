@@ -71,13 +71,16 @@ export function itemsToJson(items: Item[]): string {
   )
 }
 
-export async function downloadExport(content: string, filename: string) {
+/// `title` intitule le dialogue d'enregistrement. Il valait « Exporter les
+/// achats » en dur, y compris pour les revenus et les bulletins : l'export
+/// sert désormais plusieurs domaines, le libellé doit suivre.
+export async function downloadExport(content: string, filename: string, title = "Exporter") {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog")
     const { writeTextFile } = await import("./tauri")
     const destination = await save({
       defaultPath: filename,
-      title: "Exporter les achats",
+      title,
       filters: filename.endsWith(".csv")
         ? [{ name: "CSV", extensions: ["csv"] }]
         : [{ name: "JSON", extensions: ["json"] }],

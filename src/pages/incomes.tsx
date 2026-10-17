@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useContext } from "react"
-import { Link } from "react-router-dom"
-import { Plus, Trash2, Edit, TrendingUp, Search, Download } from "lucide-react"
+import { Link, useNavigate } from "react-router-dom"
+import { Plus, Trash2, Edit, TrendingUp, Search, Download, History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,7 +13,6 @@ import { monthlyEquivalent } from "@/lib/finance"
 import { downloadExport } from "@/lib/export"
 import { MaskedAmount, VisibilityToggle, useAmountsVisible } from "@/components/features/amount-masked"
 import { IncomeWizard } from "@/components/features/income-wizard"
-import { IncomeTaxSummaryPanel } from "@/components/features/income-tax-summary-panel"
 import { I18nContext, type TranslationKeys } from "@/lib/i18n"
 import * as api from "@/lib/tauri"
 
@@ -41,6 +40,7 @@ type FormState = {
   currency: string
   status: api.IncomeStatus
   started_on: string
+  ended_on: string
   notes: string
 }
 
@@ -56,11 +56,13 @@ const emptyForm = (): FormState => ({
   currency: "CHF",
   status: "active",
   started_on: "",
+  ended_on: "",
   notes: "",
 })
 
 export function IncomesPage() {
   const { t } = useContext(I18nContext)
+  const navigate = useNavigate()
   const [incomes, setIncomes] = useState<api.Income[]>([])
   const [cards, setCards] = useState<api.PaymentCard[]>([])
   const [loading, setLoading] = useState(true)
@@ -109,6 +111,7 @@ export function IncomesPage() {
       currency: i.currency,
       status: i.status,
       started_on: i.started_on || "",
+      ended_on: i.ended_on || "",
       notes: i.notes || "",
     })
     setEditing(i)
@@ -139,6 +142,10 @@ export function IncomesPage() {
         currency: form.currency,
         status: form.status,
         started_on: form.started_on || null,
+        // Un revenu actif n'a pas de date de fin, et un revenu terminé sans
+        // date de fin est un trou dans l'historique : les deux champs se
+        // tiennent, on ne les laisse pas diverger.
+        ended_on: form.status === "ended" ? form.ended_on || null : null,
         notes: form.notes || null,
       })
       toast(t("incomes.updated"), "success")
@@ -219,6 +226,15 @@ export function IncomesPage() {
             labelShow={t("incomes.showAmounts")}
             labelHide={t("incomes.hideAmounts")}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate("/incomes/carriere")}
+            title="Cotisations année par année, employeurs quittés compris"
+          >
+            <History className="h-4 w-4" />
+            Carrière
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -330,6 +346,13 @@ export function IncomesPage() {
                 <label className="text-sm font-medium">{t("incomes.startedOn")}</label>
                 <Input type="date" value={form.started_on} onChange={(e) => setForm({ ...form, started_on: e.target.value })} />
               </div>
+              {form.status === "ended" && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t("incomes.endedOn")}</label>
+                  <Input type="date" value={form.ended_on} onChange={(e) => setForm({ ...form, ended_on: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">{t("incomes.endedOnHint")}</p>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">{t("incomes.cycle")} *</label>
@@ -378,7 +401,16 @@ export function IncomesPage() {
                 <select
                   className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
                   value={form.status}
-                  onChange={(e) => setForm({ ...form, status: e.target.value as api.IncomeStatus })}
+                  onChange={(e) => {
+                    const status = e.target.value as api.IncomeStatus
+                    setForm((f) => ({
+                      ...f,
+                      status,
+                      // Clore sans date laisserait l'emploi hors de la
+                      // chronologie : on propose aujourd'hui, modifiable.
+                      ended_on: status === "ended" ? f.ended_on || today() : "",
+                    }))
+                  }}
                 >
                   <option value="active">{t("incomes.statusActive")}</option>
                   <option value="ended">{t("incomes.statusEnded")}</option>
@@ -402,8 +434,6 @@ export function IncomesPage() {
           </CardContent>
         </Card>
       )}
-
-      <IncomeTaxSummaryPanel amountsVisible={amountsVisible} />
 
       <div className="grid gap-3">
         {filtered.length === 0 ? (

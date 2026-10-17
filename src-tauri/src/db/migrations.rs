@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 28;
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -114,6 +114,27 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 28 {
         migrate_v28(conn)?;
+    }
+    if current_version < 29 {
+        migrate_v29(conn)?;
+    }
+    if current_version < 30 {
+        migrate_v30(conn)?;
+    }
+    if current_version < 31 {
+        migrate_v31(conn)?;
+    }
+    if current_version < 32 {
+        migrate_v32(conn)?;
+    }
+    if current_version < 33 {
+        migrate_v33(conn)?;
+    }
+    if current_version < 34 {
+        migrate_v34(conn)?;
+    }
+    if current_version < 35 {
+        migrate_v35(conn)?;
     }
 
     Ok(())
@@ -1853,6 +1874,476 @@ fn migrate_v28(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// v29 — le brut devient saisissable, et les barèmes deviennent modifiables.
+///
+/// Trois ajouts, tous purement additifs (pas de reconstruction, pas de
+/// backfill) :
+///
+/// 1. `payroll_param_overrides` — une ligne par année, une colonne NULLABLE
+///    par valeur de `PayrollParams`. `NULL` signifie « garder la valeur
+///    livrée avec l'application ». Ce choix, plutôt qu'une copie complète du
+///    barème, donne la provenance valeur par valeur : l'écran Barèmes peut
+///    dire quels chiffres l'utilisateur a changés, et « Réinitialiser » se
+///    contente de remettre `NULL`.
+///
+/// 2. `tax_at_source_tariffs` / `tax_at_source_imports` — les barèmes
+///    cantonaux d'impôt à la source. L'AFC ne les publie qu'en fichiers
+///    réservés aux employeurs et aux éditeurs de logiciels : ils ne peuvent
+///    donc pas être livrés avec l'application, l'utilisateur les importe.
+///    Tant qu'aucun tarif n'est importé, l'impôt est annoncé comme non
+///    calculable — jamais estimé au doigt mouillé.
+///
+/// 3. `employment_contracts.tax_at_source_rate_pct` — le repli : le taux
+///    effectif lu sur la fiche de salaire, utilisable sans aucun import.
+fn migrate_v29(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE payroll_param_overrides (
+            year INTEGER PRIMARY KEY,
+
+            -- AVS / AI / APG (LAVS)
+            avs_ai_apg_employee_pct REAL,
+            avs_ai_apg_employer_pct REAL,
+
+            -- Assurance-chômage (LACI)
+            ac_employee_pct REAL,
+            ac_ceiling REAL,
+            ac_solidarity_employee_pct REAL,
+
+            -- LAA
+            laa_max_insured REAL,
+            laa_nonoccupational_min_weekly_hours REAL,
+
+            -- LPP / OPP2
+            lpp_entry_threshold REAL,
+            lpp_coordination_deduction REAL,
+            lpp_avs_upper_limit REAL,
+            lpp_min_coordinated REAL,
+            -- JSON [[age_min, age_max, taux_total_pct], ...] : la réforme LPP
+            -- remplacerait les 4 paliers par 2 taux, d'où le format libre.
+            lpp_credit_brackets TEXT,
+
+            -- Pilier 3a (OPP3)
+            pillar3a_with_lpp REAL,
+            pillar3a_without_lpp_pct REAL,
+            pillar3a_without_lpp_cap REAL,
+
+            -- Frais professionnels (art. 26 LIFD)
+            pro_lump_sum_pct REAL,
+            pro_lump_sum_min REAL,
+            pro_lump_sum_max REAL,
+            meals_full_year REAL,
+            meals_subsidized_year REAL,
+            meals_full_day REAL,
+            meals_subsidized_day REAL,
+            commute_cap_ifd REAL,
+            commute_private_car_per_km REAL,
+
+            -- Part privée d'un véhicule d'entreprise
+            private_car_monthly_pct REAL,
+            private_car_monthly_min REAL,
+
+            -- Allocations familiales (LAFam)
+            family_allowance_min_child REAL,
+            family_allowance_min_training REAL,
+
+            -- Pourquoi l'utilisateur a changé ces valeurs (circulaire, CCT...).
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Barèmes d'impôt à la source, tels que livrés par les cantons.
+        -- Une ligne = une tranche : l'impôt dû pour un revenu compris entre
+        -- income_from et income_from + income_step.
+        CREATE TABLE tax_at_source_tariffs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canton TEXT NOT NULL,
+            tariff_code TEXT NOT NULL,          -- A0N, B2Y, C1N...
+            valid_from TEXT NOT NULL,           -- AAAA-MM-JJ
+            children INTEGER NOT NULL,
+            income_from REAL NOT NULL,
+            income_step REAL NOT NULL,
+            tax_amount REAL,                    -- montant d'impôt de la tranche
+            rate_pct REAL,                      -- certains cantons livrent un taux
+            UNIQUE (canton, tariff_code, valid_from, children, income_from)
+        );
+        CREATE INDEX idx_qst_lookup ON tax_at_source_tariffs
+            (canton, tariff_code, children, valid_from, income_from);
+
+        -- Trace des imports : sans elle, impossible de dire à l'utilisateur
+        -- quels cantons et quelles années il a déjà chargés.
+        CREATE TABLE tax_at_source_imports (
+            id TEXT PRIMARY KEY,
+            canton TEXT NOT NULL,
+            fiscal_year INTEGER NOT NULL,
+            source_file TEXT NOT NULL,
+            file_created_on TEXT,               -- date portée par l'en-tête du fichier
+            row_count INTEGER NOT NULL,
+            imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (canton, fiscal_year)
+        );
+
+        -- Repli quand aucun tarif n'est importé : le taux effectif que
+        -- l'utilisateur lit sur sa fiche de salaire.
+        ALTER TABLE employment_contracts ADD COLUMN tax_at_source_rate_pct REAL;
+
+        INSERT INTO schema_version (version) VALUES (29);
+        "
+    ).map_err(|e| format!("Migration v29 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v30 — une année de barème peut être déclarée vérifiée.
+///
+/// Contrôler une fiche de 2012 suppose les barèmes de 2012. L'application n'en
+/// publie que cinq (2022-2026) : pour tout le reste, les chiffres viennent de
+/// l'utilisateur, et rien ne dit s'il les a recopiés d'une source officielle
+/// ou saisis de mémoire.
+///
+/// La différence est lourde de conséquences. Sur un barème incertain, un écart
+/// constaté ne prouve pas une erreur de l'employeur — il peut tout aussi bien
+/// venir du barème. Tant qu'une année n'est pas confirmée, les constats
+/// plafonnent donc en avertissement ; cocher cette case, source officielle
+/// sous les yeux, leur rend leur gravité.
+fn migrate_v30(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE payroll_param_overrides
+            ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (30);
+        "
+    ).map_err(|e| format!("Migration v30 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v31 — les retenues salariales propres à un canton.
+///
+/// Le moteur ne connaissait que le droit fédéral. Or deux prélèvements
+/// cantonaux tombent bel et bien sur la fiche de paie du salarié :
+///
+///   - **Vaud et Valais** font cotiser l'employé aux allocations familiales,
+///     là où les autres cantons ne chargent que l'employeur ;
+///   - **Genève** prélève l'assurance maternité cantonale (AMat), pour moitié
+///     à charge de l'employé.
+///
+/// Sans eux, le net d'un salarié vaudois ou genevois est faux de quelques
+/// francs par mois, et surtout le contrôle de bulletin signale un écart qui
+/// n'en est pas un — il prend une cotisation légitime pour une anomalie.
+///
+/// La table naît VIDE, et c'est délibéré : ces taux changent chaque année et
+/// dépendent de la caisse de compensation. Les inscrire en dur reviendrait à
+/// livrer des chiffres que personne n'a vérifiés. L'écran des barèmes les
+/// demande, en indiquant où les trouver.
+fn migrate_v31(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE cantonal_payroll_params (
+            canton TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            -- Cotisation SALARIÉE aux allocations familiales (VD, VS).
+            family_allowance_employee_pct REAL,
+            -- Assurance maternité cantonale, part employé (GE).
+            maternity_employee_pct REAL,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (canton, year)
+        );
+
+        INSERT INTO schema_version (version) VALUES (31);
+        "
+    ).map_err(|e| format!("Migration v31 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v32 — le contrat devient une suite d'avenants, et le canton se dédouble.
+///
+/// Deux hypothèses de la v28 tombent en même temps, et elles se corrigent au
+/// même endroit : la table est reconstruite une seule fois.
+///
+/// **Un contrat par revenu.** La contrainte `income_id UNIQUE` supposait qu'un
+/// employeur = un jeu de conditions, figé. Or un salaire se renégocie : un
+/// avenant écrasait les termes précédents, et une fiche de 2019 se retrouvait
+/// contrôlée avec le salaire d'aujourd'hui — donc constellée d'écarts qui n'en
+/// sont pas. Le contrat devient une suite de versions datées, et le contrôle
+/// d'un bulletin va chercher celle qui était en vigueur ce jour-là.
+///
+/// `started_on` et `ended_on` existaient déjà sans être lus par aucune requête.
+/// Ils deviennent la période de validité de la version, plutôt que d'ajouter
+/// une seconde paire de dates qui ferait doublon. `started_on` passe donc
+/// `NOT NULL`, avec une borne basse volontairement large pour les contrats
+/// existants : aucune fiche déjà saisie ne doit se retrouver orpheline.
+///
+/// **Un seul canton.** `work_canton` servait à la fois au barème d'impôt à la
+/// source et aux retenues sociales cantonales. Ce sont deux cantons distincts
+/// dès qu'on habite ailleurs qu'au siège de son employeur, et la loi les
+/// désigne séparément : l'impôt à la source d'un résident suisse relève du
+/// canton de DOMICILE (art. 38 al. 4 let. a LHID), tandis que les allocations
+/// familiales et les retenues cantonales suivent la caisse à laquelle
+/// l'employeur est affilié, donc son siège. Avec un champ unique, l'un des deux
+/// calculs était nécessairement faux.
+///
+/// SQLite ne sait pas retirer une contrainte `UNIQUE` posée en ligne : il faut
+/// reconstruire. Même procédé qu'en v18 pour `attachments`.
+fn migrate_v32(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE employment_contracts_new (
+            id TEXT PRIMARY KEY,
+            -- Plus de UNIQUE : plusieurs versions par revenu, une par avenant.
+            income_id TEXT NOT NULL,
+            -- Ce qui distingue cette version des autres, à l'écran.
+            label TEXT,
+            employer_name TEXT,
+            employer_uid TEXT,
+            avs_number TEXT,
+            birth_date TEXT,
+            -- Siège de l'employeur : retenues sociales cantonales et caisse
+            -- d'allocations familiales.
+            work_canton TEXT,
+            -- Domicile du salarié : barème d'impôt à la source.
+            residence_canton TEXT,
+            -- 'residence' (la règle) ou 'work', pour les employeurs qui
+            -- retiennent selon leur propre canton puis reversent. Les deux
+            -- pratiques existent ; seule la fiche de salaire tranche.
+            tax_at_source_canton_source TEXT NOT NULL DEFAULT 'residence',
+            activity_rate_pct REAL,
+            annual_gross_agreed REAL,
+            salary_periods_per_year INTEGER,
+            weekly_hours REAL,
+            hourly_paid INTEGER NOT NULL DEFAULT 0,
+            thirteenth_salary INTEGER NOT NULL DEFAULT 0,
+            lpp_fund_name TEXT,
+            lpp_employee_share_pct REAL,
+            -- 'total' = le brut entier est assuré, suppléments compris ;
+            -- 'base' = seul le salaire contractuel l'est. La réponse tient au
+            -- règlement de la caisse de pension, elle ne se devine pas.
+            lpp_insured_scope TEXT NOT NULL DEFAULT 'total',
+            laa_insurer TEXT,
+            laa_nonoccupational_pct REAL,
+            ijm_employee_pct REAL,
+            tax_at_source INTEGER NOT NULL DEFAULT 0,
+            tax_at_source_scale TEXT,
+            tax_at_source_rate_pct REAL,
+            company_car_purchase_price REAL,
+            subsidized_canteen INTEGER NOT NULL DEFAULT 0,
+            commute_km_per_day REAL,
+            commute_public_transport_cost_year REAL,
+            -- Période de validité de CETTE version.
+            started_on TEXT NOT NULL,
+            ended_on TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (income_id) REFERENCES incomes(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO employment_contracts_new
+            (id, income_id, label, employer_name, employer_uid, avs_number, birth_date,
+             work_canton, residence_canton, tax_at_source_canton_source,
+             activity_rate_pct, annual_gross_agreed, salary_periods_per_year,
+             weekly_hours, hourly_paid, thirteenth_salary, lpp_fund_name,
+             lpp_employee_share_pct, lpp_insured_scope, laa_insurer,
+             laa_nonoccupational_pct, ijm_employee_pct, tax_at_source,
+             tax_at_source_scale, tax_at_source_rate_pct, company_car_purchase_price,
+             subsidized_canteen, commute_km_per_day, commute_public_transport_cost_year,
+             started_on, ended_on, notes, created_at, updated_at)
+        SELECT id, income_id, NULL, employer_name, employer_uid, avs_number, birth_date,
+               work_canton,
+               -- Jusqu'ici un seul canton était saisi : on suppose que domicile
+               -- et travail coïncident, ce qui est le cas le plus fréquent. Qui
+               -- habite ailleurs le corrigera, et l'écran le lui demande.
+               work_canton,
+               'residence',
+               activity_rate_pct, annual_gross_agreed, salary_periods_per_year,
+               weekly_hours, hourly_paid, thirteenth_salary, lpp_fund_name,
+               lpp_employee_share_pct, 'total', laa_insurer,
+               laa_nonoccupational_pct, ijm_employee_pct, tax_at_source,
+               tax_at_source_scale, tax_at_source_rate_pct, company_car_purchase_price,
+               subsidized_canteen, commute_km_per_day, commute_public_transport_cost_year,
+               -- Borne basse large : un contrat sans date d'entrée doit couvrir
+               -- toutes les fiches déjà saisies, y compris les plus anciennes.
+               COALESCE(started_on, '0001-01-01'),
+               ended_on, notes, created_at, updated_at
+        FROM employment_contracts;
+
+        DROP TABLE employment_contracts;
+        ALTER TABLE employment_contracts_new RENAME TO employment_contracts;
+
+        CREATE INDEX idx_employment_contracts_income ON employment_contracts(income_id);
+        -- La recherche « quelle version au jour J » attaque toujours par ce couple.
+        CREATE INDEX idx_employment_contracts_period
+            ON employment_contracts(income_id, started_on);
+
+        -- Barème d'entreprise des suppléments, attaché à UNE version de
+        -- contrat : le tarif du dimanche peut changer avec un avenant, et
+        -- l'historique doit pouvoir dire ce qu'il valait en 2019.
+        CREATE TABLE salary_supplement_rates (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            label TEXT NOT NULL,
+            -- 'week' | 'day' | 'hour' | 'flat'
+            unit TEXT NOT NULL DEFAULT 'day',
+            amount REAL NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (contract_id) REFERENCES employment_contracts(id) ON DELETE CASCADE,
+            UNIQUE (contract_id, code)
+        );
+        CREATE INDEX idx_supplement_rates_contract ON salary_supplement_rates(contract_id);
+
+        -- Ce qui a réellement été accompli sur un mois donné. Ne porte aucun
+        -- calcul de cotisation : le montant, lui, vit dans
+        -- `income_receipts.other_gross_amount`, colonne que le moteur sait déjà
+        -- soumettre à l'AVS et ranger en rubrique 1 du certificat.
+        CREATE TABLE income_receipt_supplements (
+            id TEXT PRIMARY KEY,
+            receipt_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            label TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            unit_amount REAL NOT NULL,
+            amount REAL NOT NULL,
+            FOREIGN KEY (receipt_id) REFERENCES income_receipts(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_receipt_supplements_receipt
+            ON income_receipt_supplements(receipt_id);
+
+        INSERT INTO schema_version (version) VALUES (32);
+        "
+    ).map_err(|e| format!("Migration v32 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v33 — le versement qui s'ajoute APRÈS les retenues.
+///
+/// Un bulletin suisse ne s'arrête pas au total des déductions : viennent
+/// ensuite des montants qui rejoignent le net sans passer par les cotisations.
+/// Deux d'entre eux existaient déjà, tous deux nommés « frais »
+/// (`expense_reimbursement_amount`, `expense_lump_sum_amount`) — or tout ce qui
+/// suit la barre des retenues n'est pas un remboursement de frais.
+///
+/// Faute d'un casier neutre, ces versements finissaient dans une colonne de
+/// brut, où ils faisaient gonfler l'assiette AVS d'un montant qui n'y est pas
+/// soumis : le contrôle de conformité réclamait alors des cotisations que
+/// l'employeur avait eu raison de ne pas prélever.
+fn migrate_v33(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE income_receipts ADD COLUMN net_addition_amount REAL;
+
+        INSERT INTO schema_version (version) VALUES (33);
+        "
+    ).map_err(|e| format!("Migration v33 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v34 — le plan de prévoyance de l'entreprise, par tranches d'âge.
+///
+/// La part employé au 2ᵉ pilier était un scalaire unique. Or aucun plan suisse
+/// ne fonctionne comme ça : la cotisation monte par paliers d'âge, et chaque
+/// palier a sa répartition entre l'employeur et le salarié — 8 % dont 4 à votre
+/// charge entre 18 et 25 ans, 10 % dont 5 ensuite, et rien n'oblige un
+/// employeur à s'en tenir à moitié-moitié.
+///
+/// Avec un taux fixe, le salarié voyait sa retenue projetée figée à vie et
+/// devait la corriger à la main le 1ᵉʳ janvier suivant chaque anniversaire de
+/// palier — un rendez-vous qu'on manque forcément. Les tranches sont
+/// rattachées à une VERSION de contrat, comme le barème de suppléments : un
+/// changement de plan se signe par un avenant, et une fiche de 2019 doit
+/// rester lue avec le plan de 2019.
+///
+/// `total_pct` sert au contrôle de l'art. 66 al. 1 LPP : l'employeur doit
+/// financer au moins autant que le salarié. Le stocker plutôt que de le
+/// déduire évite d'avoir deux vérités sur la part patronale.
+fn migrate_v34(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE lpp_plan_brackets (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL,
+            age_from INTEGER NOT NULL,
+            age_to INTEGER NOT NULL,
+            total_pct REAL NOT NULL,
+            employee_pct REAL NOT NULL,
+            FOREIGN KEY (contract_id) REFERENCES employment_contracts(id) ON DELETE CASCADE,
+            UNIQUE (contract_id, age_from)
+        );
+        CREATE INDEX idx_lpp_plan_contract
+            ON lpp_plan_brackets(contract_id, age_from);
+
+        INSERT INTO schema_version (version) VALUES (34);
+        "
+    ).map_err(|e| format!("Migration v34 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v35 — sur QUEL salaire porte un taux du plan, et la déduction de
+/// coordination des temps partiels.
+///
+/// La v34 supposait qu'un taux s'applique toujours au salaire coordonné. Le
+/// plan AXA/Columna sous les yeux montre que non : il définit trois assiettes,
+/// et fait porter deux cotisations d'épargne différentes sur deux d'entre
+/// elles — 3.2 à 7.6 % selon l'âge sur le « salaire assuré 1 » (le coordonné),
+/// **et en plus** 4 % sur le « salaire assuré 2 », la part du salaire annuel
+/// au-delà de 300 % de la rente AVS maximale. Un plan à une seule assiette ne
+/// sait pas dire cela, et sous-estime la retenue de qui gagne davantage.
+///
+/// `lpp_coordination_part_time` répond à l'autre mention du même document :
+/// « avec réduction de la déduction de coordination pour les salariés à temps
+/// partiel ». La loi ne l'impose pas, beaucoup de caisses le pratiquent, et
+/// l'écart n'a rien d'anecdotique — à 50 %, déduire la coordination entière
+/// écrase le salaire assuré, donc la retenue. Un drapeau par contrat, parce
+/// que c'est le règlement de caisse qui tranche et lui seul.
+/// La table est reconstruite plutôt qu'étendue : son `UNIQUE (contract_id,
+/// age_from)` interdisait précisément ce que le plan AXA exige. Sa tranche
+/// « 20 à 65 ans sur le salaire assuré 2 » commence au même âge que sa tranche
+/// « 20 à 34 ans sur le salaire assuré 1 », et les deux doivent coexister.
+/// L'unicité porte donc désormais sur (contrat, assiette, âge de début).
+fn migrate_v35(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE lpp_plan_brackets_new (
+            id TEXT PRIMARY KEY,
+            contract_id TEXT NOT NULL,
+            age_from INTEGER NOT NULL,
+            age_to INTEGER NOT NULL,
+            total_pct REAL NOT NULL,
+            employee_pct REAL NOT NULL,
+            basis TEXT NOT NULL DEFAULT 'coordinated',
+            FOREIGN KEY (contract_id) REFERENCES employment_contracts(id) ON DELETE CASCADE,
+            UNIQUE (contract_id, basis, age_from)
+        );
+
+        INSERT INTO lpp_plan_brackets_new
+            (id, contract_id, age_from, age_to, total_pct, employee_pct, basis)
+        SELECT id, contract_id, age_from, age_to, total_pct, employee_pct, 'coordinated'
+        FROM lpp_plan_brackets;
+
+        DROP INDEX IF EXISTS idx_lpp_plan_contract;
+        DROP TABLE lpp_plan_brackets;
+        ALTER TABLE lpp_plan_brackets_new RENAME TO lpp_plan_brackets;
+        CREATE INDEX idx_lpp_plan_contract
+            ON lpp_plan_brackets(contract_id, age_from);
+
+        ALTER TABLE employment_contracts
+            ADD COLUMN lpp_coordination_part_time INTEGER NOT NULL DEFAULT 0;
+
+        INSERT INTO schema_version (version) VALUES (35);
+        "
+    ).map_err(|e| format!("Migration v35 failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2152,5 +2643,445 @@ mod tests {
             )
             .unwrap();
         assert!(member.is_none(), "le revenu survit, le lien est dénoué");
+    }
+
+    /// État d'un coffre existant juste avant la v29.
+    fn conn_at_v28() -> Connection {
+        let conn = conn_at_v27();
+        migrate_v28(&conn).unwrap();
+        conn
+    }
+
+    /// La v29 est purement additive : un revenu, son contrat et ses bulletins
+    /// saisis avant la migration doivent traverser intacts, et le contrat
+    /// gagner une colonne de taux d'impôt à la source vide.
+    #[test]
+    fn v29_is_additive_and_keeps_existing_rows() {
+        let conn = conn_at_v28();
+
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status, current_amount)
+             VALUES ('inc1', 'Salaire ACME', 'salary', 'monthly', 'CHF', 'active', 7180.58)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, employer_name, lpp_employee_share_pct)
+             VALUES ('c1', 'inc1', 'ACME SA', 3.5)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v29(&conn).unwrap();
+
+        let (amount, lpp, rate): (f64, f64, Option<f64>) = conn
+            .query_row(
+                "SELECT i.current_amount, c.lpp_employee_share_pct, c.tax_at_source_rate_pct
+                 FROM incomes i JOIN employment_contracts c ON c.income_id = i.id
+                 WHERE i.id = 'inc1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 7180.58, "le net déjà enregistré ne bouge pas");
+        assert_eq!(lpp, 3.5);
+        assert!(rate.is_none(), "la nouvelle colonne naît vide");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 29);
+    }
+
+    /// Une surcharge de barème est une ligne par année, dont chaque colonne
+    /// peut rester NULL — c'est ce NULL qui signifie « garder la valeur
+    /// livrée », et il doit donc être accepté partout.
+    #[test]
+    fn v29_param_override_accepts_partial_rows() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2026, 150000.0)",
+            [],
+        )
+        .unwrap();
+
+        let (ceiling, avs): (f64, Option<f64>) = conn
+            .query_row(
+                "SELECT ac_ceiling, avs_ai_apg_employee_pct FROM payroll_param_overrides WHERE year = 2026",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ceiling, 150_000.0);
+        assert!(avs.is_none(), "les valeurs non touchées restent NULL");
+
+        // Une seule ligne par année : la surcharge se met à jour, elle ne
+        // s'empile pas.
+        let dup = conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2026, 1.0)",
+            [],
+        );
+        assert!(dup.is_err(), "year est la clé primaire");
+    }
+
+    /// Le même barème ne peut pas être importé deux fois pour un canton et
+    /// une année : sinon un double import doublerait chaque tranche.
+    #[test]
+    fn v29_tax_at_source_tariffs_are_unique_per_bracket() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO tax_at_source_tariffs
+                (canton, tariff_code, valid_from, children, income_from, income_step, tax_amount)
+             VALUES ('VD', 'A0N', '2026-01-01', 0, 6000.0, 100.0, 540.0)",
+            [],
+        )
+        .unwrap();
+
+        let dup = conn.execute(
+            "INSERT INTO tax_at_source_tariffs
+                (canton, tariff_code, valid_from, children, income_from, income_step, tax_amount)
+             VALUES ('VD', 'A0N', '2026-01-01', 0, 6000.0, 100.0, 999.0)",
+            [],
+        );
+        assert!(dup.is_err(), "une tranche ne peut pas exister en double");
+
+        conn.execute(
+            "INSERT INTO tax_at_source_imports (id, canton, fiscal_year, source_file, row_count)
+             VALUES ('imp1', 'VD', 2026, 'tar26vd.txt', 1)",
+            [],
+        )
+        .unwrap();
+        let dup_import = conn.execute(
+            "INSERT INTO tax_at_source_imports (id, canton, fiscal_year, source_file, row_count)
+             VALUES ('imp2', 'VD', 2026, 'tar26vd.txt', 1)",
+            [],
+        );
+        assert!(dup_import.is_err(), "un canton-année ne s'importe qu'une fois");
+    }
+
+
+    /// La v30 n'ajoute qu'un drapeau, et il naît à faux : une année déjà
+    /// saisie n'est pas pour autant vérifiée.
+    #[test]
+    fn v30_adds_an_unconfirmed_flag_to_existing_overrides() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO payroll_param_overrides (year, ac_ceiling) VALUES (2012, 126000.0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v30(&conn).unwrap();
+
+        let (ceiling, confirmed): (f64, i64) = conn
+            .query_row(
+                "SELECT ac_ceiling, confirmed FROM payroll_param_overrides WHERE year = 2012",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(ceiling, 126_000.0, "la saisie existante survit");
+        assert_eq!(confirmed, 0, "saisi ne vaut pas vérifié");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 30);
+    }
+
+
+    /// La v31 ajoute une table vide : les taux cantonaux changent chaque année
+    /// et dépendent de la caisse, les livrer en dur serait livrer des chiffres
+    /// non vérifiés.
+    #[test]
+    fn v31_creates_an_empty_cantonal_table_keyed_by_canton_and_year() {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+        migrate_v30(&conn).unwrap();
+        migrate_v31(&conn).unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cantonal_payroll_params", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "aucun taux n'est livré en dur");
+
+        conn.execute(
+            "INSERT INTO cantonal_payroll_params (canton, year, family_allowance_employee_pct)
+             VALUES ('VD', 2026, 0.131)",
+            [],
+        )
+        .unwrap();
+        // Un canton et une année : une seule ligne, qui se met à jour.
+        let dup = conn.execute(
+            "INSERT INTO cantonal_payroll_params (canton, year, maternity_employee_pct)
+             VALUES ('VD', 2026, 0.05)",
+            [],
+        );
+        assert!(dup.is_err());
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 31);
+    }
+
+
+    /// État d'un coffre juste avant la v32.
+    fn conn_at_v31() -> Connection {
+        let conn = conn_at_v28();
+        migrate_v29(&conn).unwrap();
+        migrate_v30(&conn).unwrap();
+        migrate_v31(&conn).unwrap();
+        conn
+    }
+
+    /// La v32 reconstruit `employment_contracts` : le contrat déjà saisi doit
+    /// traverser intact, y compris ses taux, et hériter d'une période de
+    /// validité qui couvre les fiches déjà enregistrées.
+    #[test]
+    fn v32_keeps_the_existing_contract_and_gives_it_a_validity_period() {
+        let conn = conn_at_v31();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire ACME', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts
+                (id, income_id, employer_name, work_canton, annual_gross_agreed,
+                 lpp_employee_share_pct, tax_at_source_rate_pct, started_on)
+             VALUES ('c1', 'inc1', 'ACME SA', 'GE', 50000.0, 3.5, 12.5, '2018-04-01')",
+            [],
+        )
+        .unwrap();
+
+        migrate_v32(&conn).unwrap();
+
+        let (employer, work, residence, source, gross, lpp, rate, from, scope): (
+            String, String, String, String, f64, f64, f64, String, String,
+        ) = conn
+            .query_row(
+                "SELECT employer_name, work_canton, residence_canton,
+                        tax_at_source_canton_source, annual_gross_agreed,
+                        lpp_employee_share_pct, tax_at_source_rate_pct,
+                        started_on, lpp_insured_scope
+                 FROM employment_contracts WHERE id = 'c1'",
+                [],
+                |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                        r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))
+                },
+            )
+            .unwrap();
+        assert_eq!(employer, "ACME SA");
+        assert_eq!(gross, 50_000.0);
+        assert_eq!(lpp, 3.5);
+        assert_eq!(rate, 12.5);
+        assert_eq!(work, "GE");
+        assert_eq!(residence, "GE", "un seul canton connu : les deux coïncident");
+        assert_eq!(source, "residence", "la règle légale par défaut");
+        assert_eq!(from, "2018-04-01", "la date d'entrée devient la validité");
+        assert_eq!(scope, "total");
+
+        let v: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 32);
+    }
+
+    /// Un contrat sans date d'entrée reçoit une borne basse large : sans elle,
+    /// les fiches les plus anciennes se retrouveraient sans contrat en vigueur.
+    #[test]
+    fn v32_gives_an_undated_contract_a_wide_lower_bound() {
+        let conn = conn_at_v31();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id) VALUES ('c1', 'inc1')",
+            [],
+        )
+        .unwrap();
+
+        migrate_v32(&conn).unwrap();
+
+        let from: String = conn
+            .query_row("SELECT started_on FROM employment_contracts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(from, "0001-01-01");
+    }
+
+    /// Ce que la v28 interdisait devient possible : deux avenants sur le même
+    /// revenu. C'est tout l'objet de la migration.
+    #[test]
+    fn v32_lets_two_contract_versions_coexist_on_one_income() {
+        let conn = conn_at_v31();
+        migrate_v32(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, label, annual_gross_agreed,
+                                               started_on, ended_on)
+             VALUES ('v1', 'inc1', 'Contrat initial', 48000.0, '2018-04-01', '2021-06-30')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, label, annual_gross_agreed,
+                                               started_on)
+             VALUES ('v2', 'inc1', 'Avenant 2021', 50000.0, '2021-07-01')",
+            [],
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM employment_contracts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // La version en vigueur à une date donnée : la requête que le contrôle
+        // de bulletin fera.
+        let at: String = conn
+            .query_row(
+                "SELECT id FROM employment_contracts
+                 WHERE income_id = 'inc1' AND started_on <= ?1
+                   AND (ended_on IS NULL OR ended_on >= ?1)
+                 ORDER BY started_on DESC LIMIT 1",
+                ["2019-05-31"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(at, "v1", "une fiche de 2019 relève du contrat initial");
+
+        let at: String = conn
+            .query_row(
+                "SELECT id FROM employment_contracts
+                 WHERE income_id = 'inc1' AND started_on <= ?1
+                   AND (ended_on IS NULL OR ended_on >= ?1)
+                 ORDER BY started_on DESC LIMIT 1",
+                ["2021-07-31"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(at, "v2", "et une fiche de juillet 2021 de l'avenant");
+    }
+
+    /// Les deux tables de suppléments suivent la suppression de leur parent.
+    #[test]
+    fn v32_supplements_cascade_from_contract_and_receipt() {
+        let conn = conn_at_v31();
+        migrate_v32(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO employment_contracts (id, income_id, started_on)
+             VALUES ('c1', 'inc1', '2020-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO salary_supplement_rates (id, contract_id, code, label, unit, amount)
+             VALUES ('s1', 'c1', 'oncall_week', 'Astreinte (semaine)', 'week', 500.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency)
+             VALUES ('r1', 'inc1', '2020-03-25', 4000.0, 'CHF')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO income_receipt_supplements
+                (id, receipt_id, code, label, quantity, unit_amount, amount)
+             VALUES ('q1', 'r1', 'oncall_week', 'Astreinte (semaine)', 1.0, 500.0, 500.0)",
+            [],
+        )
+        .unwrap();
+
+        // Un même code ne peut pas exister deux fois dans un barème.
+        let dup = conn.execute(
+            "INSERT INTO salary_supplement_rates (id, contract_id, code, label, unit, amount)
+             VALUES ('s2', 'c1', 'oncall_week', 'Doublon', 'week', 600.0)",
+            [],
+        );
+        assert!(dup.is_err());
+
+        conn.execute("DELETE FROM incomes WHERE id = 'inc1'", []).unwrap();
+        let rates: i64 = conn
+            .query_row("SELECT COUNT(*) FROM salary_supplement_rates", [], |r| r.get(0))
+            .unwrap();
+        let quantities: i64 = conn
+            .query_row("SELECT COUNT(*) FROM income_receipt_supplements", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rates, 0);
+        assert_eq!(quantities, 0);
+    }
+    /// La v33 ajoute le casier des versements qui suivent la barre des
+    /// retenues. Une fiche déjà saisie doit le traverser sans rien perdre, et
+    /// s'y retrouver à `NULL` — inconnu, pas zéro.
+    #[test]
+    fn v33_adds_the_after_deductions_slot_without_touching_existing_rows() {
+        let conn = conn_at_v31();
+        migrate_v32(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO incomes (id, name, income_type, billing_cycle, currency, status)
+             VALUES ('inc1', 'Salaire', 'salary', 'monthly', 'CHF', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO income_receipts (id, income_id, received_on, amount, currency,
+                 expense_reimbursement_amount)
+             VALUES ('r1', 'inc1', '2020-03-25', 4000.0, 'CHF', 120.0)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v33(&conn).unwrap();
+
+        let (amount, expenses, addition): (f64, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT amount, expense_reimbursement_amount, net_addition_amount
+                 FROM income_receipts WHERE id = 'r1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(amount, 4000.0);
+        assert_eq!(expenses, Some(120.0), "les frais déjà saisis survivent");
+        assert_eq!(addition, None, "inconnu, et surtout pas zéro");
+
+        conn.execute(
+            "UPDATE income_receipts SET net_addition_amount = 250.0 WHERE id = 'r1'",
+            [],
+        )
+        .unwrap();
+        let stored: Option<f64> = conn
+            .query_row(
+                "SELECT net_addition_amount FROM income_receipts WHERE id = 'r1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, Some(250.0));
     }
 }

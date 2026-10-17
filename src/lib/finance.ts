@@ -33,3 +33,24 @@ export function annualEquivalent(
 ): number {
   return monthlyEquivalent(amount, cycle, interval) * 12
 }
+
+/// Année fiscale d'un versement.
+///
+/// Même priorité que `receipt_year` côté Rust (`payroll.rs`) : la période
+/// prime sur la date d'encaissement. Le bulletin de décembre versé le 5
+/// janvier appartient à décembre — sur vingt ans de carrière, s'en remettre à
+/// la date de versement décalerait un mois par année.
+///
+/// Cette fonction existe pour que le front et le moteur rangent le même
+/// bulletin dans la même année. Il y avait trois définitions concurrentes dans
+/// le code ; il ne doit plus y en avoir qu'une.
+export function receiptYear(r: {
+  fiscal_year?: number | null
+  period_end?: string | null
+  period_start?: string | null
+  received_on: string
+}): number {
+  if (r.fiscal_year != null) return r.fiscal_year
+  const source = r.period_end || r.period_start || r.received_on
+  return parseInt(source.slice(0, 4), 10)
+}
