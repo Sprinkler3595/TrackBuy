@@ -49,6 +49,11 @@ pub struct PolicyFacts {
     /// professionnels (art. 13 OLAA), lue dans les barèmes de paie.
     pub laa_min_weekly_hours: f64,
     pub today: NaiveDate,
+    /// Changement de caisse : la police nouvelle attend encore la
+    /// confirmation d'affiliation (`Some(année d'effet)`).
+    pub affiliation_pending: Option<i32>,
+    /// Police quittée : nom de celle qui la remplace, et année d'effet.
+    pub replaced_by: Option<(String, i32)>,
 }
 
 fn finding(id: &'static str, severity: Severity, message: String, legal_ref: &'static str) -> HealthFinding {
@@ -63,6 +68,29 @@ pub fn check_policy(f: &PolicyFacts) -> Vec<HealthFinding> {
     let mut out = Vec::new();
     let year = f.today.year();
     let params = params_for_year(year);
+
+    // --- Changement de caisse en cours ---
+    if let Some((name, from)) = &f.replaced_by {
+        out.push(finding(
+            "replaced",
+            Severity::Info,
+            format!("Caisse quittée : remplacée par « {name} » au 1.1.{from}. Les échéances s'arrêtent au 31.12.{}.", from - 1),
+            "art. 7 LAMal",
+        ));
+    }
+    if let Some(from) = f.affiliation_pending {
+        let start = NaiveDate::from_ymd_opt(from, 1, 1).expect("date valide");
+        out.push(finding(
+            "affiliation_pending",
+            if f.today >= start - chrono::Duration::days(31) { Severity::Warn } else { Severity::Info },
+            format!(
+                "Confirmation d'affiliation de la nouvelle caisse pas encore reçue. Tant qu'elle \
+                 manque, l'ancienne caisse n'a pas à vous laisser partir au 1.1.{from}. Relancez-la \
+                 si rien n'est arrivé mi-décembre, puis cochez la réception dans la fiche."
+            ),
+            "art. 7 al. 5 LAMal",
+        ));
+    }
 
     if f.kind == "supplementary" {
         out.push(finding(
@@ -256,7 +284,19 @@ mod tests {
             employment: None,
             laa_min_weekly_hours: 8.0,
             today: NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+            affiliation_pending: None,
+            replaced_by: None,
         }
+    }
+
+    #[test]
+    fn affiliation_attendue_devient_urgente_en_decembre() {
+        let oct = PolicyFacts { affiliation_pending: Some(2027), ..base() };
+        let f = check_policy(&oct);
+        assert_eq!(f.iter().find(|x| x.id == "affiliation_pending").unwrap().severity, Severity::Info);
+        let dec = PolicyFacts { today: NaiveDate::from_ymd_opt(2026, 12, 5).unwrap(), ..oct };
+        let f = check_policy(&dec);
+        assert_eq!(f.iter().find(|x| x.id == "affiliation_pending").unwrap().severity, Severity::Warn);
     }
 
     fn ids(f: &PolicyFacts) -> Vec<&'static str> {

@@ -576,7 +576,7 @@ export function EngagementDetailPage() {
       )}
 
       {tab === "health" && e.engagement_type === "insurance_health" && (
-        <HealthInsurancePanel engagement={e} onChanged={load} />
+        <HealthInsurancePanel key={e.id} engagement={e} onChanged={load} />
       )}
 
       {tab === "charges" && (

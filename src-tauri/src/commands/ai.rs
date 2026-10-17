@@ -667,6 +667,242 @@ fn parse_health_insurance(v: &Value) -> ExtractedHealthInsurance {
 }
 
 // ===========================================================================
+// Avis de prime familial et décompte de prestations (assurance maladie)
+// ===========================================================================
+//
+// Deux courriers que la caisse envoie à toute la famille d'un coup. L'avis de
+// prime d'automne liste chaque personne avec sa nouvelle prime ; le décompte
+// de prestations liste chaque traitement avec ce que la caisse prend en
+// charge. Les deux se lisent ligne par ligne, et chaque ligne est ensuite
+// rapprochée d'une police par l'écran — le modèle ne choisit rien.
+
+const PREMIUM_NOTICE_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les avis de prime annuels des caisses maladie suisses. Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : si un champ est introuvable ou ambigu, mets null.";
+
+const PREMIUM_NOTICE_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un AVIS DE PRIME / une POLICE pour l'année suivante d'une caisse maladie suisse. Il peut concerner PLUSIEURS personnes d'une même famille. Extrais une entrée par personne assurée.
+
+RÈGLES :
+1. `year` = année de validité des nouvelles primes (souvent « dès le 1er janvier 2027 », « valable dès 01.01.2027 »).
+2. `insurer_name` = nom de la caisse.
+3. Pour chaque personne (`persons`) :
+   - `insured_name` = prénom et nom ; `insured_birth_date` = date de naissance (YYYY-MM-DD ; les dates suisses s'écrivent JJ.MM.AAAA).
+   - `basic_monthly_premium` = prime MENSUELLE de l'assurance de base LAMal / AOS / OKP de l'année nouvelle, AVANT réduction de primes (divise par 12 une prime annuelle).
+   - `franchise` = franchise annuelle de l'assurance de base pour l'année nouvelle (CHF).
+   - `model` ∈ {"standard","family_doctor","hmo","telmed","other"} (libre choix / médecin de famille / HMO / télémédecine / autre réseau).
+   - `subsidy_monthly` = réduction de primes / subside déduit, par mois. null si absent.
+   - `supplementary_monthly_premium` = total MENSUEL des assurances complémentaires (LCA / VVG) de cette personne. null si aucune.
+
+FORMAT (JSON strict) :
+{"year": number|null, "insurer_name": string|null, "persons": [{"insured_name": string|null, "insured_birth_date": string|null, "basic_monthly_premium": number|null, "franchise": number|null, "model": string|null, "subsidy_monthly": number|null, "supplementary_monthly_premium": number|null}]}
+
+TEXTE (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedNoticePerson {
+    pub insured_name: Option<String>,
+    pub insured_birth_date: Option<String>,
+    pub basic_monthly_premium: Option<f64>,
+    pub franchise: Option<f64>,
+    pub model: Option<String>,
+    pub subsidy_monthly: Option<f64>,
+    pub supplementary_monthly_premium: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedPremiumNotice {
+    pub year: Option<i64>,
+    pub insurer_name: Option<String>,
+    pub persons: Vec<ExtractedNoticePerson>,
+}
+
+fn premium_notice_schema() -> Value {
+    let s = || json!({"type": ["string", "null"]});
+    let n = || json!({"type": ["number", "null"]});
+    json!({
+        "type": "object",
+        "properties": {
+            "year": n(),
+            "insurer_name": s(),
+            "persons": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "insured_name": s(), "insured_birth_date": s(),
+                    "basic_monthly_premium": n(), "franchise": n(),
+                    "model": {"type": ["string", "null"], "enum": ["standard", "family_doctor", "hmo", "telmed", "other", null]},
+                    "subsidy_monthly": n(), "supplementary_monthly_premium": n()
+                },
+                "required": ["insured_name", "insured_birth_date", "basic_monthly_premium", "franchise", "model", "subsidy_monthly", "supplementary_monthly_premium"],
+                "additionalProperties": false
+            }}
+        },
+        "required": ["year", "insurer_name", "persons"],
+        "additionalProperties": false
+    })
+}
+
+const HEALTH_MODELS: &[&str] = &["standard", "family_doctor", "hmo", "telmed", "other"];
+fn positive(v: &Value) -> Option<f64> {
+    v.as_f64().filter(|f| f.is_finite() && *f > 0.0)
+}
+
+fn parse_premium_notice(v: &Value) -> ExtractedPremiumNotice {
+    let persons = v["persons"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|p| ExtractedNoticePerson {
+                    insured_name: as_opt_string(&p["insured_name"]),
+                    insured_birth_date: as_opt_string(&p["insured_birth_date"]),
+                    basic_monthly_premium: positive(&p["basic_monthly_premium"]),
+                    franchise: p["franchise"].as_f64().filter(|f| *f >= 0.0),
+                    model: as_opt_string(&p["model"]).filter(|m| HEALTH_MODELS.contains(&m.as_str())),
+                    subsidy_monthly: positive(&p["subsidy_monthly"]),
+                    supplementary_monthly_premium: positive(&p["supplementary_monthly_premium"]),
+                })
+                // Une ligne sans nom ni prime n'apprend rien à personne.
+                .filter(|p| p.insured_name.is_some() || p.basic_monthly_premium.is_some())
+                .collect()
+        })
+        .unwrap_or_default();
+    ExtractedPremiumNotice {
+        year: v["year"].as_f64().map(|y| y as i64).filter(|y| (2000..=2100).contains(y)),
+        insurer_name: as_opt_string(&v["insurer_name"]),
+        persons,
+    }
+}
+
+#[tauri::command]
+pub async fn ai_extract_premium_notice(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedPremiumNotice, String> {
+    let prompt = PREMIUM_NOTICE_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = premium_notice_schema();
+    let (raw, usage) = call_provider(&config, PREMIUM_NOTICE_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(parse_premium_notice(&value))
+}
+
+const HEALTH_CLAIMS_SYSTEM_PROMPT: &str = "Tu es un extracteur de données spécialisé dans les décomptes de prestations des caisses maladie suisses. Tu réponds UNIQUEMENT en JSON valide respectant EXACTEMENT le schéma demandé, sans markdown ni texte autour. N'invente AUCUNE valeur : un montant absent vaut 0 dans une ligne, un texte absent vaut null.";
+
+const HEALTH_CLAIMS_PROMPT: &str = r#"Analyse le texte ci-dessous : c'est un DÉCOMPTE DE PRESTATIONS (Leistungsabrechnung) d'une caisse maladie suisse. Extrais chaque ligne de traitement.
+
+RÈGLES :
+1. `statement_date` = date du décompte (YYYY-MM-DD) ; `insured_name` = personne concernée ; `insurer_name` = caisse.
+2. `billing_mode` :
+   - "tiers_garant" si l'assuré a payé la facture et que la caisse lui REMBOURSE un montant (« remboursement en votre faveur », « nous vous versons », « Rückerstattung ») ;
+   - "tiers_payant" si la caisse a payé le prestataire et FACTURE à l'assuré sa participation (« montant à payer », « votre participation », « Kostenbeteiligung zu bezahlen ») ;
+   - null si indéterminable.
+3. `lines` : une entrée par traitement / prestataire :
+   - `treatment_date` (YYYY-MM-DD, date ou début du traitement), `provider` (médecin, pharmacie, hôpital…) ;
+   - `invoiced` = montant facturé ; `insurer_paid` = montant pris en charge / remboursé par la caisse ;
+   - `franchise` = part imputée à la franchise ; `quote_part` = quote-part (10 %, ou 40 % sur un original) ;
+   - `hospital` = contribution aux frais hospitaliers (15 CHF/jour) ; `not_covered` = montant non couvert / non remboursé.
+   Montants en CHF, nombres positifs, 0 si absent.
+
+FORMAT (JSON strict) :
+{"statement_date": string|null, "insured_name": string|null, "insurer_name": string|null, "billing_mode": "tiers_garant"|"tiers_payant"|null, "lines": [{"treatment_date": string|null, "provider": string|null, "invoiced": number, "insurer_paid": number, "franchise": number, "quote_part": number, "hospital": number, "not_covered": number}]}
+
+TEXTE (entre <<<>>>) :
+<<<{TEXT}>>>"#;
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedClaimLine {
+    pub treatment_date: Option<String>,
+    pub provider: Option<String>,
+    pub invoiced: f64,
+    pub insurer_paid: f64,
+    pub franchise: f64,
+    pub quote_part: f64,
+    pub hospital: f64,
+    pub not_covered: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtractedHealthClaims {
+    pub statement_date: Option<String>,
+    pub insured_name: Option<String>,
+    pub insurer_name: Option<String>,
+    pub billing_mode: Option<String>,
+    pub lines: Vec<ExtractedClaimLine>,
+}
+
+fn health_claims_schema() -> Value {
+    let s = || json!({"type": ["string", "null"]});
+    let n = || json!({"type": "number"});
+    json!({
+        "type": "object",
+        "properties": {
+            "statement_date": s(), "insured_name": s(), "insurer_name": s(),
+            "billing_mode": {"type": ["string", "null"], "enum": ["tiers_garant", "tiers_payant", null]},
+            "lines": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "treatment_date": s(), "provider": s(), "invoiced": n(), "insurer_paid": n(),
+                    "franchise": n(), "quote_part": n(), "hospital": n(), "not_covered": n()
+                },
+                "required": ["treatment_date", "provider", "invoiced", "insurer_paid", "franchise", "quote_part", "hospital", "not_covered"],
+                "additionalProperties": false
+            }}
+        },
+        "required": ["statement_date", "insured_name", "insurer_name", "billing_mode", "lines"],
+        "additionalProperties": false
+    })
+}
+
+fn parse_health_claims(v: &Value) -> ExtractedHealthClaims {
+    // Un montant négatif ou illisible devient 0 : la ligne reste, l'écran de
+    // revue la montre, l'utilisateur corrige.
+    let amount = |x: &Value| x.as_f64().filter(|f| f.is_finite() && *f > 0.0).unwrap_or(0.0);
+    let lines = v["lines"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|l| ExtractedClaimLine {
+                    treatment_date: as_opt_string(&l["treatment_date"]),
+                    provider: as_opt_string(&l["provider"]),
+                    invoiced: amount(&l["invoiced"]),
+                    insurer_paid: amount(&l["insurer_paid"]),
+                    franchise: amount(&l["franchise"]),
+                    quote_part: amount(&l["quote_part"]),
+                    hospital: amount(&l["hospital"]),
+                    not_covered: amount(&l["not_covered"]),
+                })
+                .filter(|l| l.invoiced > 0.0 || l.insurer_paid > 0.0 || l.franchise > 0.0 || l.quote_part > 0.0)
+                .collect()
+        })
+        .unwrap_or_default();
+    ExtractedHealthClaims {
+        statement_date: as_opt_string(&v["statement_date"]),
+        insured_name: as_opt_string(&v["insured_name"]),
+        insurer_name: as_opt_string(&v["insurer_name"]),
+        billing_mode: as_opt_string(&v["billing_mode"])
+            .filter(|m| m == "tiers_garant" || m == "tiers_payant"),
+        lines,
+    }
+}
+
+#[tauri::command]
+pub async fn ai_extract_health_claims(
+    state: State<'_, AppState>,
+    ocr_text: String,
+    config: AiConfig,
+) -> Result<ExtractedHealthClaims, String> {
+    let prompt = HEALTH_CLAIMS_PROMPT.replace("{TEXT}", &ocr_text);
+    let schema = health_claims_schema();
+    let (raw, usage) = call_provider(&config, HEALTH_CLAIMS_SYSTEM_PROMPT, &prompt, Some(&schema)).await?;
+    record_ai_usage(&state, &usage);
+    let cleaned = strip_code_fences(&raw);
+    let value: Value = serde_json::from_str(&cleaned)
+        .map_err(|e| format!("Réponse IA non-JSON: {} — contenu: {}", e, raw))?;
+    Ok(parse_health_claims(&value))
+}
+
+// ===========================================================================
 // Extraction d'un contrat de leasing véhicule (Suisse)
 // ===========================================================================
 
@@ -2218,5 +2454,39 @@ mod tests {
         assert_eq!(x.supplementary_options, vec!["dental", "hospital_general"]);
         assert_eq!(x.canton.as_deref(), Some("VD"));
         assert_eq!(x.premium_region, None);
+    }
+
+    #[test]
+    fn avis_familial_une_entree_par_personne() {
+        let v = json!({
+            "year": 2027,
+            "insurer_name": "CSS",
+            "persons": [
+                {"insured_name": "Sophie Dubois", "basic_monthly_premium": 421.6, "franchise": 1000, "model": "telmed", "subsidy_monthly": null, "supplementary_monthly_premium": 38.5},
+                {"insured_name": "Léa Dubois", "basic_monthly_premium": 318.5, "franchise": 300, "model": "inconnu"},
+                {"insured_name": null, "basic_monthly_premium": null}
+            ]
+        });
+        let x = parse_premium_notice(&v);
+        assert_eq!(x.year, Some(2027));
+        assert_eq!(x.persons.len(), 2, "ligne vide écartée");
+        assert_eq!(x.persons[0].supplementary_monthly_premium, Some(38.5));
+        assert_eq!(x.persons[1].model, None);
+    }
+
+    #[test]
+    fn decompte_lignes_et_mode_de_facturation() {
+        let v = json!({
+            "statement_date": "2026-06-02",
+            "billing_mode": "tiers_garant",
+            "lines": [
+                {"treatment_date": "2026-05-14", "provider": "Dr Favre", "invoiced": 180.0, "insurer_paid": 0, "franchise": 180.0, "quote_part": 0, "hospital": 0, "not_covered": 0},
+                {"treatment_date": null, "provider": "Pharmacie", "invoiced": -5, "insurer_paid": 0, "franchise": 0, "quote_part": 0, "hospital": 0, "not_covered": 0}
+            ]
+        });
+        let x = parse_health_claims(&v);
+        assert_eq!(x.billing_mode.as_deref(), Some("tiers_garant"));
+        assert_eq!(x.lines.len(), 1, "ligne sans montant positif écartée");
+        assert_eq!(x.lines[0].franchise, 180.0);
     }
 }

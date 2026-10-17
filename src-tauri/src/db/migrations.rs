@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 36;
+pub const CURRENT_SCHEMA_VERSION: i64 = 37;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -138,6 +138,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 36 {
         migrate_v36(conn)?;
+    }
+    if current_version < 37 {
+        migrate_v37(conn)?;
     }
 
     Ok(())
@@ -2462,6 +2465,39 @@ fn migrate_v36(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (36);
         "
     ).map_err(|e| format!("Migration v36 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v37 — ce que l'automne change, au-delà de la prime.
+///
+/// - `health_premium_notices.subsidy_monthly` : la réduction de primes est
+///   une décision cantonale ANNUELLE. Sans elle sur l'avis, la révision du
+///   1er janvier déduisait le subside de l'année passée.
+/// - `health_policies.replaces_engagement_id` / `affiliation_confirmed_on` :
+///   un changement de caisse crée la nouvelle police et la relie à
+///   l'ancienne ; tant que la nouvelle caisse n'a pas confirmé l'affiliation,
+///   l'ancienne reste due (art. 7 al. 5 LAMal).
+/// - `health_claims.billing_mode` / `reimbursement_id` : en tiers garant,
+///   l'assuré paie le prestataire et la caisse le rembourse — ce
+///   remboursement attendu rejoint les remboursements en attente.
+fn migrate_v37(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE health_premium_notices ADD COLUMN subsidy_monthly REAL;
+
+        ALTER TABLE health_policies ADD COLUMN replaces_engagement_id TEXT
+            REFERENCES engagements(id) ON DELETE SET NULL;
+        ALTER TABLE health_policies ADD COLUMN affiliation_confirmed_on TEXT;
+
+        -- 'tiers_garant' (l'assuré paie, la caisse rembourse) | 'tiers_payant'
+        ALTER TABLE health_claims ADD COLUMN billing_mode TEXT;
+        ALTER TABLE health_claims ADD COLUMN reimbursement_id TEXT
+            REFERENCES pending_reimbursements(id) ON DELETE SET NULL;
+
+        INSERT INTO schema_version (version) VALUES (37);
+        "
+    ).map_err(|e| format!("Migration v37 failed: {}", e))?;
 
     Ok(())
 }

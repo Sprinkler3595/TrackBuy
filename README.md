@@ -93,9 +93,11 @@ Affichée dans l'onglet **Revenus**, au-dessus de la liste.
 - **Assistant guidé, une personne à la fois** : la personne assurée (membre du ménage ou non) et sa date de naissance — qui fixe la classe d'âge, donc les franchises permises —, la caisse, le modèle (standard, médecin de famille, HMO, Telmed), la franchise, la couverture accidents, la prime et la réduction de primes cantonale ; puis les complémentaires LCA, créées en sous-engagement avec leur propre délai de résiliation. Scan IA de la police (`ai_extract_health_insurance`). « Assurer une autre personne » enchaîne la famille sans ressaisir caisse ni paiement
 - **Barèmes LAMal versionnés par année** ([health/params.rs](src-tauri/src/health/params.rs)) : franchises adultes et enfants, quote-part 10 % plafonnée à 700 / 350 CHF, quote-part de 40 % sur les originaux, contribution hospitalière, classes d'âge, et les repères publiés chaque automne par l'OFSP (prime moyenne, hausse moyenne). Une année inconnue est marquée « estimée »
 - **Saison des primes** ([health/calendar.rs](src-tauri/src/health/calendar.rs)) : avis de prime dû au 31 octobre, résiliation **reçue** au 30 novembre (ramenée au dernier jour ouvrable quand elle tombe un week-end, avec date d'envoi conseillée du recommandé), franchise à la hausse jusqu'au 31 décembre, affiliation confirmée par la nouvelle caisse, et sortie au 30 juin réservée à la franchise ordinaire en modèle standard. Bandeau « Primes maladie » de mi-septembre à fin décembre sur la page Engagements
-- **Avis de prime annuel** : saisi par police et par année, comparé à la prime en cours et à la hausse moyenne OFSP, avec la décision prise (rester, changer de franchise, de modèle ou de caisse). Il crée une révision `applies_on_roll` : les échéances passent d'elles-mêmes à la nouvelle prime le 1er janvier
+- **Avis de prime annuel** : saisi par police et par année — assurance de base comme complémentaires —, comparé à la prime en cours et à la hausse moyenne OFSP, avec la nouvelle réduction de primes cantonale et la décision prise (rester, changer de franchise, de modèle ou de caisse). Il crée une révision `applies_on_roll` : les échéances passent d'elles-mêmes à la nouvelle prime, nette du nouveau subside, le 1er janvier
+- **Toute la famille en un écran** : « Saisir les avis » liste chaque police active du ménage sur une ligne ; la lettre de la caisse se scanne (`ai_extract_premium_notice`) et chaque personne lue est rapprochée de sa police par son prénom — celles qui ne correspondent à rien sont signalées, jamais devinées
+- **Changement de caisse de bout en bout** (`switch_health_insurer`) : l'ancienne police s'arrête au 31 décembre (le roll-forward respecte désormais une fin programmée `ended_on`), la nouvelle naît au 1er janvier avec la même personne et le même paiement, les complémentaires peuvent la suivre, et la confirmation d'affiliation de la nouvelle caisse reste réclamée jusqu'à réception (art. 7 al. 5 LAMal)
 - **Contrôles** ([health/checks.rs](src-tauri/src/health/checks.rs)) : franchise inexistante pour la classe d'âge, passage en jeune adulte ou en adulte au 1er janvier, couverture accidents payée deux fois alors qu'un contrat de travail ≥ 8 h/semaine la fournit (art. 8 LAMal, lu dans la paie), ou suspendue sans emploi, avis de prime manquant après le 31 octobre, hausse au-dessus de la moyenne
-- **Participation aux coûts** : décomptes de prestations par année de traitement, franchise et quote-part consommées, reste à charge maximal de l'année
+- **Participation aux coûts** : décomptes de prestations par année de traitement, saisis à la main ou scannés ligne par ligne (`ai_extract_health_claims`), franchise et quote-part consommées, reste à charge maximal de l'année. En **tiers garant**, le montant pris en charge par la caisse rejoint automatiquement les **remboursements en attente** ; en tiers payant, la participation facturée est totalisée
 - **Quelle franchise ?** : prime + participation pour chaque franchise dont la prime est connue, seuils de bascule et pire cas. Les primes ne sont jamais devinées : elles viennent de l'avis, d'une offre ou de [priminfo.admin.ch](https://www.priminfo.admin.ch)
 - **Lettre de résiliation LAMal** (art. 7 LAMal, affiliation annoncée par la nouvelle caisse) et LCA, et rappel du 30 novembre qui se renouvelle chaque année
 
@@ -235,7 +237,7 @@ Environ **165 commandes**, regroupées par domaine. Toutes sont typées côté f
 | Créanciers      | [creditors.rs](src-tauri/src/commands/creditors.rs)  | CRUD `creditors`                                      |
 | Abonnements     | [subscriptions.rs](src-tauri/src/commands/subscriptions.rs) | `roll_forward_due_subscriptions`, `mark_renewed`, `log_subscription_payment`, `confirm_subscription_payment` |
 | Revenus         | [incomes.rs](src-tauri/src/commands/incomes.rs)      | CRUD `incomes` + `income_receipts`                    |
-| Assurance maladie | [health.rs](src-tauri/src/commands/health.rs) · [health/](src-tauri/src/health/) | `get_health_params`, `upsert_health_policy`, `save_health_premium_notice`, `add_health_claim`, `get_health_overview`, `get_health_season`, `compare_health_franchises` |
+| Assurance maladie | [health.rs](src-tauri/src/commands/health.rs) · [health/](src-tauri/src/health/) | `get_health_params`, `upsert_health_policy`, `save_health_premium_notice`, `switch_health_insurer`, `add_health_claims`, `get_health_overview`, `get_health_season`, `compare_health_franchises` |
 | Paie suisse     | [payroll.rs](src-tauri/src/commands/payroll.rs) · [payroll/](src-tauri/src/payroll/) | `get_payroll_params`, `upsert_employment_contract`, `check_income_receipt`, `preview_payslip_check`, `compute_salary_certificate`, `reconcile_salary_certificate`, `get_income_tax_summary` |
 | Remboursements  | [pending_reimbursements.rs](src-tauri/src/commands/pending_reimbursements.rs) | CRUD + statuts (pending/claimed/partial) |
 | Banque          | [bank_statements.rs](src-tauri/src/commands/bank_statements.rs) · [camt053.rs](src-tauri/src/commands/camt053.rs) · [qrbill.rs](src-tauri/src/commands/qrbill.rs) · [classify.rs](src-tauri/src/commands/classify.rs) | `add_bank_statement`, `suggest_matches_for_statement`, `apply_transaction_match`, `create_item_from_transaction`, `parse_camt053`, `parse_qr_bill` |
@@ -381,12 +383,12 @@ sont aussi lançables en mode debug (icône scarabée) pour poser des points d'a
 
 ## Roadmap / état du projet
 
-**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 36`) et le format de backup peuvent encore évoluer avant 1.0.
+**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 37`) et le format de backup peuvent encore évoluer avant 1.0.
 
 ### Stable & implémenté
 
 - Multi-coffres + switch à chaud + **rotation du mot de passe maître** (rekey base + pièces jointes, rejouable)
-- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v36`, refus des schémas plus récents)
+- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v37`, refus des schémas plus récents)
 - Achats / engagements / abonnements / revenus / remboursements / garanties / créanciers / ménage
 - Banque : import CAMT.053 + OCR, QR-facture, rapprochement avec garde-fou anti-doublon
 - Impôts : rubriques déductibles, attribution par membre du ménage

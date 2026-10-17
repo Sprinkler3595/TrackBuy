@@ -167,11 +167,12 @@ fn advance_date(conn: &Connection, date: &str, modifier: &str) -> Result<String,
 /// as `'scheduled'` so the user can confirm payment later. Hard-capped at
 /// 1000 iterations per engagement.
 fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
-    let due: Vec<(String, String, String, i32, f64, String, Option<String>, bool)> = {
+    type DueRow = (String, String, String, i32, f64, String, Option<String>, bool, Option<String>);
+    let due: Vec<DueRow> = {
         let mut stmt = conn
             .prepare(
                 "SELECT id, next_due_date, billing_cycle, cycle_interval, current_amount,
-                        currency, payment_card_id, auto_pay
+                        currency, payment_card_id, auto_pay, ended_on
                  FROM engagements
                  WHERE status = 'active'
                    AND next_due_date IS NOT NULL
@@ -190,6 +191,7 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
                 row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, bool>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -198,7 +200,7 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
     };
 
     let mut inserted = 0;
-    for (id, mut current, cycle, interval, amount, currency, card_id, auto_pay) in due {
+    for (id, mut current, cycle, interval, amount, currency, card_id, auto_pay, ended_on) in due {
         let Some(modifier) = cycle_modifier(&cycle, interval) else {
             continue;
         };
@@ -207,7 +209,9 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
             let today: String = conn
                 .query_row("SELECT date('now')", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
-            if current >= today {
+            // Une fin programmée (la caisse quittée au 31 décembre) arrête
+            // les échéances, même si l'engagement est encore actif.
+            if current >= today || ended_on.as_deref().is_some_and(|end| current.as_str() > end) {
                 break;
             }
             // Garde anti-double-comptage : ne pas dupliquer une charge déjà
@@ -251,7 +255,19 @@ fn roll_forward_inner(conn: &Connection) -> Result<i32, String> {
     }
 
     apply_due_revisions(conn)?;
+    end_scheduled(conn)?;
     Ok(inserted)
+}
+
+/// Un engagement dont la date de fin programmée est passée se termine.
+fn end_scheduled(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE engagements SET status = 'ended', updated_at = datetime('now')
+         WHERE status = 'active' AND ended_on IS NOT NULL AND date(ended_on) < date('now')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Révisions marquées `applies_on_roll` et pas encore reportées, par date
@@ -997,6 +1013,30 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(applied, vec!["r_new".to_string()]);
+    }
+
+    /// Une fin programmée arrête les échéances après elle, puis termine
+    /// l'engagement une fois la date passée.
+    #[test]
+    fn fin_programmee_arrete_les_echeances_et_termine() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        insert_eng(&conn, "e1", "-70 days", "custom", 10, false, "active");
+        conn.execute("UPDATE engagements SET ended_on = date('now', '-35 days') WHERE id = 'e1'", [])
+            .unwrap();
+        roll_forward_inner(&conn).unwrap();
+        let late: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engagement_charges WHERE engagement_id = 'e1'
+                   AND due_date > date('now', '-35 days')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(late, 0);
+        assert_eq!(charge_count(&conn, "e1"), 4);
+        let status: String = conn.query_row("SELECT status FROM engagements WHERE id = 'e1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "ended");
     }
 
     #[test]

@@ -1,6 +1,8 @@
-import { useContext, useEffect, useMemo, useState } from "react"
+import { useContext, useEffect, useMemo, useRef, useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
 import {
-  AlertTriangle, CalendarClock, CheckCircle2, ExternalLink, FileText, Info, Loader2, Pencil, Plus, Scale, Stethoscope, Trash2, XCircle,
+  AlertTriangle, ArrowRightLeft, CalendarClock, CheckCircle2, ExternalLink, FileText, Info, Loader2, Pencil, Plus, Scale, Sparkles,
+  Stethoscope, Trash2, Users, X, XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,6 +11,11 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
 import { CancellationLetterModal } from "@/components/features/cancellation-letter"
+import { HealthNoticesModal } from "@/components/features/health-notices-modal"
+import { InlineCreateSelect } from "@/components/ui/inline-create-select"
+import { getCancellationInfo } from "@/lib/cancellation"
+import { getAiSettings } from "@/lib/ai-settings"
+import { documentToText } from "@/lib/document-scan"
 import { formatDate, formatPrice, daysUntil, cn } from "@/lib/utils"
 import { CANTONS } from "@/lib/cantons"
 import {
@@ -66,8 +73,8 @@ export function HealthInsurancePanel({ engagement, onChanged }: { engagement: ap
         <PolicyCard engagement={engagement} overview={overview} params={params} fr={fr} onSaved={reload} toast={toast} />
         <FindingsCard findings={overview.findings} hasPolicy={!!overview.policy} fr={fr} />
       </div>
-      {isBasic && (
-        <SeasonCard engagement={engagement} overview={overview} params={params} fr={fr} onSaved={reload} toast={toast} />
+      {overview.policy && (
+        <SeasonCard key={`${engagement.id}:${overview.notice_next_year?.id ?? ""}`} engagement={engagement} overview={overview} params={params} fr={fr} onSaved={reload} toast={toast} />
       )}
       {isBasic && overview.policy && (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -110,6 +117,17 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
     setForm(p ?? blank)
     setSubsidy(p?.subsidy_monthly?.toString() ?? "")
     setEditing(true)
+  }
+
+  async function confirmAffiliation() {
+    if (!p) return
+    try {
+      await api.upsertHealthPolicy({ ...p, affiliation_confirmed_on: today() })
+      toast(fr ? "Affiliation confirmée : le changement de caisse est acquis." : "Affiliation confirmed.", "success")
+      await onSaved()
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+    }
   }
 
   const allFranchises = params ? [...new Set([...params.child_franchises, ...params.adult_franchises])].sort((a, b) => a - b) : []
@@ -274,6 +292,20 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
             </div>
           </div>
         )}
+        {p.replaces_engagement_id && (
+          <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3">
+            <span className="text-sm">
+              {p.affiliation_confirmed_on
+                ? (fr ? `Affiliation confirmée par la caisse le ${formatDate(p.affiliation_confirmed_on)}.` : `Affiliation confirmed on ${formatDate(p.affiliation_confirmed_on)}.`)
+                : (fr ? "Nouvelle caisse : en attente de sa confirmation d'affiliation." : "New insurer: awaiting the affiliation confirmation.")}
+            </span>
+            {!p.affiliation_confirmed_on && (
+              <Button size="sm" variant="outline" onClick={confirmAffiliation}>
+                <CheckCircle2 className="mr-1 h-4 w-4" />{fr ? "Confirmation reçue" : "Confirmation received"}
+              </Button>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -318,16 +350,21 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
   engagement: api.Engagement; overview: api.HealthOverview; params: api.HealthParams | null
   fr: boolean; onSaved: () => Promise<void>; toast: Toast
 }) {
+  const navigate = useNavigate()
   const next = overview.season_year + 1
   const n = overview.notice_next_year
+  const isLca = (overview.policy?.kind ?? (engagement.parent_engagement_id ? "supplementary" : "basic")) === "supplementary"
   const [premium, setPremium] = useState(n?.monthly_premium?.toString() ?? "")
   const [franchise, setFranchise] = useState(n?.franchise?.toString() ?? overview.policy?.franchise?.toString() ?? "")
   const [model, setModel] = useState<api.HealthModel | "">(n?.model ?? overview.policy?.model ?? "")
+  const [subsidy, setSubsidy] = useState(n?.subsidy_monthly?.toString() ?? overview.policy?.subsidy_monthly?.toString() ?? "")
   const [receivedOn, setReceivedOn] = useState(n?.received_on ?? today())
   const [decision, setDecision] = useState<api.HealthDecision>(n?.decision ?? "pending")
   const [notes, setNotes] = useState(n?.notes ?? "")
   const [saving, setSaving] = useState(false)
   const [letter, setLetter] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const [familyOpen, setFamilyOpen] = useState(false)
   const [creditor, setCreditor] = useState<api.Creditor | null>(null)
   const [nextParams, setNextParams] = useState<api.HealthParams | null>(null)
 
@@ -336,6 +373,9 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
   const newPremium = numOrNull(premium)
   const change = newPremium != null && overview.monthly_gross ? (newPremium - overview.monthly_gross) / overview.monthly_gross * 100 : null
   const avg = nextParams?.ofsp_average_change_pct ?? null
+  const switched = !!engagement.ended_on
+  const decisions: api.HealthDecision[] = isLca ? ["pending", "keep", "switch_insurer"] : DECISIONS
+  const decisionText = (d: api.HealthDecision) => (isLca && d === "switch_insurer" ? (fr ? "Je résilie" : "I cancel") : decisionLabel(d, fr))
 
   async function save() {
     setSaving(true)
@@ -344,15 +384,16 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
         engagement_id: engagement.id,
         year: next,
         monthly_premium: newPremium,
-        franchise: numOrNull(franchise),
-        model: model || null,
+        franchise: isLca ? null : numOrNull(franchise),
+        model: isLca ? null : (model || null),
         accident_covered: overview.policy?.accident_covered ?? null,
         received_on: receivedOn || null,
         decision,
         notes: notes.trim() || null,
+        subsidy_monthly: isLca ? null : numOrNull(subsidy),
       })
       toast(decision === "switch_insurer"
-        ? (fr ? "Avis enregistré. Pensez à la lettre et à l'inscription chez la nouvelle caisse." : "Notice saved. Remember the letter and the new insurer.")
+        ? (fr ? "Avis enregistré. Il reste la lettre et la nouvelle police." : "Notice saved. Letter and new policy remain.")
         : (fr ? `Avis enregistré : les échéances passeront à la nouvelle prime le 1.1.${next}.` : `Notice saved: charges switch to the new premium on 1 Jan ${next}.`),
         "success")
       await onSaved()
@@ -373,40 +414,67 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
     setLetter(true)
   }
 
-  const events = overview.season.filter((e) => e.key !== "mid_year_switch" || e.applies)
+  // A supplementary cover follows its own policy: one deadline, the one the
+  // engagement's term and notice period give.
+  const lcaDeadline = isLca ? getCancellationInfo(engagement) : null
+  const events = isLca ? [] : overview.season.filter((e) => e.key !== "mid_year_switch" || e.applies)
+
   return (
     <Card className={cn(overview.season_open && "border-primary/40")}>
       <CardHeader className="flex flex-row items-center gap-2 space-y-0">
         <CalendarClock className="h-5 w-5" />
         <CardTitle className="text-lg">{fr ? `Saison des primes ${overview.season_year} → ${next}` : `Premium season ${overview.season_year} → ${next}`}</CardTitle>
         {overview.season_open && <Badge className="ml-auto">{fr ? "En cours" : "Open"}</Badge>}
+        <Button size="sm" variant="outline" className={overview.season_open ? "ml-2" : "ml-auto"} onClick={() => setFamilyOpen(true)}>
+          <Users className="mr-1 h-4 w-4" />{fr ? "Toute la famille" : "Whole household"}
+        </Button>
       </CardHeader>
       <CardContent className="grid gap-6 lg:grid-cols-2">
-        <ol className="space-y-3">
-          {events.map((e) => {
-            const d = daysUntil(e.working_date)
-            return (
-              <li key={e.key} className={cn("rounded-md border p-3", d < 0 && "opacity-60")}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium">{e.title}</p>
-                  <span className={cn("text-xs whitespace-nowrap", d >= 0 && d <= 14 ? "font-medium text-destructive" : "text-muted-foreground")}>
-                    {formatDate(e.working_date)}{d >= 0 ? ` · J-${d}` : ""}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">{e.detail}</p>
-                {e.working_date !== e.date && (
-                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                    {fr ? `Le ${formatDate(e.date)} tombe un week-end : visez le ${formatDate(e.working_date)}.` : `${formatDate(e.date)} is a weekend: aim for ${formatDate(e.working_date)}.`}
-                  </p>
-                )}
-                {e.send_by && d >= 0 && (
-                  <p className="mt-1 text-xs">{fr ? "Recommandé à poster au plus tard le " : "Post registered mail by "}<span className="font-medium">{formatDate(e.send_by)}</span></p>
-                )}
-                <p className="mt-1 text-[11px] text-muted-foreground">{e.legal_ref}</p>
-              </li>
-            )
-          })}
-        </ol>
+        {isLca ? (
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              {fr
+                ? "Complémentaire LCA : sa prime change aussi au 1er janvier, mais elle se résilie selon sa police, pas selon la LAMal. Ne la résiliez qu'après l'acceptation écrite d'un autre assureur."
+                : "Supplementary (LCA) cover: its premium also changes on 1 January, but it is cancelled under its own policy terms."}
+            </p>
+            {lcaDeadline ? (
+              <div className="rounded-md border p-3">
+                <p className="font-medium">{fr ? "Dernier jour pour résilier" : "Last day to cancel"}</p>
+                <p className={cn(lcaDeadline.severity !== "upcoming" && "text-destructive")}>
+                  {formatDate(lcaDeadline.deadlineISO)} · {fr ? "échéance" : "term"} {formatDate(lcaDeadline.contractEndISO)} ({lcaDeadline.noticeDays} {fr ? "j de préavis" : "days notice"})
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">{fr ? "Renseignez l'échéance et le délai de résiliation de la police (bouton crayon de la liste) pour obtenir la date limite." : "Set the term and notice period to get the deadline."}</p>
+            )}
+          </div>
+        ) : (
+          <ol className="space-y-3">
+            {events.map((e) => {
+              const d = daysUntil(e.working_date)
+              return (
+                <li key={e.key} className={cn("rounded-md border p-3", d < 0 && "opacity-60")}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">{e.title}</p>
+                    <span className={cn("text-xs whitespace-nowrap", d >= 0 && d <= 14 ? "font-medium text-destructive" : "text-muted-foreground")}>
+                      {formatDate(e.working_date)}{d >= 0 ? ` · J-${d}` : ""}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{e.detail}</p>
+                  {e.working_date !== e.date && (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      {fr ? `Le ${formatDate(e.date)} tombe un week-end : visez le ${formatDate(e.working_date)}.` : `${formatDate(e.date)} is a weekend: aim for ${formatDate(e.working_date)}.`}
+                    </p>
+                  )}
+                  {e.send_by && d >= 0 && (
+                    <p className="mt-1 text-xs">{fr ? "Recommandé à poster au plus tard le " : "Post registered mail by "}<span className="font-medium">{formatDate(e.send_by)}</span></p>
+                  )}
+                  <p className="mt-1 text-[11px] text-muted-foreground">{e.legal_ref}</p>
+                </li>
+              )
+            })}
+          </ol>
+        )}
 
         <div className="space-y-3">
           <p className="text-sm font-medium">{fr ? `Avis de prime ${next}` : `${next} premium notice`}</p>
@@ -419,22 +487,31 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
               <label className="text-xs font-medium">{fr ? "Reçu le" : "Received on"}</label>
               <Input type="date" value={receivedOn} onChange={(e) => setReceivedOn(e.target.value)} />
             </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium">{fr ? `Franchise ${next}` : `${next} deductible`}</label>
-              <select className={fieldCls} value={franchise} onChange={(e) => setFranchise(e.target.value)}>
-                <option value="">—</option>
-                {(overview.allowed_franchises.length ? overview.allowed_franchises : params?.adult_franchises ?? []).map((f) => (
-                  <option key={f} value={f}>{f.toLocaleString("fr-CH")}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium">{fr ? `Modèle ${next}` : `${next} model`}</label>
-              <select className={fieldCls} value={model} onChange={(e) => setModel(e.target.value as api.HealthModel | "")}>
-                <option value="">—</option>
-                {HEALTH_MODELS.map((m) => <option key={m} value={m}>{healthModelLabel(m, fr)}</option>)}
-              </select>
-            </div>
+            {!isLca && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">{fr ? `Franchise ${next}` : `${next} deductible`}</label>
+                  <select className={fieldCls} value={franchise} onChange={(e) => setFranchise(e.target.value)}>
+                    <option value="">—</option>
+                    {(overview.allowed_franchises.length ? overview.allowed_franchises : params?.adult_franchises ?? []).map((f) => (
+                      <option key={f} value={f}>{f.toLocaleString("fr-CH")}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">{fr ? `Modèle ${next}` : `${next} model`}</label>
+                  <select className={fieldCls} value={model} onChange={(e) => setModel(e.target.value as api.HealthModel | "")}>
+                    <option value="">—</option>
+                    {HEALTH_MODELS.map((m) => <option key={m} value={m}>{healthModelLabel(m, fr)}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs font-medium">{fr ? `Réduction de primes ${next} (CHF/mois)` : `${next} subsidy (CHF/month)`}</label>
+                  <Input type="number" min="0" step="0.05" value={subsidy} onChange={(e) => setSubsidy(e.target.value)} />
+                  <p className="text-xs text-muted-foreground">{fr ? "Selon la nouvelle décision du canton ; laissée telle quelle si elle ne change pas." : "From the canton's new decision."}</p>
+                </div>
+              </>
+            )}
           </div>
           {change != null && (
             <div className={cn("rounded-md px-3 py-2 text-sm",
@@ -447,9 +524,9 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
           <div className="space-y-1">
             <label className="text-xs font-medium">{fr ? "Décision" : "Decision"}</label>
             <div className="flex flex-wrap gap-2">
-              {DECISIONS.map((d) => (
+              {decisions.map((d) => (
                 <Button key={d} type="button" size="sm" variant={decision === d ? "default" : "outline"} onClick={() => setDecision(d)}>
-                  {decisionLabel(d, fr)}
+                  {decisionText(d)}
                 </Button>
               ))}
             </div>
@@ -462,18 +539,145 @@ function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
             {decision === "switch_insurer" && (
               <Button variant="outline" onClick={openLetter}><FileText className="mr-1 h-4 w-4" />{fr ? "Lettre de résiliation" : "Cancellation letter"}</Button>
             )}
+            {decision === "switch_insurer" && !isLca && !switched && (
+              <Button variant="outline" onClick={() => setSwitching(true)}><ArrowRightLeft className="mr-1 h-4 w-4" />{fr ? "Créer la nouvelle police" : "Create the new policy"}</Button>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            {fr ? "Comparer les primes de toutes les caisses pour votre région : " : "Compare every insurer's premium for your region: "}
-            <a href="https://www.priminfo.admin.ch" target="_blank" rel="noopener noreferrer" className="text-primary underline inline-flex items-center gap-1">
-              priminfo.admin.ch<ExternalLink className="h-3 w-3" />
-            </a>
-            {fr ? " (comparateur officiel de l'OFSP)." : " (official FOPH comparator)."}
-          </p>
+          {switched && (
+            <p className="text-xs text-muted-foreground">
+              {fr ? `Caisse quittée : échéances arrêtées au ${formatDate(engagement.ended_on as string)}.` : `Insurer left: charges stop on ${formatDate(engagement.ended_on as string)}.`}
+            </p>
+          )}
+          {!isLca && (
+            <p className="text-xs text-muted-foreground">
+              {fr ? "Comparer les primes de toutes les caisses pour votre région : " : "Compare every insurer's premium for your region: "}
+              <a href="https://www.priminfo.admin.ch" target="_blank" rel="noopener noreferrer" className="text-primary underline inline-flex items-center gap-1">
+                priminfo.admin.ch<ExternalLink className="h-3 w-3" />
+              </a>
+              {fr ? " (comparateur officiel de l'OFSP)." : " (official FOPH comparator)."}
+            </p>
+          )}
         </div>
       </CardContent>
       {letter && <CancellationLetterModal engagement={engagement} creditor={creditor} onClose={() => setLetter(false)} />}
+      {familyOpen && <HealthNoticesModal onClose={() => setFamilyOpen(false)} onSaved={() => void onSaved()} />}
+      {switching && (
+        <SwitchInsurerDialog
+          engagement={engagement} overview={overview} year={next} fr={fr} toast={toast}
+          onClose={() => setSwitching(false)}
+          onDone={(id) => { setSwitching(false); navigate(`/engagements/${id}?tab=health`) }}
+        />
+      )}
     </Card>
+  )
+}
+
+/// "Je change de caisse", carried to the end: the new insurer, its premium
+/// and terms. The backend ends the old policy on 31 December, creates the new
+/// one on 1 January and keeps the link that makes the affiliation confirmation
+/// awaited.
+function SwitchInsurerDialog({ engagement, overview, year, fr, toast, onClose, onDone }: {
+  engagement: api.Engagement; overview: api.HealthOverview; year: number; fr: boolean; toast: Toast
+  onClose: () => void; onDone: (newId: string) => void
+}) {
+  const [creditors, setCreditors] = useState<api.Creditor[]>([])
+  const [creditorId, setCreditorId] = useState("")
+  const [policyNo, setPolicyNo] = useState("")
+  const [premium, setPremium] = useState("")
+  const [franchise, setFranchise] = useState(overview.notice_next_year?.franchise?.toString() ?? overview.policy?.franchise?.toString() ?? "")
+  const [model, setModel] = useState<api.HealthModel>((overview.notice_next_year?.model ?? overview.policy?.model ?? "standard") as api.HealthModel)
+  const [subsidy, setSubsidy] = useState(overview.notice_next_year?.subsidy_monthly?.toString() ?? overview.policy?.subsidy_monthly?.toString() ?? "")
+  const [moveLca, setMoveLca] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { api.getCreditors().then((c) => setCreditors(c.filter((x) => x.id !== engagement.creditor_id))).catch(() => setCreditors([])) }, [engagement.creditor_id])
+
+  async function createInsurer(name: string): Promise<api.Creditor | null> {
+    try {
+      const c = await api.createCreditor({ name, creditor_type: "insurer" })
+      setCreditors((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
+      return c
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+      return null
+    }
+  }
+
+  const premiumValue = numOrNull(premium)
+  async function submit() {
+    if (premiumValue == null || premiumValue <= 0) return
+    setSaving(true)
+    try {
+      const id = await api.switchHealthInsurer({
+        engagement_id: engagement.id, year, creditor_id: creditorId || null, policy_number: policyNo.trim() || null,
+        monthly_premium: premiumValue, franchise: numOrNull(franchise), model,
+        accident_covered: overview.policy?.accident_covered ?? null, subsidy_monthly: numOrNull(subsidy),
+        move_supplementary: moveLca,
+      })
+      toast(fr ? `Nouvelle police créée au 1.1.${year}. Pensez à envoyer la lettre à l'ancienne caisse.` : `New policy created for 1 Jan ${year}.`, "success")
+      onDone(id)
+    } catch (e) {
+      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-lg border bg-card shadow-lg">
+        <div className="flex items-center justify-between border-b p-5">
+          <h2 className="text-lg font-semibold">{fr ? `Nouvelle caisse au 1.1.${year}` : `New insurer on 1 Jan ${year}`}</h2>
+          <Button variant="ghost" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
+        </div>
+        <div className="grid gap-3 p-5 sm:grid-cols-2">
+          <div className="space-y-1 sm:col-span-2">
+            <label className="text-xs font-medium">{fr ? "Nouvelle caisse" : "New insurer"}</label>
+            <InlineCreateSelect value={creditorId} onChange={setCreditorId} options={creditors} onCreate={createInsurer}
+              placeholder={fr ? "Nom (ex : Helsana)" : "Name"} createTitle={fr ? "Nouvelle caisse" : "New insurer"} fr={fr} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">{fr ? "Prime mensuelle (CHF)" : "Monthly premium (CHF)"} *</label>
+            <Input type="number" min="0" step="0.05" value={premium} onChange={(e) => setPremium(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">{fr ? "N° de police (si connu)" : "Policy no. (if known)"}</label>
+            <Input value={policyNo} onChange={(e) => setPolicyNo(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Franchise</label>
+            <select className={fieldCls} value={franchise} onChange={(e) => setFranchise(e.target.value)}>
+              {overview.allowed_franchises.map((f) => <option key={f} value={f}>{f.toLocaleString("fr-CH")}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">{fr ? "Modèle" : "Model"}</label>
+            <select className={fieldCls} value={model} onChange={(e) => setModel(e.target.value as api.HealthModel)}>
+              {HEALTH_MODELS.map((m) => <option key={m} value={m}>{healthModelLabel(m, fr)}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">{fr ? "Subside (CHF/mois)" : "Subsidy (CHF/month)"}</label>
+            <Input type="number" min="0" step="0.05" value={subsidy} onChange={(e) => setSubsidy(e.target.value)} />
+          </div>
+          <label className="flex items-end gap-2 pb-2 text-sm">
+            <input type="checkbox" checked={moveLca} onChange={(e) => setMoveLca(e.target.checked)} />
+            {fr ? "Rattacher les complémentaires à la nouvelle police" : "Attach supplementary covers to the new policy"}
+          </label>
+          <p className="sm:col-span-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+            {fr
+              ? `L'ancienne police s'arrête au 31.12.${year - 1}. Inscrivez-vous chez la nouvelle caisse : sa confirmation d'affiliation sera réclamée dans la nouvelle fiche jusqu'à réception. Les complémentaires ne sont pas résiliées par ce geste.`
+              : `The old policy stops on 31 Dec ${year - 1}. Supplementary covers are not cancelled by this.`}
+          </p>
+        </div>
+        <div className="flex justify-end gap-2 border-t p-4">
+          <Button variant="ghost" onClick={onClose} disabled={saving}>{fr ? "Annuler" : "Cancel"}</Button>
+          <Button onClick={submit} disabled={saving || premiumValue == null || premiumValue <= 0}>
+            {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}{fr ? "Créer la nouvelle police" : "Create new policy"}
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -490,6 +694,19 @@ function Bar({ used, total }: { used: number; total: number }) {
   )
 }
 
+type ClaimDraft = {
+  treatment_date: string; statement_date: string; provider: string; invoiced: string; insurer_paid: string
+  franchise: string; quote_part: string; hospital: string; not_covered: string
+}
+const CLAIM_AMOUNTS: { key: keyof ClaimDraft; fr: string; en: string }[] = [
+  { key: "invoiced", fr: "Montant facturé", en: "Invoiced" },
+  { key: "insurer_paid", fr: "Pris en charge par la caisse", en: "Paid by insurer" },
+  { key: "franchise", fr: "Dont franchise", en: "Of which deductible" },
+  { key: "quote_part", fr: "Dont quote-part", en: "Of which co-payment" },
+  { key: "hospital", fr: "Contribution hospitalière", en: "Hospital contribution" },
+  { key: "not_covered", fr: "Non couvert", en: "Not covered" },
+]
+
 function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }: {
   engagement: api.Engagement; overview: api.HealthOverview; params: api.HealthParams | null
   fr: boolean; onSaved: () => Promise<void>; toast: Toast
@@ -497,29 +714,77 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
   const year = overview.year
   const s = overview.participation
   const [claims, setClaims] = useState<api.HealthClaim[]>([])
-  const [show, setShow] = useState(false)
-  const empty = { treatment_date: "", statement_date: today(), provider: "", invoiced: "", insurer_paid: "", franchise: "", quote_part: "", hospital: "", not_covered: "" }
-  const [form, setForm] = useState(empty)
+  const empty = (): ClaimDraft => ({ treatment_date: "", statement_date: today(), provider: "", invoiced: "", insurer_paid: "", franchise: "", quote_part: "", hospital: "", not_covered: "" })
+  // Lines being reviewed before saving: one when typed by hand, several when
+  // a statement was scanned. Nothing is written until "Ajouter".
+  const [drafts, setDrafts] = useState<ClaimDraft[] | null>(null)
+  const [mode, setMode] = useState<api.HealthBillingMode | "">("")
+  const [scanning, setScanning] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const loadClaims = () => api.listHealthClaims(engagement.id, year).then(setClaims).catch(() => setClaims([]))
   useEffect(() => { void loadClaims() }, [engagement.id, year])
 
-  async function add() {
-    const n = (v: string) => numOrNull(v) ?? 0
+  async function scan(file: File) {
+    const ai = getAiSettings()
+    if (!ai.enabled) {
+      toast(fr ? "Activez l'IA dans Réglages → IA pour lire le décompte." : "Enable AI in Settings → AI.", "error")
+      return
+    }
+    setScanning(true)
     try {
-      await api.addHealthClaim({
+      const text = await documentToText(new Uint8Array(await file.arrayBuffer()), file.type, file.name)
+      if (!text.trim()) throw new Error(fr ? "texte introuvable dans le document" : "no text found")
+      const x = await api.aiExtractHealthClaims(text, ai)
+      if (x.lines.length === 0) {
+        toast(fr ? "Aucune ligne de traitement trouvée dans ce document." : "No treatment line found.", "error")
+        return
+      }
+      const str = (v: number) => (v > 0 ? String(v) : "")
+      setDrafts(x.lines.map((l) => ({
+        treatment_date: l.treatment_date ?? "", statement_date: x.statement_date ?? today(), provider: l.provider ?? "",
+        invoiced: str(l.invoiced), insurer_paid: str(l.insurer_paid), franchise: str(l.franchise),
+        quote_part: str(l.quote_part), hospital: str(l.hospital), not_covered: str(l.not_covered),
+      })))
+      setMode(x.billing_mode ?? "")
+      if (x.insured_name && overview.insured_label && !x.insured_name.toLowerCase().includes(overview.insured_label.toLowerCase().split(" ")[0])) {
+        toast(fr ? `Ce décompte semble concerner ${x.insured_name}, pas ${overview.insured_label}.` : `This statement seems to be for ${x.insured_name}.`, "error")
+      }
+    } catch (e) {
+      toast(`${fr ? "Échec du scan" : "Scan failed"}: ${e}`, "error")
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  async function add() {
+    if (!drafts) return
+    const n = (v: string) => numOrNull(v) ?? 0
+    setSaving(true)
+    try {
+      const saved = await api.addHealthClaims(drafts.map((d) => ({
         engagement_id: engagement.id, year,
-        statement_date: form.statement_date || null, treatment_date: form.treatment_date || null,
-        provider: form.provider.trim() || null,
-        invoiced: n(form.invoiced), insurer_paid: n(form.insurer_paid), franchise: n(form.franchise),
-        quote_part: n(form.quote_part), hospital: n(form.hospital), not_covered: n(form.not_covered), notes: null,
-      })
-      setForm(empty)
-      setShow(false)
+        statement_date: d.statement_date || null, treatment_date: d.treatment_date || null,
+        provider: d.provider.trim() || null,
+        invoiced: n(d.invoiced), insurer_paid: n(d.insurer_paid), franchise: n(d.franchise),
+        quote_part: n(d.quote_part), hospital: n(d.hospital), not_covered: n(d.not_covered), notes: null,
+        billing_mode: mode || null,
+      })))
+      const refunds = saved.filter((c) => c.reimbursement_id)
+      const due = refunds.reduce((sum, c) => sum + c.insurer_paid, 0)
+      toast(refunds.length > 0
+        ? (fr ? `${saved.length} ligne(s) ajoutée(s). Remboursement attendu de ${formatPrice(due)} ajouté aux Remboursements.` : `${saved.length} line(s) added; ${formatPrice(due)} reimbursement expected.`)
+        : (fr ? `${saved.length} ligne(s) ajoutée(s).` : `${saved.length} line(s) added.`),
+        "success")
+      setDrafts(null)
+      setMode("")
       await loadClaims()
       await onSaved()
     } catch (e) {
       toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -533,18 +798,22 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
     }
   }
 
-  const f = (k: keyof typeof empty, label: string, type = "number") => (
-    <div className="space-y-1">
-      <label className="text-xs font-medium">{label}</label>
-      <Input type={type} min="0" step="0.05" value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />
-    </div>
-  )
+  const setDraft = (i: number, patch: Partial<ClaimDraft>) =>
+    setDrafts((ds) => ds && ds.map((d, j) => (j === i ? { ...d, ...patch } : d)))
+  const toPay = claims.filter((c) => c.billing_mode === "tiers_payant").reduce((sum, c) => sum + c.franchise + c.quote_part + c.hospital + c.not_covered, 0)
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="text-lg">{fr ? `Participation ${year}` : `${year} cost sharing`}</CardTitle>
-        <Button size="sm" variant="outline" onClick={() => setShow((v) => !v)}><Plus className="mr-1 h-4 w-4" />{fr ? "Décompte" : "Statement"}</Button>
+        <div className="flex gap-2">
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void scan(f); e.target.value = "" }} />
+          <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={scanning}>
+            {scanning ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}{fr ? "Scanner" : "Scan"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setDrafts((d) => (d ? null : [empty()]))}><Plus className="mr-1 h-4 w-4" />{fr ? "Décompte" : "Statement"}</Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {s ? (
@@ -566,6 +835,11 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
                   : "Excluding hospital contribution and non-covered services."}
               </span>
             </p>
+            {toPay > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {fr ? `Tiers payant : la caisse vous facture ${formatPrice(toPay)} de participation pour ces décomptes.` : `Third-party payer: the insurer bills you ${formatPrice(toPay)}.`}
+              </p>
+            )}
             {s.over_cap && (
               <p className="text-xs text-destructive">
                 {fr ? "Les décomptes dépassent la franchise ou le plafond légal : vérifiez la saisie, ou contestez auprès de la caisse." : "Statements exceed the deductible or legal cap."}
@@ -576,26 +850,54 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
           <p className="text-sm text-muted-foreground">{fr ? "Indiquez la franchise dans la fiche pour suivre la participation." : "Set the deductible to track cost sharing."}</p>
         )}
 
-        {show && (
-          <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-2">
-            {f("treatment_date", fr ? "Date du traitement" : "Treatment date", "date")}
-            {f("statement_date", fr ? "Date du décompte" : "Statement date", "date")}
-            <div className="space-y-1 sm:col-span-2">
-              <label className="text-xs font-medium">{fr ? "Prestataire" : "Provider"}</label>
-              <Input value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} placeholder={fr ? "Médecin, pharmacie, hôpital…" : "Doctor, pharmacy…"} />
+        {drafts && (
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">{fr ? "Qui a payé le prestataire ?" : "Who paid the provider?"}</label>
+              <select className={fieldCls} value={mode} onChange={(e) => setMode(e.target.value as api.HealthBillingMode | "")}>
+                <option value="">—</option>
+                <option value="tiers_garant">{fr ? "Moi — la caisse me rembourse (tiers garant)" : "Me — the insurer reimburses (tiers garant)"}</option>
+                <option value="tiers_payant">{fr ? "La caisse — elle me facture ma part (tiers payant)" : "The insurer — it bills my share (tiers payant)"}</option>
+              </select>
+              {mode === "tiers_garant" && (
+                <p className="text-xs text-muted-foreground">{fr ? "Le montant pris en charge sera ajouté aux Remboursements en attente." : "The covered amount will be added to pending reimbursements."}</p>
+              )}
             </div>
-            {f("invoiced", fr ? "Montant facturé" : "Invoiced")}
-            {f("insurer_paid", fr ? "Pris en charge par la caisse" : "Paid by insurer")}
-            {f("franchise", fr ? "Dont franchise" : "Of which deductible")}
-            {f("quote_part", fr ? "Dont quote-part" : "Of which co-payment")}
-            {f("hospital", fr ? "Contribution hospitalière" : "Hospital contribution")}
-            {f("not_covered", fr ? "Non couvert" : "Not covered")}
-            <div className="sm:col-span-2 flex gap-2">
-              <Button size="sm" onClick={add}>{fr ? "Ajouter" : "Add"}</Button>
-              <Button size="sm" variant="outline" onClick={() => setShow(false)}>{fr ? "Annuler" : "Cancel"}</Button>
+            {drafts.map((d, i) => (
+              <div key={i} className="grid gap-2 rounded-md bg-muted/30 p-2 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">{fr ? "Date du traitement" : "Treatment date"}</label>
+                  <Input type="date" value={d.treatment_date} onChange={(e) => setDraft(i, { treatment_date: e.target.value })} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">{fr ? "Date du décompte" : "Statement date"}</label>
+                  <Input type="date" value={d.statement_date} onChange={(e) => setDraft(i, { statement_date: e.target.value })} />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <label className="text-xs font-medium">{fr ? "Prestataire" : "Provider"}</label>
+                  <div className="flex gap-2">
+                    <Input value={d.provider} onChange={(e) => setDraft(i, { provider: e.target.value })} placeholder={fr ? "Médecin, pharmacie, hôpital…" : "Doctor, pharmacy…"} />
+                    {drafts.length > 1 && (
+                      <Button variant="ghost" size="icon" onClick={() => setDrafts((ds) => ds && ds.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                    )}
+                  </div>
+                </div>
+                {CLAIM_AMOUNTS.map((a) => (
+                  <div key={a.key} className="space-y-1">
+                    <label className="text-xs font-medium">{fr ? a.fr : a.en}</label>
+                    <Input type="number" min="0" step="0.05" value={d[a.key]} onChange={(e) => setDraft(i, { [a.key]: e.target.value })} />
+                  </div>
+                ))}
+              </div>
+            ))}
+            <div className="flex gap-2">
+              <Button size="sm" onClick={add} disabled={saving}>
+                {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}{fr ? `Ajouter ${drafts.length > 1 ? `${drafts.length} lignes` : ""}` : "Add"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setDrafts(null)}>{fr ? "Annuler" : "Cancel"}</Button>
             </div>
-            <p className="sm:col-span-2 text-xs text-muted-foreground">
-              {fr ? "Reprenez les montants du décompte de prestations de la caisse. Les frais à votre charge sont aussi déductibles des impôts au-delà d'un seuil cantonal." : "Copy the amounts from the insurer's statement."}
+            <p className="text-xs text-muted-foreground">
+              {fr ? "Vérifiez chaque montant avec le décompte de la caisse avant d'ajouter." : "Check every amount against the statement."}
             </p>
           </div>
         )}
@@ -605,7 +907,12 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
             {claims.map((c) => (
               <li key={c.id} className="flex items-center justify-between gap-2 py-2">
                 <div className="min-w-0">
-                  <p className="truncate font-medium">{c.provider ?? (fr ? "Décompte" : "Statement")}</p>
+                  <p className="truncate font-medium">
+                    {c.provider ?? (fr ? "Décompte" : "Statement")}
+                    {c.reimbursement_id && (
+                      <Link to="/reimbursements" className="ml-2"><Badge variant="secondary">{fr ? "Remboursement attendu" : "Reimbursement due"} {formatPrice(c.insurer_paid)}</Badge></Link>
+                    )}
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     {c.treatment_date ? formatDate(c.treatment_date) : c.statement_date ? formatDate(c.statement_date) : ""}
                     {" · "}{fr ? "facturé" : "invoiced"} {formatPrice(c.invoiced)}

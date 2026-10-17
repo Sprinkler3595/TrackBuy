@@ -2830,6 +2830,10 @@ export interface HealthPolicy {
   subsidy_monthly: number | null
   /// JSON array of supplementary (LCA) option slugs.
   options_json: string | null
+  /// Policy of the insurer being left, when this one replaces it (schema v37).
+  replaces_engagement_id?: string | null
+  /// Date the new insurer's affiliation confirmation was received.
+  affiliation_confirmed_on?: string | null
 }
 
 export const getHealthPolicy = (engagementId: string) =>
@@ -2851,12 +2855,14 @@ export interface HealthPremiumNotice {
   decision: HealthDecision
   revision_id: string | null
   notes: string | null
+  /// Premium subsidy for the announced year; null keeps the policy's one.
+  subsidy_monthly: number | null
 }
 
 export const listHealthPremiumNotices = (engagementId: string) =>
   invoke<HealthPremiumNotice[]>("list_health_premium_notices", { engagementId })
 
-export const saveHealthPremiumNotice = (notice: Omit<HealthPremiumNotice, "id" | "revision_id"> & { id?: string }) =>
+export const saveHealthPremiumNotice = (notice: Omit<HealthPremiumNotice, "id" | "revision_id" | "subsidy_monthly"> & { id?: string; subsidy_monthly?: number | null }) =>
   invoke<HealthPremiumNotice>("save_health_premium_notice", { notice })
 
 export const deleteHealthPremiumNotice = (id: string) =>
@@ -2876,13 +2882,22 @@ export interface HealthClaim {
   hospital: number
   not_covered: number
   notes: string | null
+  billing_mode: HealthBillingMode | null
+  reimbursement_id: string | null
 }
+
+/// tiers_garant: the insured paid and the insurer reimburses; tiers_payant:
+/// the insurer paid and bills the insured's share.
+export type HealthBillingMode = "tiers_garant" | "tiers_payant"
 
 export const listHealthClaims = (engagementId: string, year: number) =>
   invoke<HealthClaim[]>("list_health_claims", { engagementId, year })
 
-export const addHealthClaim = (claim: Omit<HealthClaim, "id">) =>
+export const addHealthClaim = (claim: Omit<HealthClaim, "id" | "reimbursement_id">) =>
   invoke<HealthClaim>("add_health_claim", { claim })
+
+export const addHealthClaims = (claims: Omit<HealthClaim, "id" | "reimbursement_id">[]) =>
+  invoke<HealthClaim[]>("add_health_claims", { claims })
 
 export const deleteHealthClaim = (id: string) =>
   invoke<void>("delete_health_claim", { id })
@@ -2943,20 +2958,81 @@ export interface HealthSeason {
   season_year: number
   open: boolean
   events: HealthSeasonEvent[]
-  policies: {
-    engagement_id: string
-    name: string
-    creditor_name: string | null
-    kind: HealthKind | null
-    insured_label: string | null
-    franchise: number | null
-    model: HealthModel | null
-    notice: HealthPremiumNotice | null
-  }[]
+  policies: HealthSeasonPolicy[]
   params: HealthParams
 }
 
+export interface HealthSeasonPolicy {
+  engagement_id: string
+  parent_engagement_id: string | null
+  name: string
+  creditor_name: string | null
+  kind: HealthKind | null
+  insured_label: string | null
+  franchise: number | null
+  model: HealthModel | null
+  monthly_gross: number | null
+  subsidy_monthly: number | null
+  next_year_franchises: number[]
+  notice: HealthPremiumNotice | null
+}
+
 export const getHealthSeason = () => invoke<HealthSeason>("get_health_season")
+
+export interface SwitchInsurerInput {
+  engagement_id: string
+  year: number
+  creditor_id: string | null
+  policy_number: string | null
+  monthly_premium: number
+  franchise: number | null
+  model: HealthModel | null
+  accident_covered: boolean | null
+  subsidy_monthly: number | null
+  move_supplementary: boolean
+}
+
+/// Leave an insurer on 1 January `year`: ends the old policy on 31 December,
+/// creates the new one and returns its engagement id.
+export const switchHealthInsurer = (input: SwitchInsurerInput) =>
+  invoke<string>("switch_health_insurer", { input })
+
+export interface ExtractedPremiumNotice {
+  year: number | null
+  insurer_name: string | null
+  persons: {
+    insured_name: string | null
+    insured_birth_date: string | null
+    basic_monthly_premium: number | null
+    franchise: number | null
+    model: HealthModel | null
+    subsidy_monthly: number | null
+    supplementary_monthly_premium: number | null
+  }[]
+}
+
+export const aiExtractPremiumNotice = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedPremiumNotice>("ai_extract_premium_notice", { ocrText, config })
+
+export interface ExtractedHealthClaims {
+  statement_date: string | null
+  insured_name: string | null
+  insurer_name: string | null
+  billing_mode: HealthBillingMode | null
+  lines: {
+    treatment_date: string | null
+    provider: string | null
+    invoiced: number
+    insurer_paid: number
+    franchise: number
+    quote_part: number
+    hospital: number
+    not_covered: number
+  }[]
+}
+
+export const aiExtractHealthClaims = (ocrText: string, config: AiExtractionConfig) =>
+  invoke<ExtractedHealthClaims>("ai_extract_health_claims", { ocrText, config })
 
 export interface FranchiseOption {
   franchise: number

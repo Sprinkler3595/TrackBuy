@@ -55,6 +55,8 @@ function renewedEnd(e: Engagement): string {
 /// applicable (not active, or missing the contract end / notice period).
 export function getCancellationInfo(e: Engagement): CancellationInfo | null {
   if (e.status !== "active") return null
+  // A scheduled end (insurer already left) means the cancellation is done.
+  if (e.ended_on) return null
   if (!e.contract_end_date || e.notice_period_days == null) return null
 
   const contractEnd = renewedEnd(e)
