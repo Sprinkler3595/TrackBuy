@@ -549,6 +549,38 @@ export function EngagementDetailPage() {
                   </div>
                 )}
               </div>
+              {e.parent_engagement_id && e.engagement_type !== "insurance_health" && (
+                <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={!!e.billed_with_parent}
+                    onChange={async (ev) => {
+                      const combined = ev.target.checked
+                      try {
+                        await api.setBilledWithParent(e.id, combined)
+                        if (!combined) await api.planNextEngagementCharge(e.id)
+                        toast(combined
+                          ? (locale === "fr" ? "Payé désormais sur la facture du parent." : "Now paid on the parent's bill.")
+                          : (locale === "fr" ? "Facturé séparément dès la prochaine échéance." : "Billed separately from the next charge."), "success")
+                        await load()
+                      } catch (err) {
+                        toast(`Erreur: ${err}`, "error")
+                      }
+                    }}
+                  />
+                  <span>
+                    <span className="font-medium">
+                      {locale === "fr" ? `Payé sur la facture de « ${e.parent_name ?? "l'engagement parent"} »` : `Paid on the bill of "${e.parent_name ?? "the parent"}"`}
+                    </span>
+                    <span className="block text-xs text-muted-foreground">
+                      {locale === "fr"
+                        ? "Une seule échéance par période pour les deux, du montant total — quand vous recevez un seul bulletin (loyer et place de parc, par exemple)."
+                        : "One charge per period for both — when you get a single slip."}
+                    </span>
+                  </span>
+                </label>
+              )}
               {e.notes && (
                 <div className="pt-2 border-t text-sm">
                   <p className="text-xs text-muted-foreground">{t("engagements.notes")}</p>

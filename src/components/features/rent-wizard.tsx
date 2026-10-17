@@ -1,4 +1,5 @@
 import { useContext, useState } from "react"
+import { formatDate, formatPrice } from "@/lib/utils"
 import { Home, Car, FileText, X, ChevronLeft, ChevronRight, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -105,6 +106,11 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
   const [parkingKind, setParkingKind] = useState<api.ParkingKind>("outdoor")
   const [parkingSpot, setParkingSpot] = useState("")
   const [parkingRent, setParkingRent] = useState("")
+  // Most leases bill the spot on the same slip as the apartment: one charge
+  // for the total. A spot rented separately (other landlord, other slip)
+  // keeps its own.
+  const [parkingOneBill, setParkingOneBill] = useState(true)
+  const [firstBill, setFirstBill] = useState<{ due: string; total: number; parts: string } | null>(null)
 
   const rentValue = parseFloat(rent)
   const rentValid = name.trim().length > 0 && !Number.isNaN(rentValue) && rentValue > 0
@@ -135,7 +141,7 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
 
       if (hasParking) {
         const spotSuffix = parkingSpot.trim() ? ` n°${parkingSpot.trim()}` : ""
-        await api.createEngagement({
+        const spot = await api.createEngagement({
           name: (fr ? "Place de parc" : "Parking spot") + spotSuffix,
           engagement_type: "parking",
           parent_engagement_id: rentEng.id,
@@ -152,7 +158,18 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
           parking_spot_number: parkingSpot.trim() || null,
           parking_kind: parkingKind,
         })
+        if (parkingOneBill) await api.setBilledWithParent(spot.id, true)
+        else await api.planNextEngagementCharge(spot.id)
       }
+      // The first rent appears right away in the charges, with the spot on
+      // it when both are on one slip.
+      await api.planNextEngagementCharge(rentEng.id)
+      const oneBill = hasParking && parkingOneBill
+      setFirstBill(nextDue ? {
+        due: nextDue,
+        total: rentValue + (oneBill ? parkingValue : 0),
+        parts: oneBill ? `${fr ? "Loyer" : "Rent"} ${formatPrice(rentValue)} + ${fr ? "place de parc" : "parking"} ${formatPrice(parkingValue)}` : "",
+      } : null)
 
       setCreatedRentId(rentEng.id)
       setCreatedRentName(rentEng.name)
@@ -282,6 +299,17 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
                     <Input type="number" min="0" step="0.01" value={parkingRent}
                       onChange={(e) => setParkingRent(e.target.value)} placeholder="0.00" />
                   </div>
+                  <label className="flex items-start gap-2 rounded-md border border-dashed p-3 text-sm sm:col-span-2">
+                    <input type="checkbox" className="mt-1" checked={parkingOneBill} onChange={(e) => setParkingOneBill(e.target.checked)} />
+                    <span>
+                      <span className="font-medium">{fr ? "Une seule facture loyer + place de parc" : "One bill for rent + parking"}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {fr
+                          ? "Une échéance par mois, du montant total, comme le bulletin de la gérance. Décochez si la place est louée séparément (autre bailleur, autre bulletin)."
+                          : "One monthly charge for the total, like the landlord's slip. Untick if the spot is rented separately."}
+                      </span>
+                    </span>
+                  </label>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -295,6 +323,14 @@ export function RentWizard({ creditors, cards, onClose }: RentWizardProps) {
 
           {step === 3 && createdRentId && (
             <div className="space-y-4">
+              {firstBill && (
+                <div className="rounded-md border px-3 py-2 text-sm">
+                  {fr ? "Première échéance planifiée : " : "First charge scheduled: "}
+                  <span className="font-semibold">{formatPrice(firstBill.total)}</span>
+                  {" "}{fr ? "le" : "on"} {formatDate(firstBill.due)}
+                  {firstBill.parts && <span className="block text-xs text-muted-foreground">{fr ? "Facture commune" : "Shared bill"} : {firstBill.parts}</span>}
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 {fr
                   ? "Ajoutez le contrat de bail et les éventuelles factures. Vous pourrez en ajouter d'autres plus tard depuis la fiche du logement."
