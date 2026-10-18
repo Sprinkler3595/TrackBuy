@@ -16,7 +16,7 @@ import { getAiSettings } from "@/lib/ai-settings"
 import { documentToText } from "@/lib/document-scan"
 import { formatDate, formatPrice, daysUntil, cn } from "@/lib/utils"
 import {
-  HEALTH_MODELS, ageClassLabel, decisionLabel, healthModelLabel, lineDiscount, lineNet, linesTotal, parseLines, round2,
+  HEALTH_MODELS, ageClassLabel, healthModelLabel, lineDiscount, lineNet, linesTotal, parseLines, round2,
   type SupplementaryLine,
 } from "@/lib/health"
 import * as api from "@/lib/tauri"
@@ -50,8 +50,9 @@ type BasicDraft = {
 type LcaDraft = { kind: "lca"; lines: SupplementaryLine[]; decision: api.HealthDecision }
 type Draft = BasicDraft | LcaDraft
 
-const BASIC_DECISIONS: api.HealthDecision[] = ["pending", "keep", "change_franchise", "change_model", "switch_insurer"]
-const LCA_DECISIONS: api.HealthDecision[] = ["pending", "keep", "switch_insurer"]
+/// Two choices only: the new terms are validated as typed — a different
+/// deductible or model in the fields IS the change — or the insurer is left.
+const VALIDATED: api.HealthDecision[] = ["keep", "change_franchise", "change_model"]
 
 const numOrNull = (s: string): number | null => {
   const v = parseFloat(s)
@@ -70,6 +71,34 @@ function samePerson(extracted: string, label: string | null): boolean {
 }
 
 const isLca = (d: Detail) => (d.overview.policy?.kind ?? (d.engagement.parent_engagement_id ? "supplementary" : "basic")) === "supplementary"
+
+/// What one policy costs per month, this year and with the new terms —
+/// premium minus subsidy, discounts included. A policy being left counts for
+/// nothing next year; an empty new premium keeps this year's figure.
+function nowNext(d: Detail, draft: Draft): { now: number; next: number } {
+  const lcaNow = parseLines(d.overview.policy?.supplementary_lines_json)
+  const now = draft.kind === "lca" && lcaNow.length > 0
+    ? linesTotal(lcaNow)
+    : (d.policy.monthly_gross ?? 0) - (d.policy.subsidy_monthly ?? 0)
+  if (draft.decision === "switch_insurer") return { now, next: 0 }
+  if (draft.kind === "basic") {
+    const p = numOrNull(draft.premium)
+    return { now, next: p != null ? Math.max(0, p - num(draft.subsidy)) : now }
+  }
+  return { now, next: linesTotal(draft.lines) }
+}
+
+const pct = (now: number, next: number): number | null => (now > 0 ? (next - now) / now * 100 : null)
+
+function Change({ now, next, className }: { now: number; next: number; className?: string }) {
+  const p = pct(now, next)
+  if (p == null) return null
+  return (
+    <span className={cn("whitespace-nowrap text-xs", p > 0 ? "text-amber-700 dark:text-amber-400" : p < 0 ? "text-green-700 dark:text-green-400" : "text-muted-foreground", className)}>
+      {p >= 0 ? "+" : ""}{p.toFixed(1)} %
+    </span>
+  )
+}
 
 function initialDraft(d: Detail): Draft {
   const n = d.policy.notice
@@ -153,24 +182,19 @@ export function HealthSeasonPage() {
 
   // Household per month, this year vs the new conditions (what is actually
   // billed: premium minus subsidy, discounts included).
-  const totals = useMemo(() => {
+  const sum = useCallback((ds: Detail[]) => {
     let now = 0
     let next = 0
-    for (const d of details) {
+    for (const d of ds) {
       const draft = drafts[d.policy.engagement_id]
       if (!draft) continue
-      const current = (d.policy.monthly_gross ?? 0) - (d.policy.subsidy_monthly ?? 0)
-      now += current
-      if (draft.decision === "switch_insurer") continue
-      if (draft.kind === "basic") {
-        const p = numOrNull(draft.premium)
-        next += p != null ? Math.max(0, p - num(draft.subsidy)) : current
-      } else {
-        next += linesTotal(draft.lines)
-      }
+      const x = nowNext(d, draft)
+      now += x.now
+      next += x.next
     }
     return { now: round2(now), next: round2(next) }
-  }, [details, drafts])
+  }, [drafts])
+  const totals = useMemo(() => sum(details), [sum, details])
 
   async function scan(file: File) {
     const ai = getAiSettings()
@@ -241,8 +265,16 @@ export function HealthSeasonPage() {
           notes: d.policy.notice?.notes ?? null,
         }
         if (draft.kind === "basic") {
+          // "Valider" records what the fields say: a new model, else a new
+          // deductible, else the same terms.
+          const p = d.overview.policy
+          const decision: api.HealthDecision = !VALIDATED.includes(draft.decision) ? draft.decision
+            : draft.model && draft.model !== (p?.model ?? "") ? "change_model"
+            : numOrNull(draft.franchise) != null && numOrNull(draft.franchise) !== (p?.franchise ?? null) ? "change_franchise"
+            : "keep"
           await api.saveHealthPremiumNotice({
             ...base,
+            decision,
             monthly_premium: numOrNull(draft.premium),
             franchise: numOrNull(draft.franchise),
             model: draft.model || null,
@@ -333,9 +365,19 @@ export function HealthSeasonPage() {
 
       {details.length === 0 ? (
         <Card><CardContent className="p-6 text-sm text-muted-foreground">{fr ? "Aucune assurance maladie active." : "No active health insurance."}</CardContent></Card>
-      ) : people.map(({ name, ds }) => (
+      ) : people.map(({ name, ds }) => {
+        const t = sum(ds)
+        const hasLca = ds.some((d) => isLca(d))
+        return (
         <section key={name} className="space-y-3">
-          <h3 className="flex items-center gap-2 text-lg font-semibold"><HeartPulse className="h-5 w-5 text-primary" />{name}</h3>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-lg font-semibold"><HeartPulse className="h-5 w-5 text-primary" />{name}</h3>
+            <p className="text-sm">
+              <span className="text-muted-foreground">{hasLca ? "LAMal + LCA" : "LAMal"} : </span>
+              {formatPrice(t.now)} → <span className="font-semibold">{formatPrice(t.next)}</span> / {fr ? "mois" : "month"}{" "}
+              <Change now={t.now} next={t.next} className="text-sm" />
+            </p>
+          </div>
           {ds.map((d) => {
             const draft = drafts[d.policy.engagement_id]
             if (!draft) return null
@@ -347,7 +389,8 @@ export function HealthSeasonPage() {
                   onChange={(patch) => update(d.policy.engagement_id, patch)} onLetter={() => void openLetter(d.engagement)} />
           })}
         </section>
-      ))}
+        )
+      })}
 
       <div className="sticky bottom-0 z-30 rounded-lg border bg-background/95 shadow-sm backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -453,7 +496,7 @@ function BasicCard({ d, draft, next, fr, avg, onChange, onSwitch, onLetter }: {
         {d.overview.age_class && (
           <p className="text-xs text-muted-foreground">{fr ? "Classe d'âge actuelle" : "Current age class"} : {ageClassLabel(d.overview.age_class, fr)}</p>
         )}
-        <Decisions fr={fr} value={draft.decision} options={BASIC_DECISIONS} onChange={(decision) => onChange({ decision })} />
+        <Decisions fr={fr} value={draft.decision} onChange={(decision) => onChange({ decision })} />
         {draft.decision === "switch_insurer" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-3 text-sm">
             <Info className="h-4 w-4 text-muted-foreground" />
@@ -496,7 +539,7 @@ function LcaCard({ d, draft, next, fr, onChange, onLetter }: {
         {d.policy.notice && <Badge variant="success" className="ml-auto">{fr ? "Enregistré" : "Saved"}</Badge>}
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="hidden gap-2 text-xs font-medium text-muted-foreground sm:grid sm:grid-cols-[1fr_6rem_7rem_9rem_6rem_2.25rem]">
+        <div className="hidden gap-2 text-xs font-medium text-muted-foreground sm:grid sm:grid-cols-[1fr_6rem_7rem_9rem_7.5rem_2.25rem]">
           <span>{fr ? "Complémentaire" : "Cover"}</span>
           <span className="text-right">{fr ? `Net ${d.overview.season_year}` : `${d.overview.season_year} net`}</span>
           <span>{fr ? `Prime ${next}` : `${next} premium`}</span>
@@ -507,7 +550,7 @@ function LcaCard({ d, draft, next, fr, onChange, onLetter }: {
         {draft.lines.map((l, i) => {
           const before = nowFor(l.name)
           return (
-            <div key={i} className="grid grid-cols-2 items-center gap-2 rounded-md bg-muted/30 p-2 sm:grid-cols-[1fr_6rem_7rem_9rem_6rem_2.25rem] sm:bg-transparent sm:p-0">
+            <div key={i} className="grid grid-cols-2 items-center gap-2 rounded-md bg-muted/30 p-2 sm:grid-cols-[1fr_6rem_7rem_9rem_7.5rem_2.25rem] sm:bg-transparent sm:p-0">
               <Input className="col-span-2 h-9 sm:col-span-1" value={l.name} placeholder={fr ? "Nom sur la police" : "Name on the policy"}
                 onChange={(e) => setLine(i, { name: e.target.value })} />
               <span className="text-right text-sm text-muted-foreground">{before ? formatPrice(lineNet(before)) : (fr ? "nouvelle" : "new")}</span>
@@ -524,7 +567,8 @@ function LcaCard({ d, draft, next, fr, onChange, onLetter }: {
               </div>
               <span className="text-right text-sm font-medium">
                 {formatPrice(lineNet(l))}
-                {lineDiscount(l) > 0 && <span className="block text-xs font-normal text-muted-foreground">− {formatPrice(lineDiscount(l))}</span>}
+                {before && <span className="block text-xs font-normal"><Change now={lineNet(before)} next={lineNet(l)} /></span>}
+                {lineDiscount(l) > 0 && <span className="block whitespace-nowrap text-xs font-normal text-muted-foreground">{fr ? "rabais" : "discount"} − {formatPrice(lineDiscount(l))}</span>}
               </span>
               <Button variant="ghost" size="icon" onClick={() => onChange({ lines: draft.lines.filter((_, j) => j !== i) })}
                 aria-label={fr ? "Retirer ce produit" : "Remove this product"}>
@@ -538,10 +582,11 @@ function LcaCard({ d, draft, next, fr, onChange, onLetter }: {
             <Plus className="mr-1 h-4 w-4" />{fr ? "Ajouter un produit" : "Add a product"}
           </Button>
           <span className="text-sm">
-            {fr ? "Total" : "Total"} : {formatPrice(nowTotal)} → <span className="font-semibold">{formatPrice(nextTotal)}</span> / {fr ? "mois" : "month"}
+            {fr ? "Total LCA" : "LCA total"} : {formatPrice(nowTotal)} → <span className="font-semibold">{formatPrice(nextTotal)}</span> / {fr ? "mois" : "month"}{" "}
+            <Change now={nowTotal} next={nextTotal} className="text-sm" />
           </span>
         </div>
-        <Decisions fr={fr} value={draft.decision} options={LCA_DECISIONS} onChange={(decision) => onChange({ decision })} lca />
+        <Decisions fr={fr} value={draft.decision} onChange={(decision) => onChange({ decision })} lca />
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Info className="h-4 w-4" />
           <span className="flex-1">
@@ -561,17 +606,23 @@ function LcaCard({ d, draft, next, fr, onChange, onLetter }: {
   )
 }
 
-function Decisions({ fr, value, options, onChange, lca = false }: {
-  fr: boolean; value: api.HealthDecision; options: api.HealthDecision[]; onChange: (d: api.HealthDecision) => void; lca?: boolean
+function Decisions({ fr, value, onChange, lca = false }: {
+  fr: boolean; value: api.HealthDecision; onChange: (d: api.HealthDecision) => void; lca?: boolean
 }) {
+  const validated = VALIDATED.includes(value)
+  const leaving = value === "switch_insurer"
+  // Clicking the active choice again undoes it.
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs font-medium text-muted-foreground">{fr ? "Décision" : "Decision"} :</span>
-      {options.map((d) => (
-        <Button key={d} type="button" size="sm" variant={value === d ? "default" : "outline"} onClick={() => onChange(d)}>
-          {lca && d === "switch_insurer" ? (fr ? "Je résilie" : "I cancel") : decisionLabel(d, fr)}
-        </Button>
-      ))}
+      <Button type="button" size="sm" variant={validated ? "default" : "outline"}
+        className={cn(validated && "bg-green-600 text-white hover:bg-green-600/90")}
+        onClick={() => onChange(validated ? "pending" : "keep")}>
+        <Check className="mr-1 h-4 w-4" />{validated ? (fr ? "Validé" : "Validated") : (fr ? "Valider" : "Validate")}
+      </Button>
+      <Button type="button" size="sm" variant={leaving ? "destructive" : "outline"}
+        onClick={() => onChange(leaving ? "pending" : "switch_insurer")}>
+        {lca ? (fr ? "Je résilie" : "I cancel") : (fr ? "Je change de caisse" : "I switch insurer")}
+      </Button>
     </div>
   )
 }
