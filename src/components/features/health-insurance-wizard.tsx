@@ -11,8 +11,10 @@ import { documentToText } from "@/lib/document-scan"
 import { CANTONS } from "@/lib/cantons"
 import { formatPrice, formatDate, cn } from "@/lib/utils"
 import {
-  HEALTH_MODELS, HEALTH_SUPPLEMENTARY_OPTIONS, ageClassFor, ageClassLabel, healthModelLabel, yearOf,
+  HEALTH_MODELS, HEALTH_SUPPLEMENTARY_OPTIONS, ageClassFor, ageClassLabel, healthModelLabel, linesTotal, yearOf,
+  type SupplementaryLine,
 } from "@/lib/health"
+import { SupplementaryLinesEditor, emptyLine } from "@/components/features/supplementary-lines-editor"
 import * as api from "@/lib/tauri"
 
 /// Guided creation of a Swiss health-insurance position, one person at a time.
@@ -165,8 +167,8 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
   const [firstBill, setFirstBill] = useState<{ due: string; total: number; parts: string } | null>(null)
   const [lcaInsurerId, setLcaInsurerId] = useState("")
   const [lcaPolicyNo, setLcaPolicyNo] = useState("")
-  const [lcaPremium, setLcaPremium] = useState("")
-  const [lcaOptions, setLcaOptions] = useState<Record<string, boolean>>({})
+  // One line per supplementary product, named as on the policy.
+  const [lcaLines, setLcaLines] = useState<SupplementaryLine[]>([emptyLine()])
   const [lcaEnd, setLcaEnd] = useState(`${thisYear}-12-31`)
   const [lcaNotice, setLcaNotice] = useState("90")
 
@@ -195,12 +197,18 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
     if (x.payment_method && PAY_METHODS.includes(x.payment_method)) { setPayMethod(x.payment_method); filled.push(fr ? "paiement" : "payment") }
     if (x.billing_cycle) { setCycle(x.billing_cycle); filled.push(fr ? "périodicité" : "frequency") }
     if (x.valid_from) { setStartDate(x.valid_from); filled.push(fr ? "début" : "start") }
-    if (x.supplementary_options.length > 0 || x.supplementary_monthly_premium != null) {
+    if (x.supplementary_lines.length > 0) {
       setHasLca(true)
-      const rec: Record<string, boolean> = {}
-      for (const slug of x.supplementary_options) rec[slug] = true
-      setLcaOptions(rec)
-      if (x.supplementary_monthly_premium != null) setLcaPremium(String(x.supplementary_monthly_premium))
+      setLcaLines(x.supplementary_lines)
+      filled.push(fr ? `${x.supplementary_lines.length} complémentaire(s)` : `${x.supplementary_lines.length} supplementary cover(s)`)
+    } else if (x.supplementary_monthly_premium != null) {
+      // Only a total on the policy: one line to rename, rather than nothing.
+      setHasLca(true)
+      const named = x.supplementary_options.map((slug) => HEALTH_SUPPLEMENTARY_OPTIONS.find((o) => o.slug === slug)).filter(Boolean)
+      setLcaLines([{
+        name: named.length > 0 ? named.map((o) => (fr ? o!.fr : o!.en)).join(", ") : (fr ? "Complémentaires" : "Supplementary"),
+        monthly_premium: x.supplementary_monthly_premium, discount_kind: "pct", discount_value: 0,
+      }])
       filled.push(fr ? "complémentaires" : "supplementary")
     }
     if (x.insurer_name) {
@@ -252,8 +260,9 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
   const subsidyValue = numOrNull(subsidy) ?? 0
   const step1Valid = (who !== OTHER || otherName.trim().length > 0) && birthDate.length === 10
   const step2Valid = !Number.isNaN(premiumValue) && premiumValue > 0 && franchise != null && subsidyValue <= premiumValue
-  const lcaPremiumValue = parseFloat(lcaPremium)
-  const step3Valid = !hasLca || (!Number.isNaN(lcaPremiumValue) && lcaPremiumValue > 0)
+  const lcaFilled = lcaLines.filter((l) => l.name.trim() || l.monthly_premium > 0)
+  const lcaPremiumValue = linesTotal(lcaFilled)
+  const step3Valid = !hasLca || (lcaFilled.length > 0 && lcaFilled.every((l) => l.name.trim() && l.monthly_premium > 0))
   const months = CYCLE_MONTHS[cycle] ?? 1
   const billedPerCycle = Number.isNaN(premiumValue) ? 0 : Math.max(0, premiumValue - subsidyValue) * months
 
@@ -317,7 +326,6 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
       const oneBill = hasLca && lcaSameInsurer && lcaOneBill
       const lcaMonths = oneBill ? months : (CYCLE_MONTHS[lcaCycle] ?? 1)
       if (hasLca) {
-        const selected = HEALTH_SUPPLEMENTARY_OPTIONS.filter((o) => lcaOptions[o.slug]).map((o) => o.slug)
         const lcaInsurer = lcaSameInsurer ? insurerId : lcaInsurerId
         const lcaInsurerName = creditorList.find((c) => c.id === lcaInsurer)?.name
         const lca = await api.createEngagement({
@@ -350,7 +358,8 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
           franchise: null,
           accident_covered: null,
           subsidy_monthly: null,
-          options_json: selected.length > 0 ? JSON.stringify(selected) : null,
+          options_json: null,
+          supplementary_lines_json: JSON.stringify(lcaFilled.map((l) => ({ ...l, name: l.name.trim() }))),
         })
         if (oneBill) await api.setBilledWithParent(lca.id, true)
         else await api.planNextEngagementCharge(lca.id)
@@ -390,8 +399,7 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
     setSubsidy("")
     setAccident(true)
     setHasLca(false)
-    setLcaOptions({})
-    setLcaPremium("")
+    setLcaLines([emptyLine()])
     setLcaPolicyNo("")
     setScanned(null)
     setFirstBill(null)
@@ -687,18 +695,9 @@ export function HealthInsuranceWizard({ creditors, cards, onClose }: HealthInsur
                       </div>
                     </>
                   )}
-                  <div className="sm:col-span-2 grid gap-2 sm:grid-cols-2">
-                    {HEALTH_SUPPLEMENTARY_OPTIONS.map((o) => (
-                      <label key={o.slug} className="flex items-center gap-3 rounded-lg border p-3 hover:bg-accent/40">
-                        <input type="checkbox" checked={!!lcaOptions[o.slug]}
-                          onChange={() => setLcaOptions((p) => ({ ...p, [o.slug]: !p[o.slug] }))} />
-                        <span className="text-sm">{fr ? o.fr : o.en}</span>
-                      </label>
-                    ))}
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">{fr ? "Prime mensuelle des complémentaires (CHF)" : "Monthly supplementary premium (CHF)"} *</label>
-                    <Input type="number" min="0" step="0.05" value={lcaPremium} onChange={(e) => setLcaPremium(e.target.value)} placeholder="0.00" />
+                  <div className="space-y-2 sm:col-span-2">
+                    <label className="text-sm font-medium">{fr ? "Vos complémentaires" : "Your supplementary covers"} *</label>
+                    <SupplementaryLinesEditor lines={lcaLines} onChange={setLcaLines} fr={fr} />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">{fr ? "Échéance du contrat" : "Contract term end"}</label>

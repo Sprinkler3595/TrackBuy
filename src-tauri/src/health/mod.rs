@@ -15,6 +15,7 @@
 pub mod calendar;
 pub mod checks;
 pub mod params;
+pub mod supplementary;
 
 pub use params::{age_class, known_years, params_for_year, AgeClass, HealthParams};
 

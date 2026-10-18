@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::commands::auth::AppState;
 use crate::health::calendar::{season_events, season_is_open, season_year_for, PolicyShape, SeasonEvent};
+use crate::health::supplementary::{monthly_total, parse_lines, validate};
 use crate::health::checks::{check_policy, EmploymentContext, HealthFinding, NoticeFacts, PolicyFacts};
 use crate::health::{
     age_class, compare_franchises, known_years, params_for_year, participation_status, AgeClass,
@@ -89,11 +90,13 @@ pub struct HealthPolicy {
     pub replaces_engagement_id: Option<String>,
     /// Date de la confirmation d'affiliation reçue de la nouvelle caisse.
     pub affiliation_confirmed_on: Option<String>,
+    /// Complémentaires LCA, une ligne nommée par produit (v39).
+    pub supplementary_lines_json: Option<String>,
 }
 
 const POLICY_COLUMNS: &str = "engagement_id, kind, insured_member_id, insured_name, insured_birth_date,
      canton, premium_region, model, franchise, accident_covered, subsidy_monthly, options_json,
-     replaces_engagement_id, affiliation_confirmed_on";
+     replaces_engagement_id, affiliation_confirmed_on, supplementary_lines_json";
 
 fn row_to_policy(r: &rusqlite::Row<'_>) -> rusqlite::Result<HealthPolicy> {
     Ok(HealthPolicy {
@@ -111,6 +114,7 @@ fn row_to_policy(r: &rusqlite::Row<'_>) -> rusqlite::Result<HealthPolicy> {
         options_json: r.get(11)?,
         replaces_engagement_id: r.get(12)?,
         affiliation_confirmed_on: r.get(13)?,
+        supplementary_lines_json: r.get(14)?,
     })
 }
 
@@ -135,12 +139,33 @@ pub fn upsert_policy_inner(conn: &Connection, p: &HealthPolicy) -> Result<Health
         Some(other) => return Err(format!("Engagement de type « {other} » : pas une assurance maladie")),
         None => return Err("Engagement introuvable".to_string()),
     }
+    // Les lignes LCA sont relues, validées et réécrites proprement : leur
+    // somme nette devient le montant facturé de l'engagement, à sa
+    // périodicité. Une fiche sans ligne garde le montant saisi ailleurs.
+    let lines = parse_lines(p.supplementary_lines_json.as_deref());
+    validate(&lines)?;
+    let lines_json = if lines.is_empty() { None } else { serde_json::to_string(&lines).ok() };
+    if kind == "supplementary" && !lines.is_empty() {
+        let (cycle, interval): (String, i32) = conn
+            .query_row("SELECT billing_cycle, cycle_interval FROM engagements WHERE id = ?1", [&p.engagement_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        if let Some(months) = months_per_cycle(&cycle, interval) {
+            let billed = (monthly_total(&lines) * months * 100.0).round() / 100.0;
+            conn.execute(
+                "UPDATE engagements SET current_amount = ?1, updated_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![billed, p.engagement_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
     conn.execute(
         "INSERT INTO health_policies
             (engagement_id, kind, insured_member_id, insured_name, insured_birth_date, canton,
              premium_region, model, franchise, accident_covered, subsidy_monthly, options_json,
-             replaces_engagement_id, affiliation_confirmed_on)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             replaces_engagement_id, affiliation_confirmed_on, supplementary_lines_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(engagement_id) DO UPDATE SET
             kind = excluded.kind, insured_member_id = excluded.insured_member_id,
             insured_name = excluded.insured_name, insured_birth_date = excluded.insured_birth_date,
@@ -150,11 +175,13 @@ pub fn upsert_policy_inner(conn: &Connection, p: &HealthPolicy) -> Result<Health
             subsidy_monthly = excluded.subsidy_monthly, options_json = excluded.options_json,
             replaces_engagement_id = excluded.replaces_engagement_id,
             affiliation_confirmed_on = excluded.affiliation_confirmed_on,
+            supplementary_lines_json = excluded.supplementary_lines_json,
             updated_at = datetime('now')",
         rusqlite::params![
             p.engagement_id, kind, p.insured_member_id, p.insured_name, p.insured_birth_date,
             p.canton, p.premium_region, p.model, p.franchise, p.accident_covered,
             p.subsidy_monthly, p.options_json, p.replaces_engagement_id, p.affiliation_confirmed_on,
+            lines_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -1485,5 +1512,30 @@ mod tests {
         assert_eq!(parent, "old");
         let planned: f64 = conn.query_row("SELECT amount FROM engagement_charges WHERE engagement_id = ?1", [&new_id], |r| r.get(0)).unwrap();
         assert_eq!(planned, 372.10, "la nouvelle caisse ne facture pas la LCA de l'ancienne");
+    }
+
+    #[test]
+    fn lignes_lca_nommees_fixent_le_montant() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements (id, name, engagement_type, billing_cycle, cycle_interval, current_amount, currency, auto_pay, status)
+             VALUES ('lca', 'LCA', 'insurance_health', 'quarterly', 1, 1.0, 'CHF', 1, 'active')",
+            [],
+        ).unwrap();
+        let lines = r#"[{"name":"Hospital Flex","monthly_premium":89.10,"discount_kind":"pct","discount_value":10},
+                       {"name":"Myflex Silver","monthly_premium":32.40,"discount_kind":"chf","discount_value":5}]"#;
+        upsert_policy_inner(&conn, &HealthPolicy {
+            engagement_id: "lca".into(), kind: "supplementary".into(),
+            supplementary_lines_json: Some(lines.into()), ..Default::default()
+        }).unwrap();
+        let amount: f64 = conn.query_row("SELECT current_amount FROM engagements WHERE id = 'lca'", [], |r| r.get(0)).unwrap();
+        assert_eq!(amount, 322.77, "(80.19 + 27.40) × 3 mois");
+
+        let bad = upsert_policy_inner(&conn, &HealthPolicy {
+            engagement_id: "lca".into(), kind: "supplementary".into(),
+            supplementary_lines_json: Some(r#"[{"name":" ","monthly_premium":10}]"#.into()), ..Default::default()
+        });
+        assert!(bad.is_err());
     }
 }

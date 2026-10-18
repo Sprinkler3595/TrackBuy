@@ -94,6 +94,7 @@ Affichée dans l'onglet **Revenus**, au-dessus de la liste.
 - **Barèmes LAMal versionnés par année** ([health/params.rs](src-tauri/src/health/params.rs)) : franchises adultes et enfants, quote-part 10 % plafonnée à 700 / 350 CHF, quote-part de 40 % sur les originaux, contribution hospitalière, classes d'âge, et les repères publiés chaque automne par l'OFSP (prime moyenne, hausse moyenne). Une année inconnue est marquée « estimée »
 - **Saison des primes** ([health/calendar.rs](src-tauri/src/health/calendar.rs)) : avis de prime dû au 31 octobre, résiliation **reçue** au 30 novembre (ramenée au dernier jour ouvrable quand elle tombe un week-end, avec date d'envoi conseillée du recommandé), franchise à la hausse jusqu'au 31 décembre, affiliation confirmée par la nouvelle caisse, et sortie au 30 juin réservée à la franchise ordinaire en modèle standard. Bandeau « Primes maladie » de mi-septembre à fin décembre sur la page Engagements
 - **Avis de prime annuel** : saisi par police et par année — assurance de base comme complémentaires —, comparé à la prime en cours et à la hausse moyenne OFSP, avec la nouvelle réduction de primes cantonale et la décision prise (rester, changer de franchise, de modèle ou de caisse). Il crée une révision `applies_on_roll` : les échéances passent d'elles-mêmes à la nouvelle prime, nette du nouveau subside, le 1er janvier
+- **Complémentaires LCA nommées** ([health/supplementary.rs](src-tauri/src/health/supplementary.rs)) : une ligne par produit, avec le nom exact de la police (« Hospital Flex », « Myflex Silver »…), sa prime mensuelle et son rabais en % ou en CHF ; le total net devient le montant facturé de la LCA. Le scan de la police lit ces lignes, rabais compris
 - **Une facture, une échéance** : LAMal et complémentaires chez la même caisse se paient sur un seul bulletin. Le sous-engagement LCA est alors `billed_with_parent` : la LAMal porte une échéance du montant total (détail en note), la LCA n'en génère aucune tant que la LAMal court, et chacune garde sa prime et ses révisions. Réglable par police dans l'onglet Santé ; même case « Une seule facture loyer + place de parc » dans l'assistant loyer, et sur l'onglet Aperçu de tout sous-engagement existant
 - **Première échéance planifiée dès la création** (`plan_next_engagement_charge`), à la date et à la périodicité choisies dans l'assistant ; sa date passée, elle est traitée comme celles du roll-forward (présumée payée en cas de prélèvement)
 - **Toute la famille en un écran** : « Saisir les avis » liste chaque police active du ménage sur une ligne ; la lettre de la caisse se scanne (`ai_extract_premium_notice`) et chaque personne lue est rapprochée de sa police par son prénom — celles qui ne correspondent à rien sont signalées, jamais devinées
@@ -385,12 +386,12 @@ sont aussi lançables en mode debug (icône scarabée) pour poser des points d'a
 
 ## Roadmap / état du projet
 
-**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 38`) et le format de backup peuvent encore évoluer avant 1.0.
+**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 39`) et le format de backup peuvent encore évoluer avant 1.0.
 
 ### Stable & implémenté
 
 - Multi-coffres + switch à chaud + **rotation du mot de passe maître** (rekey base + pièces jointes, rejouable)
-- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v38`, refus des schémas plus récents)
+- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v39`, refus des schémas plus récents)
 - Achats / engagements / abonnements / revenus / remboursements / garanties / créanciers / ménage
 - Banque : import CAMT.053 + OCR, QR-facture, rapprochement avec garde-fou anti-doublon
 - Impôts : rubriques déductibles, attribution par membre du ménage

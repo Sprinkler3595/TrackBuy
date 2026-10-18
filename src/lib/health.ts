@@ -70,3 +70,34 @@ export const yearOf = (iso: string | null | undefined): number | null => {
   const y = iso ? parseInt(iso.slice(0, 4), 10) : NaN
   return Number.isNaN(y) ? null : y
 }
+
+/// One supplementary (LCA) product, named as on the policy. Mirror of
+/// `health::supplementary::SupplementaryLine`.
+export interface SupplementaryLine {
+  name: string
+  monthly_premium: number
+  /// "pct" = percent of the premium, "chf" = francs per month.
+  discount_kind: "pct" | "chf"
+  discount_value: number
+}
+
+export const round2 = (v: number) => Math.round(v * 100) / 100
+
+export const lineDiscount = (l: SupplementaryLine): number => {
+  const d = l.discount_kind === "pct" ? l.monthly_premium * l.discount_value / 100 : l.discount_value
+  return round2(Math.min(Math.max(d, 0), Math.max(l.monthly_premium, 0)))
+}
+
+export const lineNet = (l: SupplementaryLine): number => round2(l.monthly_premium - lineDiscount(l))
+
+export const linesTotal = (lines: SupplementaryLine[]): number => round2(lines.reduce((s, l) => s + lineNet(l), 0))
+
+export const parseLines = (json: string | null | undefined): SupplementaryLine[] => {
+  if (!json) return []
+  try {
+    const v = JSON.parse(json)
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}

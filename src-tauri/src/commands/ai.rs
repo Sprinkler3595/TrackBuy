@@ -515,6 +515,9 @@ RÈGLES D'EXTRACTION :
 11. `valid_from` = début de validité de la police ou de la nouvelle prime, YYYY-MM-DD (les dates suisses s'écrivent JJ.MM.AAAA).
 12. `canton` = canton de domicile en code à deux lettres (VD, GE, ZH…) ; `premium_region` = région de primes « 0 », « 1 », « 2 » ou « 3 » si indiquée.
 13. `payment_method` ∈ {"qr_bill","direct_debit","standing_order"} ; `billing_cycle` ∈ {"monthly","quarterly","semiannual","yearly"} = périodicité de paiement des primes.
+14. `supplementary_lines` = une entrée par assurance complémentaire (LCA) de la première personne, AVEC SON NOM EXACT sur la police (ex : « Hospital Flex », « Myflex Silver », « Diversa Plus ») :
+    - `name` ; `monthly_premium` = prime MENSUELLE avant rabais ;
+    - `discount_pct` = rabais en % s'il est exprimé en pour-cent ; `discount_chf` = rabais MENSUEL en CHF s'il est exprimé en francs. L'autre vaut null ; les deux null s'il n'y a pas de rabais.
 
 FORMAT DE RÉPONSE (JSON strict, sans markdown) :
 {
@@ -533,7 +536,8 @@ FORMAT DE RÉPONSE (JSON strict, sans markdown) :
   "canton": string|null,
   "premium_region": string|null,
   "payment_method": "qr_bill"|"direct_debit"|"standing_order"|null,
-  "billing_cycle": "monthly"|"quarterly"|"semiannual"|"yearly"|null
+  "billing_cycle": "monthly"|"quarterly"|"semiannual"|"yearly"|null,
+  "supplementary_lines": [{"name": string, "monthly_premium": number, "discount_pct": number|null, "discount_chf": number|null}]
 }
 
 TEXTE DE LA POLICE (entre <<<>>>) :
@@ -557,6 +561,8 @@ pub struct ExtractedHealthInsurance {
     pub premium_region: Option<String>,
     pub payment_method: Option<String>,
     pub billing_cycle: Option<String>,
+    /// Complémentaires nommées comme sur la police, avec leur rabais.
+    pub supplementary_lines: Vec<crate::health::supplementary::SupplementaryLine>,
 }
 
 /// Miroir de HEALTH_SUPPLEMENTARY_OPTIONS côté frontend.
@@ -595,13 +601,22 @@ fn health_insurance_schema() -> Value {
             "canton": s(),
             "premium_region": s(),
             "payment_method": {"type": ["string", "null"], "enum": ["qr_bill", "direct_debit", "standing_order", null]},
-            "billing_cycle": {"type": ["string", "null"], "enum": ["monthly", "quarterly", "semiannual", "yearly", null]}
+            "billing_cycle": {"type": ["string", "null"], "enum": ["monthly", "quarterly", "semiannual", "yearly", null]},
+            "supplementary_lines": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}, "monthly_premium": {"type": "number"},
+                    "discount_pct": n(), "discount_chf": n()
+                },
+                "required": ["name", "monthly_premium", "discount_pct", "discount_chf"],
+                "additionalProperties": false
+            }}
         },
         "required": [
             "insurer_name", "policy_number", "insured_name", "insured_birth_date", "model",
             "franchise", "accident_covered", "basic_monthly_premium", "subsidy_monthly",
             "supplementary_monthly_premium", "supplementary_options", "valid_from", "canton",
-            "premium_region", "payment_method", "billing_cycle"
+            "premium_region", "payment_method", "billing_cycle", "supplementary_lines"
         ],
         "additionalProperties": false
     })
@@ -663,7 +678,37 @@ fn parse_health_insurance(v: &Value) -> ExtractedHealthInsurance {
         premium_region,
         payment_method: as_opt_string(&v["payment_method"]),
         billing_cycle: as_opt_string(&v["billing_cycle"]),
+        supplementary_lines: parse_supplementary_lines(&v["supplementary_lines"]),
     }
+}
+
+/// Lignes LCA lues sur la police : un nom et une prime positive, sinon la
+/// ligne est écartée. Un rabais en % prime sur un rabais en francs quand le
+/// modèle donne les deux.
+fn parse_supplementary_lines(v: &Value) -> Vec<crate::health::supplementary::SupplementaryLine> {
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| {
+                    let name = as_opt_string(&l["name"])?;
+                    let premium = l["monthly_premium"].as_f64().filter(|p| p.is_finite() && *p > 0.0)?;
+                    let pct = l["discount_pct"].as_f64().filter(|d| *d > 0.0 && *d <= 100.0);
+                    let chf = l["discount_chf"].as_f64().filter(|d| *d > 0.0 && *d <= premium);
+                    let (kind, value) = match (pct, chf) {
+                        (Some(p), _) => ("pct", p),
+                        (None, Some(c)) => ("chf", c),
+                        (None, None) => ("pct", 0.0),
+                    };
+                    Some(crate::health::supplementary::SupplementaryLine {
+                        name,
+                        monthly_premium: premium,
+                        discount_kind: kind.to_string(),
+                        discount_value: value,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ===========================================================================
@@ -2488,5 +2533,18 @@ mod tests {
         assert_eq!(x.billing_mode.as_deref(), Some("tiers_garant"));
         assert_eq!(x.lines.len(), 1, "ligne sans montant positif écartée");
         assert_eq!(x.lines[0].franchise, 180.0);
+    }
+
+    #[test]
+    fn lignes_lca_de_la_police() {
+        let v = json!([
+            {"name": "Hospital Flex", "monthly_premium": 89.1, "discount_pct": 10, "discount_chf": null},
+            {"name": "Myflex", "monthly_premium": 32.4, "discount_pct": null, "discount_chf": 5},
+            {"name": "", "monthly_premium": 10}
+        ]);
+        let lines = parse_supplementary_lines(&v);
+        assert_eq!(lines.len(), 2);
+        assert_eq!((lines[0].discount_kind.as_str(), lines[0].discount_value), ("pct", 10.0));
+        assert_eq!((lines[1].discount_kind.as_str(), lines[1].discount_value), ("chf", 5.0));
     }
 }

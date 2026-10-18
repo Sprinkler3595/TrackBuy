@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
 import { CancellationLetterModal } from "@/components/features/cancellation-letter"
 import { HealthNoticesModal } from "@/components/features/health-notices-modal"
+import { SupplementaryLinesEditor } from "@/components/features/supplementary-lines-editor"
 import { InlineCreateSelect } from "@/components/ui/inline-create-select"
 import { getCancellationInfo } from "@/lib/cancellation"
 import { getAiSettings } from "@/lib/ai-settings"
@@ -19,7 +20,8 @@ import { documentToText } from "@/lib/document-scan"
 import { formatDate, formatPrice, daysUntil, cn } from "@/lib/utils"
 import { CANTONS } from "@/lib/cantons"
 import {
-  HEALTH_MODELS, HEALTH_SUPPLEMENTARY_OPTIONS, ageClassLabel, decisionLabel, healthModelLabel, parseOptions, supplementaryLabel,
+  HEALTH_MODELS, ageClassLabel, decisionLabel, healthModelLabel, lineDiscount, lineNet, linesTotal, parseLines, parseOptions,
+  supplementaryLabel, type SupplementaryLine,
 } from "@/lib/health"
 import * as api from "@/lib/tauri"
 
@@ -116,6 +118,7 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
   const startEdit = () => {
     setForm(p ?? blank)
     setSubsidy(p?.subsidy_monthly?.toString() ?? "")
+    setLines(linesFrom(p))
     setEditing(true)
   }
 
@@ -154,11 +157,23 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
   }
 
   const allFranchises = params ? [...new Set([...params.child_franchises, ...params.adult_franchises])].sort((a, b) => a - b) : []
-  const options = parseOptions(form.options_json)
+  // Legacy ticked covers (before named lines) become lines to price, so an
+  // old record is completed rather than lost.
+  const [lines, setLines] = useState<SupplementaryLine[]>([])
+  const linesFrom = (pol: api.HealthPolicy | null): SupplementaryLine[] => {
+    const named = parseLines(pol?.supplementary_lines_json)
+    if (named.length > 0) return named
+    return parseOptions(pol?.options_json).map((slug) => ({ name: supplementaryLabel(slug, fr), monthly_premium: 0, discount_kind: "pct", discount_value: 0 }))
+  }
 
   async function save() {
     try {
-      await api.upsertHealthPolicy({ ...form, subsidy_monthly: numOrNull(subsidy) })
+      const kept = lines.filter((l) => l.name.trim() || l.monthly_premium > 0).map((l) => ({ ...l, name: l.name.trim() }))
+      await api.upsertHealthPolicy({
+        ...form,
+        subsidy_monthly: numOrNull(subsidy),
+        ...(form.kind === "supplementary" ? { supplementary_lines_json: kept.length ? JSON.stringify(kept) : null, options_json: kept.length ? null : form.options_json } : {}),
+      })
       toast(fr ? "Fiche santé enregistrée." : "Health record saved.", "success")
       setEditing(false)
       await onSaved()
@@ -239,17 +254,11 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
               </label>
             </>
           ) : (
-            <div className="sm:col-span-2 grid gap-2 sm:grid-cols-2">
-              {HEALTH_SUPPLEMENTARY_OPTIONS.map((o) => (
-                <label key={o.slug} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={options.includes(o.slug)}
-                    onChange={() => {
-                      const next = options.includes(o.slug) ? options.filter((x) => x !== o.slug) : [...options, o.slug]
-                      setForm({ ...form, options_json: next.length ? JSON.stringify(next) : null })
-                    }} />
-                  {fr ? o.fr : o.en}
-                </label>
-              ))}
+            <div className="sm:col-span-2 space-y-1">
+              <SupplementaryLinesEditor lines={lines} onChange={setLines} fr={fr} />
+              <p className="text-xs text-muted-foreground">
+                {fr ? "Le total net devient le montant facturé de cette complémentaire, à sa périodicité." : "The net total becomes this cover's billed amount."}
+              </p>
             </div>
           )}
           <div className="sm:col-span-2 flex gap-2">
@@ -308,11 +317,41 @@ function PolicyCard({ engagement, overview, params, fr, onSaved, toast }: {
         ) : (
           <div className="sm:col-span-3">
             <p className="text-xs text-muted-foreground">{fr ? "Couvertures" : "Covers"}</p>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {parseOptions(p.options_json).length === 0 ? "—" : parseOptions(p.options_json).map((o) => (
-                <Badge key={o} variant="secondary">{supplementaryLabel(o, fr)}</Badge>
-              ))}
-            </div>
+            {parseLines(p.supplementary_lines_json).length > 0 ? (
+              <table className="mt-1 w-full text-sm">
+                <thead className="text-xs text-muted-foreground">
+                  <tr>
+                    <th className="text-left font-normal">{fr ? "Complémentaire" : "Cover"}</th>
+                    <th className="text-right font-normal">{fr ? "Prime" : "Premium"}</th>
+                    <th className="text-right font-normal">{fr ? "Rabais" : "Discount"}</th>
+                    <th className="text-right font-normal">Net</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parseLines(p.supplementary_lines_json).map((l, i) => (
+                    <tr key={i} className="border-t">
+                      <td className="py-1">{l.name}</td>
+                      <td className="py-1 text-right">{formatPrice(l.monthly_premium)}</td>
+                      <td className="py-1 text-right text-muted-foreground">
+                        {lineDiscount(l) > 0 ? `− ${formatPrice(lineDiscount(l))}${l.discount_kind === "pct" ? ` (${l.discount_value} %)` : ""}` : "—"}
+                      </td>
+                      <td className="py-1 text-right">{formatPrice(lineNet(l))}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-t font-semibold">
+                    <td className="py-1" colSpan={3}>{fr ? "Total par mois" : "Total per month"}</td>
+                    <td className="py-1 text-right">{formatPrice(linesTotal(parseLines(p.supplementary_lines_json)))}</td>
+                  </tr>
+                </tbody>
+              </table>
+            ) : (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {parseOptions(p.options_json).length === 0 ? "—" : parseOptions(p.options_json).map((o) => (
+                  <Badge key={o} variant="secondary">{supplementaryLabel(o, fr)}</Badge>
+                ))}
+                <span className="text-xs text-muted-foreground">{fr ? "· crayon : nommer et chiffrer chaque complémentaire" : "· pencil: name and price each cover"}</span>
+              </div>
+            )}
           </div>
         )}
         {p.kind === "basic" && billParts.length > 0 && engagement.current_amount != null && (

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 38;
+pub const CURRENT_SCHEMA_VERSION: i64 = 39;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -144,6 +144,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 38 {
         migrate_v38(conn)?;
+    }
+    if current_version < 39 {
+        migrate_v39(conn)?;
     }
 
     Ok(())
@@ -2526,6 +2529,24 @@ fn migrate_v38(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (38);
         "
     ).map_err(|e| format!("Migration v38 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v39 — les complémentaires LCA par leur nom.
+///
+/// `health_policies.supplementary_lines_json` : une ligne par produit LCA,
+/// nommée comme sur la police, avec sa prime mensuelle et son rabais (en %
+/// ou en CHF). La somme nette devient le montant de l'engagement LCA. Les
+/// cases `options_json` restent lisibles pour les fiches déjà saisies.
+fn migrate_v39(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE health_policies ADD COLUMN supplementary_lines_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (39);
+        "
+    ).map_err(|e| format!("Migration v39 failed: {}", e))?;
 
     Ok(())
 }

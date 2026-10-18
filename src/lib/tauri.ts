@@ -571,6 +571,7 @@ export interface ExtractedHealthInsurance {
   premium_region: string | null
   payment_method: EngagementPaymentMethod | null
   billing_cycle: EngagementBillingCycle | null
+  supplementary_lines: { name: string; monthly_premium: number; discount_kind: "pct" | "chf"; discount_value: number }[]
 }
 
 export const aiExtractHealthInsurance = (ocrText: string, config: AiExtractionConfig) =>
@@ -2846,6 +2847,8 @@ export interface HealthPolicy {
   replaces_engagement_id?: string | null
   /// Date the new insurer's affiliation confirmation was received.
   affiliation_confirmed_on?: string | null
+  /// Supplementary (LCA) products, one named line each (schema v39).
+  supplementary_lines_json?: string | null
 }
 
 export const getHealthPolicy = (engagementId: string) =>
