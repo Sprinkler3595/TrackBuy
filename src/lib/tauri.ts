@@ -3077,3 +3077,50 @@ export const compareHealthFranchises = (
   options: FranchiseOption[],
   expectedCosts: number,
 ) => invoke<FranchiseComparison>("compare_health_franchises", { year, birthYear, options, expectedCosts })
+
+// ---------------------------------------------------------------------------
+// Documents d'assurance maladie (schema v41)
+// ---------------------------------------------------------------------------
+
+export type HealthDocKind =
+  | "policy" | "premium_notice" | "benefit_statement" | "premium_invoice"
+  | "subsidy_decision" | "affiliation" | "cancellation" | "tax_certificate" | "other"
+
+export interface HealthDocClassification {
+  kind: HealthDocKind
+  year: number | null
+  engagement_ids: string[]
+  people: string[]
+  /// Keyword that decided the kind, shown to the user.
+  matched: string | null
+}
+
+/// Local, keyword-based guess (FR/DE/IT) of what a document is, its year and
+/// who it concerns — from the document's text. No AI, nothing sent.
+export const classifyHealthDocument = (text: string) =>
+  invoke<HealthDocClassification>("classify_health_document", { text })
+
+export const fileHealthDocument = (document: {
+  attachment_id: string
+  kind: HealthDocKind
+  year: number | null
+  summary?: string | null
+  engagement_ids: string[]
+}) => invoke<void>("file_health_document", { document })
+
+export interface HealthDocument {
+  attachment_id: string
+  display_name: string
+  mime_type: string
+  size_bytes: number
+  created_at: string
+  kind: HealthDocKind
+  year: number
+  summary: string | null
+  /// false = attached before classification; kind/year are inferred.
+  filed: boolean
+  engagement_ids: string[]
+  people: string[]
+}
+
+export const listHealthDocuments = () => invoke<HealthDocument[]>("list_health_documents")

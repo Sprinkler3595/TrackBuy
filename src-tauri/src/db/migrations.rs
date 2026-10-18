@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 40;
+pub const CURRENT_SCHEMA_VERSION: i64 = 41;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -150,6 +150,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 40 {
         migrate_v40(conn)?;
+    }
+    if current_version < 41 {
+        migrate_v41(conn)?;
     }
 
     Ok(())
@@ -2568,6 +2571,47 @@ fn migrate_v40(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (40);
         "
     ).map_err(|e| format!("Migration v40 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v41 — les documents d'assurance maladie savent ce qu'ils sont.
+///
+/// Une pièce jointe dit à quel engagement elle appartient et son type
+/// générique (contrat, facture…). Pour la santé, cela ne suffit pas à s'y
+/// retrouver : il faut savoir QUEL courrier c'est (police, avis de prime,
+/// décompte, facture, subside, affiliation, résiliation, attestation
+/// fiscale), pour QUELLE année, et pour QUI — un avis familial concerne
+/// plusieurs polices.
+///
+/// - `health_documents` : la sorte, l'année et un résumé, 1:1 avec la pièce
+///   jointe (supprimée avec elle) ;
+/// - `health_document_policies` : les polices concernées, au-delà de celle
+///   qui porte le fichier. Le fichier chiffré n'existe qu'une fois.
+fn migrate_v41(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        CREATE TABLE health_documents (
+            attachment_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL DEFAULT 'other',
+            year INTEGER,
+            summary TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_health_documents_year ON health_documents(year);
+
+        CREATE TABLE health_document_policies (
+            attachment_id TEXT NOT NULL,
+            engagement_id TEXT NOT NULL,
+            PRIMARY KEY (attachment_id, engagement_id),
+            FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE,
+            FOREIGN KEY (engagement_id) REFERENCES engagements(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO schema_version (version) VALUES (41);
+        "
+    ).map_err(|e| format!("Migration v41 failed: {}", e))?;
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import {
-  AlertTriangle, ArrowRightLeft, CalendarClock, Check, FileText, HeartPulse, Info, Loader2, Plus, Sparkles, Trash2,
+  AlertTriangle, ArrowRightLeft, CalendarClock, Check, FileText, FolderOpen, HeartPulse, Info, Loader2, Plus, Sparkles, Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -340,6 +340,7 @@ export function HealthSeasonPage() {
             <label className="text-xs font-medium">{fr ? "Lettre reçue le" : "Letter received on"}</label>
             <Input type="date" className="h-9" value={receivedOn} onChange={(e) => { setReceivedOn(e.target.value); setDirty(new Set(details.map((d) => d.policy.engagement_id))) }} />
           </div>
+          <Link to="/documents-sante"><Button variant="outline"><FolderOpen className="mr-1 h-4 w-4" />Documents</Button></Link>
           <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={scanning}>
             {scanning ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
             {fr ? "Scanner la lettre" : "Scan the letter"}

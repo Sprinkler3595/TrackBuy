@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::commands::auth::AppState;
 use crate::health::calendar::{season_events, season_is_open, season_year_for, PolicyShape, SeasonEvent};
+use crate::health::documents::{classify as classify_document, Classification, KnownPolicy, KINDS as DOCUMENT_KINDS};
 use crate::health::supplementary::{monthly_total, parse_lines, validate};
 use crate::health::checks::{check_policy, EmploymentContext, HealthFinding, NoticeFacts, PolicyFacts};
 use crate::health::{
@@ -1068,6 +1069,165 @@ pub fn get_health_season(state: State<'_, AppState>) -> Result<HealthSeason, Str
 }
 
 // ===========================================================================
+// Documents
+// ===========================================================================
+
+/// Toutes les polices santé connues — actives ou quittées, puisque l'on
+/// classe aussi les courriers de l'ancienne caisse — avec la personne.
+fn known_policies(conn: &Connection) -> Result<Vec<KnownPolicy>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.id, COALESCE(hm.name, hp.insured_name),
+                    COALESCE(hp.kind, CASE WHEN e.parent_engagement_id IS NULL THEN 'basic' ELSE 'supplementary' END)
+             FROM engagements e
+             LEFT JOIN health_policies hp ON hp.engagement_id = e.id
+             LEFT JOIN household_members hm ON hm.id = hp.insured_member_id
+             WHERE e.engagement_type = 'insurance_health'
+             ORDER BY e.status = 'active' DESC, e.created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    stmt.query_map([], |r| Ok(KnownPolicy { engagement_id: r.get(0)?, insured_label: r.get(1)?, kind: r.get(2)? }))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn classify_health_document(state: State<'_, AppState>, text: String) -> Result<Classification, String> {
+    with_conn!(state, conn, {
+        let policies = known_policies(&conn)?;
+        // Le titulaire n'a parfois ni membre ni nom : sans prénom à chercher,
+        // on ne le reconnaîtra pas, et l'écran le laisse choisir.
+        Ok(classify_document(&text, &policies, today().year()))
+    })
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct FileHealthDocument {
+    pub attachment_id: String,
+    pub kind: String,
+    pub year: Option<i32>,
+    pub summary: Option<String>,
+    /// Toutes les polices concernées. La première porte le fichier.
+    pub engagement_ids: Vec<String>,
+}
+
+/// Range un document : sa sorte, son année, ses polices. Rejouable — c'est
+/// aussi ce qu'appelle l'écran quand on corrige un classement.
+pub fn file_document_inner(conn: &Connection, d: &FileHealthDocument) -> Result<(), String> {
+    let kind = if DOCUMENT_KINDS.contains(&d.kind.as_str()) { d.kind.as_str() } else { "other" };
+    conn.execute(
+        "INSERT INTO health_documents (attachment_id, kind, year, summary) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(attachment_id) DO UPDATE SET kind = excluded.kind, year = excluded.year,
+             summary = excluded.summary",
+        rusqlite::params![d.attachment_id, kind, d.year, d.summary],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM health_document_policies WHERE attachment_id = ?1", [&d.attachment_id])
+        .map_err(|e| e.to_string())?;
+    for id in &d.engagement_ids {
+        conn.execute(
+            "INSERT OR IGNORE INTO health_document_policies (attachment_id, engagement_id) VALUES (?1, ?2)",
+            rusqlite::params![d.attachment_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // Le fichier suit la première police choisie.
+    if let Some(first) = d.engagement_ids.first() {
+        conn.execute(
+            "UPDATE attachments SET engagement_id = ?1 WHERE id = ?2 AND engagement_id IS NOT NULL",
+            rusqlite::params![first, d.attachment_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn file_health_document(state: State<'_, AppState>, document: FileHealthDocument) -> Result<(), String> {
+    with_conn!(state, conn, file_document_inner(&conn, &document))
+}
+
+#[derive(Debug, Serialize)]
+pub struct HealthDocument {
+    pub attachment_id: String,
+    pub display_name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub created_at: String,
+    /// Sorte de document ; pour un fichier joint avant v41, déduite de son
+    /// type générique (contrat → police, facture → facture de primes…).
+    pub kind: String,
+    /// Année du document ; à défaut, celle de son ajout.
+    pub year: i32,
+    pub summary: Option<String>,
+    /// `true` quand la sorte et l'année ont été confirmées (fichier rangé).
+    pub filed: bool,
+    pub engagement_ids: Vec<String>,
+    pub people: Vec<String>,
+}
+
+pub fn list_documents_inner(conn: &Connection) -> Result<Vec<HealthDocument>, String> {
+    let policies = known_policies(conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.id, a.display_name, a.mime_type, a.size_bytes, a.created_at, a.attachment_type,
+                    a.engagement_id, hd.kind, hd.year, hd.summary
+             FROM attachments a
+             JOIN engagements e ON e.id = a.engagement_id
+             LEFT JOIN health_documents hd ON hd.attachment_id = a.id
+             WHERE e.engagement_type = 'insurance_health'
+             ORDER BY COALESCE(hd.year, CAST(substr(a.created_at, 1, 4) AS INTEGER)) DESC, a.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    type Row = (String, String, String, i64, String, String, String, Option<String>, Option<i32>, Option<String>);
+    let rows: Vec<Row> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, display_name, mime_type, size_bytes, created_at, att_type, eng_id, kind, year, summary) in rows {
+        let mut ids: Vec<String> = conn
+            .prepare("SELECT engagement_id FROM health_document_policies WHERE attachment_id = ?1")
+            .map_err(|e| e.to_string())?
+            .query_map([&id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if ids.is_empty() {
+            ids.push(eng_id);
+        }
+        let mut people: Vec<String> = Vec::new();
+        for i in &ids {
+            if let Some(label) = policies.iter().find(|p| &p.engagement_id == i).and_then(|p| p.insured_label.clone())
+                && !people.contains(&label)
+            {
+                people.push(label);
+            }
+        }
+        let filed = kind.is_some();
+        let kind = kind.unwrap_or_else(|| match att_type.as_str() {
+            "contract" => "policy",
+            "invoice" | "qrbill" | "payment_confirmation" => "premium_invoice",
+            "claim" => "benefit_statement",
+            _ => "other",
+        }.to_string());
+        let year = year.unwrap_or_else(|| created_at.get(0..4).and_then(|y| y.parse().ok()).unwrap_or(0));
+        out.push(HealthDocument { attachment_id: id, display_name, mime_type, size_bytes, created_at, kind, year, summary, filed, engagement_ids: ids, people });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn list_health_documents(state: State<'_, AppState>) -> Result<Vec<HealthDocument>, String> {
+    with_conn!(state, conn, list_documents_inner(&conn))
+}
+
+// ===========================================================================
 // Comparaison des franchises
 // ===========================================================================
 
@@ -1585,5 +1745,38 @@ mod tests {
         // En 2027, la fiche montre les lignes de l'avis.
         let o = overview_inner(&conn, "lca", date(2027, 2, 1)).unwrap();
         assert!(o.policy.unwrap().supplementary_lines_json.unwrap().contains("Dentaire"));
+    }
+
+    #[test]
+    fn documents_ranges_et_relus() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute("INSERT INTO household_members (id, name, relation) VALUES ('m1', 'Sophie Dubois', 'self')", []).unwrap();
+        insert_health(&conn, "a", 400.0);
+        insert_health(&conn, "b", 120.0);
+        upsert_policy_inner(&conn, &HealthPolicy { engagement_id: "a".into(), kind: "basic".into(), insured_member_id: Some("m1".into()), ..Default::default() }).unwrap();
+        conn.execute_batch(
+            "INSERT INTO attachments (id, engagement_id, original_name, display_name, mime_type, file_path, size_bytes, attachment_type, created_at)
+             VALUES ('f1', 'a', 'x.pdf', 'Avis', 'application/pdf', 'p1', 10, 'other', '2026-10-08 10:00:00'),
+                    ('f2', 'a', 'y.pdf', 'Police', 'application/pdf', 'p2', 10, 'contract', '2025-12-20 10:00:00');",
+        ).unwrap();
+        file_document_inner(&conn, &FileHealthDocument {
+            attachment_id: "f1".into(), kind: "premium_notice".into(), year: Some(2027),
+            engagement_ids: vec!["b".into(), "a".into()], ..Default::default()
+        }).unwrap();
+        let docs = list_documents_inner(&conn).unwrap();
+        let f1 = docs.iter().find(|d| d.attachment_id == "f1").unwrap();
+        assert_eq!((f1.kind.as_str(), f1.year, f1.filed), ("premium_notice", 2027, true));
+        assert_eq!(f1.engagement_ids.len(), 2);
+        assert_eq!(f1.people, vec!["Sophie Dubois".to_string()]);
+        let owner: String = conn.query_row("SELECT engagement_id FROM attachments WHERE id = 'f1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(owner, "b", "le fichier suit la première police choisie");
+        // Fichier joint avant le classement : déduit de son type générique.
+        let f2 = docs.iter().find(|d| d.attachment_id == "f2").unwrap();
+        assert_eq!((f2.kind.as_str(), f2.year, f2.filed), ("policy", 2025, false));
+        // Supprimer la pièce jointe emporte le classement.
+        conn.execute("DELETE FROM attachments WHERE id = 'f1'", []).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM health_documents", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 }

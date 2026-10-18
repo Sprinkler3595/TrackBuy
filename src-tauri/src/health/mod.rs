@@ -14,6 +14,7 @@
 
 pub mod calendar;
 pub mod checks;
+pub mod documents;
 pub mod params;
 pub mod supplementary;
 

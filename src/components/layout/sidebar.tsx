@@ -17,6 +17,7 @@ import {
   Undo2,
   Car,
   CalendarClock,
+  FolderOpen,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
@@ -61,16 +62,21 @@ interface SidebarProps {
 /// useful: from the publication of the premiums to 31 December, and only for
 /// a household with health insurance. Re-read on every navigation, so the
 /// "to decide" count follows what was just saved.
-function useHealthSeasonEntry(): { year: number; pending: number } | null {
+/// Health documents are listed as soon as the household has a health policy.
+function useHealthSeasonEntry(): { year: number; pending: number; open: boolean; hasHealth: boolean } | null {
   const location = useLocation()
-  const [entry, setEntry] = useState<{ year: number; pending: number } | null>(null)
+  const [entry, setEntry] = useState<{ year: number; pending: number; open: boolean; hasHealth: boolean } | null>(null)
   useEffect(() => {
     let alive = true
     getHealthSeason()
       .then((s) => {
         if (!alive) return
-        if (!s.open || s.policies.length === 0) { setEntry(null); return }
-        setEntry({ year: s.season_year + 1, pending: s.policies.filter((p) => !p.notice || p.notice.decision === "pending").length })
+        setEntry({
+          year: s.season_year + 1,
+          pending: s.policies.filter((p) => !p.notice || p.notice.decision === "pending").length,
+          open: s.open && s.policies.length > 0,
+          hasHealth: s.policies.length > 0,
+        })
       })
       .catch(() => alive && setEntry(null))
     return () => { alive = false }
@@ -136,7 +142,7 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
                 {t(labelKey)}
               </NavLink>
             ))}
-            {i === 0 && season && (
+            {i === 0 && season?.open && (
               <NavLink
                 to="/saison-primes"
                 className={({ isActive }) =>
@@ -153,6 +159,22 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
                 {season.pending > 0 && (
                   <span className="ml-auto rounded-full bg-amber-500/15 px-2 text-xs text-amber-700 dark:text-amber-400">{season.pending}</span>
                 )}
+              </NavLink>
+            )}
+            {i === 1 && season?.hasHealth && (
+              <NavLink
+                to="/documents-sante"
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  )
+                }
+              >
+                <FolderOpen className="h-4 w-4" />
+                {locale === "fr" ? "Documents santé" : "Health documents"}
               </NavLink>
             )}
           </div>

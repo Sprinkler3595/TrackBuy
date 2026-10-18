@@ -1,7 +1,7 @@
 import { useContext, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
-  AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Info, Loader2, Pencil, Plus, Scale, Sparkles,
+  AlertTriangle, ArrowRight, CalendarClock, FolderOpen, CheckCircle2, Info, Loader2, Pencil, Plus, Scale, Sparkles,
   Stethoscope, Trash2, XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -449,6 +449,9 @@ function SeasonLinkCard({ overview, fr }: { overview: api.HealthOverview; fr: bo
             </p>
           </div>
         </div>
+        <Button variant="outline" onClick={() => navigate("/documents-sante")}>
+          <FolderOpen className="mr-1 h-4 w-4" />{fr ? "Documents" : "Documents"}
+        </Button>
         {overview.season_open && (
           <Button onClick={() => navigate("/saison-primes")}>
             {fr ? "Ouvrir la saison des primes" : "Open the premium season"}<ArrowRight className="ml-1 h-4 w-4" />

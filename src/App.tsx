@@ -11,6 +11,7 @@ import { WarrantiesPage } from "@/pages/warranties"
 import { VaultsPage } from "@/pages/vaults"
 import { EngagementsPage } from "@/pages/engagements"
 import { HealthSeasonPage } from "@/pages/health-season"
+import { HealthDocumentsPage } from "@/pages/health-documents"
 import { EngagementDetailPage } from "@/pages/engagement-detail"
 import { VehiclesPage } from "@/pages/vehicles"
 import { VehicleDetailPage } from "@/pages/vehicle-detail"
@@ -192,6 +193,7 @@ function AppContent() {
           <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
           <Route path="/engagements/:id" element={<ErrorBoundary><EngagementDetailPage /></ErrorBoundary>} />
           <Route path="/saison-primes" element={<ErrorBoundary><HealthSeasonPage /></ErrorBoundary>} />
+          <Route path="/documents-sante" element={<ErrorBoundary><HealthDocumentsPage /></ErrorBoundary>} />
           <Route path="/vehicules" element={<ErrorBoundary><VehiclesPage /></ErrorBoundary>} />
           <Route path="/vehicules/:id" element={<ErrorBoundary><VehicleDetailPage /></ErrorBoundary>} />
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
