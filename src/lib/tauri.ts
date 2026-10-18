@@ -2872,12 +2872,15 @@ export interface HealthPremiumNotice {
   notes: string | null
   /// Premium subsidy for the announced year; null keeps the policy's one.
   subsidy_monthly: number | null
+  /// Supplementary (LCA) products for the announced year (schema v40); their
+  /// net total becomes the notice's premium.
+  supplementary_lines_json?: string | null
 }
 
 export const listHealthPremiumNotices = (engagementId: string) =>
   invoke<HealthPremiumNotice[]>("list_health_premium_notices", { engagementId })
 
-export const saveHealthPremiumNotice = (notice: Omit<HealthPremiumNotice, "id" | "revision_id" | "subsidy_monthly"> & { id?: string; subsidy_monthly?: number | null }) =>
+export const saveHealthPremiumNotice = (notice: Omit<HealthPremiumNotice, "id" | "revision_id" | "subsidy_monthly" | "supplementary_lines_json"> & { id?: string; subsidy_monthly?: number | null; supplementary_lines_json?: string | null }) =>
   invoke<HealthPremiumNotice>("save_health_premium_notice", { notice })
 
 export const deleteHealthPremiumNotice = (id: string) =>

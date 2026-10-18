@@ -227,10 +227,14 @@ pub struct PremiumNotice {
     /// Réduction de primes de l'année annoncée — elle change avec chaque
     /// décision cantonale. `None` : celle de la fiche reste valable.
     pub subsidy_monthly: Option<f64>,
+    /// Complémentaires de l'année annoncée, ligne par ligne (v40). Leur
+    /// total net fait la prime de l'avis.
+    pub supplementary_lines_json: Option<String>,
 }
 
 const NOTICE_COLUMNS: &str = "id, engagement_id, year, monthly_premium, franchise, model,
-     accident_covered, received_on, decision, revision_id, notes, subsidy_monthly";
+     accident_covered, received_on, decision, revision_id, notes, subsidy_monthly,
+     supplementary_lines_json";
 
 fn row_to_notice(r: &rusqlite::Row<'_>) -> rusqlite::Result<PremiumNotice> {
     Ok(PremiumNotice {
@@ -246,6 +250,7 @@ fn row_to_notice(r: &rusqlite::Row<'_>) -> rusqlite::Result<PremiumNotice> {
         revision_id: r.get(9)?,
         notes: r.get(10)?,
         subsidy_monthly: r.get(11)?,
+        supplementary_lines_json: r.get(12)?,
     })
 }
 
@@ -280,6 +285,18 @@ fn notice_for_year(conn: &Connection, engagement_id: &str, year: i32) -> Result<
 /// quand l'assuré change de caisse — la prime de l'ancienne ne s'appliquera
 /// jamais — ni quand la périodicité n'a pas d'équivalent mensuel.
 pub fn save_notice_inner(conn: &Connection, n: &PremiumNotice) -> Result<PremiumNotice, String> {
+    // Des lignes LCA sur l'avis : validées, réécrites, et leur total net
+    // devient la prime annoncée — on ne saisit pas deux fois le même chiffre.
+    let lines = parse_lines(n.supplementary_lines_json.as_deref());
+    validate(&lines)?;
+    let mut n = n.clone();
+    if !lines.is_empty() {
+        n.monthly_premium = Some(monthly_total(&lines));
+        n.supplementary_lines_json = serde_json::to_string(&lines).ok();
+    } else {
+        n.supplementary_lines_json = None;
+    }
+    let n = &n;
     let (cycle, interval, currency): (String, i32, String) = conn
         .query_row(
             "SELECT billing_cycle, cycle_interval, currency FROM engagements WHERE id = ?1",
@@ -357,18 +374,20 @@ pub fn save_notice_inner(conn: &Connection, n: &PremiumNotice) -> Result<Premium
     conn.execute(
         "INSERT INTO health_premium_notices
             (id, engagement_id, year, monthly_premium, franchise, model, accident_covered,
-             received_on, decision, revision_id, notes, subsidy_monthly)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             received_on, decision, revision_id, notes, subsidy_monthly, supplementary_lines_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(engagement_id, year) DO UPDATE SET
             monthly_premium = excluded.monthly_premium, franchise = excluded.franchise,
             model = excluded.model, accident_covered = excluded.accident_covered,
             received_on = excluded.received_on, decision = excluded.decision,
             revision_id = excluded.revision_id, notes = excluded.notes,
             subsidy_monthly = excluded.subsidy_monthly,
+            supplementary_lines_json = excluded.supplementary_lines_json,
             updated_at = datetime('now')",
         rusqlite::params![
             id, n.engagement_id, n.year, n.monthly_premium, n.franchise, n.model,
             n.accident_covered, n.received_on, decision, revision_id, n.notes, n.subsidy_monthly,
+            n.supplementary_lines_json,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -681,6 +700,7 @@ pub fn overview_inner(conn: &Connection, engagement_id: &str, on: NaiveDate) -> 
             p.model = n.model.clone().or(p.model);
             p.accident_covered = n.accident_covered.or(p.accident_covered);
             p.subsidy_monthly = n.subsidy_monthly.or(p.subsidy_monthly);
+            p.supplementary_lines_json = n.supplementary_lines_json.clone().or(p.supplementary_lines_json.clone());
         }
         p
     });
@@ -1537,5 +1557,33 @@ mod tests {
             supplementary_lines_json: Some(r#"[{"name":" ","monthly_premium":10}]"#.into()), ..Default::default()
         });
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn avis_lca_ligne_par_ligne() {
+        let (_tmp, db) = open_db();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO engagements (id, name, engagement_type, billing_cycle, cycle_interval, current_amount, currency, auto_pay, status)
+             VALUES ('lca', 'LCA', 'insurance_health', 'monthly', 1, 107.59, 'CHF', 1, 'active')",
+            [],
+        ).unwrap();
+        upsert_policy_inner(&conn, &HealthPolicy {
+            engagement_id: "lca".into(), kind: "supplementary".into(),
+            supplementary_lines_json: Some(r#"[{"name":"Hospital Flex","monthly_premium":89.10,"discount_kind":"pct","discount_value":10}]"#.into()),
+            ..Default::default()
+        }).unwrap();
+        let n = save_notice_inner(&conn, &PremiumNotice {
+            engagement_id: "lca".into(), year: 2027, decision: "keep".into(),
+            supplementary_lines_json: Some(r#"[{"name":"Hospital Flex","monthly_premium":94.00,"discount_kind":"pct","discount_value":10},
+                                              {"name":"Dentaire","monthly_premium":12.00,"discount_kind":"chf","discount_value":2}]"#.into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(n.monthly_premium, Some(94.6), "84.60 + 10.00, calculé depuis les lignes");
+        let amount: f64 = conn.query_row("SELECT amount FROM engagement_revisions WHERE id = ?1", [n.revision_id.unwrap()], |r| r.get(0)).unwrap();
+        assert_eq!(amount, 94.6);
+        // En 2027, la fiche montre les lignes de l'avis.
+        let o = overview_inner(&conn, "lca", date(2027, 2, 1)).unwrap();
+        assert!(o.policy.unwrap().supplementary_lines_json.unwrap().contains("Dentaire"));
     }
 }

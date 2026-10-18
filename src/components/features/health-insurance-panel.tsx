@@ -1,8 +1,8 @@
 import { useContext, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
-  AlertTriangle, ArrowRightLeft, CalendarClock, CheckCircle2, ExternalLink, FileText, Info, Loader2, Pencil, Plus, Scale, Sparkles,
-  Stethoscope, Trash2, Users, X, XCircle,
+  AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Info, Loader2, Pencil, Plus, Scale, Sparkles,
+  Stethoscope, Trash2, XCircle,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,14 +10,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
-import { CancellationLetterModal } from "@/components/features/cancellation-letter"
-import { HealthNoticesModal } from "@/components/features/health-notices-modal"
 import { SupplementaryLinesEditor } from "@/components/features/supplementary-lines-editor"
-import { InlineCreateSelect } from "@/components/ui/inline-create-select"
-import { getCancellationInfo } from "@/lib/cancellation"
 import { getAiSettings } from "@/lib/ai-settings"
 import { documentToText } from "@/lib/document-scan"
-import { formatDate, formatPrice, daysUntil, cn } from "@/lib/utils"
+import { formatDate, formatPrice, cn } from "@/lib/utils"
 import { CANTONS } from "@/lib/cantons"
 import {
   HEALTH_MODELS, ageClassLabel, decisionLabel, healthModelLabel, lineDiscount, lineNet, linesTotal, parseLines, parseOptions,
@@ -28,13 +24,13 @@ import * as api from "@/lib/tauri"
 /// "Santé" tab of a health-insurance engagement.
 ///
 /// Everything the year of a Swiss health policy asks for, in the order it is
-/// asked: what the policy is (and whether it is legal for this person), what
-/// to do before the 30 November, how much of the deductible is already spent,
+/// asked: what the policy is (and whether it is legal for this person), a link
+/// to the premium-season module when it is open, how much of the deductible is
+/// already spent,
 /// and which deductible would have been cheaper. Legal amounts and deadlines
 /// come from the backend engine (`src-tauri/src/health/`), never from here.
 
 const fieldCls = "w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-const DECISIONS: api.HealthDecision[] = ["pending", "keep", "change_franchise", "change_model", "switch_insurer"]
 const today = () => new Date().toISOString().slice(0, 10)
 
 const numOrNull = (s: string): number | null => {
@@ -76,7 +72,7 @@ export function HealthInsurancePanel({ engagement, onChanged }: { engagement: ap
         <FindingsCard findings={overview.findings} hasPolicy={!!overview.policy} fr={fr} />
       </div>
       {overview.policy && (
-        <SeasonCard key={`${engagement.id}:${overview.notice_next_year?.id ?? ""}`} engagement={engagement} overview={overview} params={params} fr={fr} onSaved={reload} toast={toast} />
+        <SeasonLinkCard overview={overview} fr={fr} />
       )}
       {isBasic && overview.policy && (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -428,341 +424,38 @@ function FindingsCard({ findings, hasPolicy, fr }: { findings: api.HealthFinding
 }
 
 // ---------------------------------------------------------------------------
-// La saison des primes et l'avis de l'année suivante
+// La saison des primes : un module à part, ouvert d'ici
 // ---------------------------------------------------------------------------
 
-function SeasonCard({ engagement, overview, params, fr, onSaved, toast }: {
-  engagement: api.Engagement; overview: api.HealthOverview; params: api.HealthParams | null
-  fr: boolean; onSaved: () => Promise<void>; toast: Toast
-}) {
+/// The new conditions are entered in the dedicated "Saison des primes" module,
+/// not here: this card only says where things stand and opens it.
+function SeasonLinkCard({ overview, fr }: { overview: api.HealthOverview; fr: boolean }) {
   const navigate = useNavigate()
   const next = overview.season_year + 1
   const n = overview.notice_next_year
-  const isLca = (overview.policy?.kind ?? (engagement.parent_engagement_id ? "supplementary" : "basic")) === "supplementary"
-  const [premium, setPremium] = useState(n?.monthly_premium?.toString() ?? "")
-  const [franchise, setFranchise] = useState(n?.franchise?.toString() ?? overview.policy?.franchise?.toString() ?? "")
-  const [model, setModel] = useState<api.HealthModel | "">(n?.model ?? overview.policy?.model ?? "")
-  const [subsidy, setSubsidy] = useState(n?.subsidy_monthly?.toString() ?? overview.policy?.subsidy_monthly?.toString() ?? "")
-  const [receivedOn, setReceivedOn] = useState(n?.received_on ?? today())
-  const [decision, setDecision] = useState<api.HealthDecision>(n?.decision ?? "pending")
-  const [notes, setNotes] = useState(n?.notes ?? "")
-  const [saving, setSaving] = useState(false)
-  const [letter, setLetter] = useState(false)
-  const [switching, setSwitching] = useState(false)
-  const [familyOpen, setFamilyOpen] = useState(false)
-  const [creditor, setCreditor] = useState<api.Creditor | null>(null)
-  const [nextParams, setNextParams] = useState<api.HealthParams | null>(null)
-
-  useEffect(() => { api.getHealthParams(next).then((r) => setNextParams(r.params)).catch(() => setNextParams(null)) }, [next])
-
-  const newPremium = numOrNull(premium)
-  const change = newPremium != null && overview.monthly_gross ? (newPremium - overview.monthly_gross) / overview.monthly_gross * 100 : null
-  const avg = nextParams?.ofsp_average_change_pct ?? null
-  const switched = !!engagement.ended_on
-  const decisions: api.HealthDecision[] = isLca ? ["pending", "keep", "switch_insurer"] : DECISIONS
-  const decisionText = (d: api.HealthDecision) => (isLca && d === "switch_insurer" ? (fr ? "Je résilie" : "I cancel") : decisionLabel(d, fr))
-
-  async function save() {
-    setSaving(true)
-    try {
-      await api.saveHealthPremiumNotice({
-        engagement_id: engagement.id,
-        year: next,
-        monthly_premium: newPremium,
-        franchise: isLca ? null : numOrNull(franchise),
-        model: isLca ? null : (model || null),
-        accident_covered: overview.policy?.accident_covered ?? null,
-        received_on: receivedOn || null,
-        decision,
-        notes: notes.trim() || null,
-        subsidy_monthly: isLca ? null : numOrNull(subsidy),
-      })
-      toast(decision === "switch_insurer"
-        ? (fr ? "Avis enregistré. Il reste la lettre et la nouvelle police." : "Notice saved. Letter and new policy remain.")
-        : (fr ? `Avis enregistré : les échéances passeront à la nouvelle prime le 1.1.${next}.` : `Notice saved: charges switch to the new premium on 1 Jan ${next}.`),
-        "success")
-      await onSaved()
-    } catch (e) {
-      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function openLetter() {
-    try {
-      const all = await api.getCreditors()
-      setCreditor(all.find((c) => c.id === engagement.creditor_id) ?? null)
-    } catch {
-      setCreditor(null)
-    }
-    setLetter(true)
-  }
-
-  // A supplementary cover follows its own policy: one deadline, the one the
-  // engagement's term and notice period give.
-  const lcaDeadline = isLca ? getCancellationInfo(engagement) : null
-  const events = isLca ? [] : overview.season.filter((e) => e.key !== "mid_year_switch" || e.applies)
-
   return (
-    <Card className={cn(overview.season_open && "border-primary/40")}>
-      <CardHeader className="flex flex-row items-center gap-2 space-y-0">
-        <CalendarClock className="h-5 w-5" />
-        <CardTitle className="text-lg">{fr ? `Saison des primes ${overview.season_year} → ${next}` : `Premium season ${overview.season_year} → ${next}`}</CardTitle>
-        {overview.season_open && <Badge className="ml-auto">{fr ? "En cours" : "Open"}</Badge>}
-        <Button size="sm" variant="outline" className={overview.season_open ? "ml-2" : "ml-auto"} onClick={() => setFamilyOpen(true)}>
-          <Users className="mr-1 h-4 w-4" />{fr ? "Toute la famille" : "Whole household"}
-        </Button>
-      </CardHeader>
-      <CardContent className="grid gap-6 lg:grid-cols-2">
-        {isLca ? (
-          <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">
-              {fr
-                ? "Complémentaire LCA : sa prime change aussi au 1er janvier, mais elle se résilie selon sa police, pas selon la LAMal. Ne la résiliez qu'après l'acceptation écrite d'un autre assureur."
-                : "Supplementary (LCA) cover: its premium also changes on 1 January, but it is cancelled under its own policy terms."}
+    <Card className={cn(overview.season_open && "border-primary/40 bg-primary/5")}>
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <div className="flex items-start gap-3">
+          <CalendarClock className="mt-0.5 h-5 w-5 text-primary" />
+          <div>
+            <p className="font-medium">{fr ? `Saison des primes ${overview.season_year} → ${next}` : `Premium season ${overview.season_year} → ${next}`}</p>
+            <p className="text-sm text-muted-foreground">
+              {n
+                ? `${fr ? "Conditions" : "Terms"} ${next} : ${n.monthly_premium != null ? `${formatPrice(n.monthly_premium)} / ${fr ? "mois" : "month"}` : "—"} · ${decisionLabel(n.decision, fr)}`
+                : overview.season_open
+                  ? (fr ? `Conditions ${next} pas encore saisies.` : `${next} terms not entered yet.`)
+                  : (fr ? "Le module s'ouvre à la publication des nouvelles primes (fin septembre)." : "Opens when the new premiums are published.")}
             </p>
-            {lcaDeadline ? (
-              <div className="rounded-md border p-3">
-                <p className="font-medium">{fr ? "Dernier jour pour résilier" : "Last day to cancel"}</p>
-                <p className={cn(lcaDeadline.severity !== "upcoming" && "text-destructive")}>
-                  {formatDate(lcaDeadline.deadlineISO)} · {fr ? "échéance" : "term"} {formatDate(lcaDeadline.contractEndISO)} ({lcaDeadline.noticeDays} {fr ? "j de préavis" : "days notice"})
-                </p>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">{fr ? "Renseignez l'échéance et le délai de résiliation de la police (bouton crayon de la liste) pour obtenir la date limite." : "Set the term and notice period to get the deadline."}</p>
-            )}
           </div>
-        ) : (
-          <ol className="space-y-3">
-            {events.map((e) => {
-              const d = daysUntil(e.working_date)
-              return (
-                <li key={e.key} className={cn("rounded-md border p-3", d < 0 && "opacity-60")}>
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium">{e.title}</p>
-                    <span className={cn("text-xs whitespace-nowrap", d >= 0 && d <= 14 ? "font-medium text-destructive" : "text-muted-foreground")}>
-                      {formatDate(e.working_date)}{d >= 0 ? ` · J-${d}` : ""}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{e.detail}</p>
-                  {e.working_date !== e.date && (
-                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                      {fr ? `Le ${formatDate(e.date)} tombe un week-end : visez le ${formatDate(e.working_date)}.` : `${formatDate(e.date)} is a weekend: aim for ${formatDate(e.working_date)}.`}
-                    </p>
-                  )}
-                  {e.send_by && d >= 0 && (
-                    <p className="mt-1 text-xs">{fr ? "Recommandé à poster au plus tard le " : "Post registered mail by "}<span className="font-medium">{formatDate(e.send_by)}</span></p>
-                  )}
-                  <p className="mt-1 text-[11px] text-muted-foreground">{e.legal_ref}</p>
-                </li>
-              )
-            })}
-          </ol>
-        )}
-
-        <div className="space-y-3">
-          <p className="text-sm font-medium">{fr ? `Avis de prime ${next}` : `${next} premium notice`}</p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">{fr ? "Nouvelle prime mensuelle (CHF)" : "New monthly premium (CHF)"}</label>
-              <Input type="number" min="0" step="0.05" value={premium} onChange={(e) => setPremium(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium">{fr ? "Reçu le" : "Received on"}</label>
-              <Input type="date" value={receivedOn} onChange={(e) => setReceivedOn(e.target.value)} />
-            </div>
-            {!isLca && (
-              <>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">{fr ? `Franchise ${next}` : `${next} deductible`}</label>
-                  <select className={fieldCls} value={franchise} onChange={(e) => setFranchise(e.target.value)}>
-                    <option value="">—</option>
-                    {(overview.allowed_franchises.length ? overview.allowed_franchises : params?.adult_franchises ?? []).map((f) => (
-                      <option key={f} value={f}>{f.toLocaleString("fr-CH")}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">{fr ? `Modèle ${next}` : `${next} model`}</label>
-                  <select className={fieldCls} value={model} onChange={(e) => setModel(e.target.value as api.HealthModel | "")}>
-                    <option value="">—</option>
-                    {HEALTH_MODELS.map((m) => <option key={m} value={m}>{healthModelLabel(m, fr)}</option>)}
-                  </select>
-                </div>
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-xs font-medium">{fr ? `Réduction de primes ${next} (CHF/mois)` : `${next} subsidy (CHF/month)`}</label>
-                  <Input type="number" min="0" step="0.05" value={subsidy} onChange={(e) => setSubsidy(e.target.value)} />
-                  <p className="text-xs text-muted-foreground">{fr ? "Selon la nouvelle décision du canton ; laissée telle quelle si elle ne change pas." : "From the canton's new decision."}</p>
-                </div>
-              </>
-            )}
-          </div>
-          {change != null && (
-            <div className={cn("rounded-md px-3 py-2 text-sm",
-              avg != null && change > avg + 1 ? "bg-amber-500/10 text-amber-800 dark:text-amber-300" : "bg-muted/50")}>
-              {formatPrice(overview.monthly_gross ?? 0)} → <span className="font-semibold">{formatPrice(newPremium ?? 0)}</span>
-              {" "}({change >= 0 ? "+" : ""}{change.toFixed(1)} %)
-              {avg != null && <span className="text-muted-foreground"> · {fr ? "moyenne suisse OFSP" : "Swiss average (FOPH)"} {avg >= 0 ? "+" : ""}{avg.toFixed(1)} %</span>}
-            </div>
-          )}
-          <div className="space-y-1">
-            <label className="text-xs font-medium">{fr ? "Décision" : "Decision"}</label>
-            <div className="flex flex-wrap gap-2">
-              {decisions.map((d) => (
-                <Button key={d} type="button" size="sm" variant={decision === d ? "default" : "outline"} onClick={() => setDecision(d)}>
-                  {decisionText(d)}
-                </Button>
-              ))}
-            </div>
-          </div>
-          <textarea className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm"
-            placeholder={fr ? "Notes (offre concurrente, prime trouvée sur priminfo…)" : "Notes (competing offer…)"}
-            value={notes} onChange={(e) => setNotes(e.target.value)} />
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={save} disabled={saving}>{saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}{fr ? "Enregistrer l'avis" : "Save notice"}</Button>
-            {decision === "switch_insurer" && (
-              <Button variant="outline" onClick={openLetter}><FileText className="mr-1 h-4 w-4" />{fr ? "Lettre de résiliation" : "Cancellation letter"}</Button>
-            )}
-            {decision === "switch_insurer" && !isLca && !switched && (
-              <Button variant="outline" onClick={() => setSwitching(true)}><ArrowRightLeft className="mr-1 h-4 w-4" />{fr ? "Créer la nouvelle police" : "Create the new policy"}</Button>
-            )}
-          </div>
-          {switched && (
-            <p className="text-xs text-muted-foreground">
-              {fr ? `Caisse quittée : échéances arrêtées au ${formatDate(engagement.ended_on as string)}.` : `Insurer left: charges stop on ${formatDate(engagement.ended_on as string)}.`}
-            </p>
-          )}
-          {!isLca && (
-            <p className="text-xs text-muted-foreground">
-              {fr ? "Comparer les primes de toutes les caisses pour votre région : " : "Compare every insurer's premium for your region: "}
-              <a href="https://www.priminfo.admin.ch" target="_blank" rel="noopener noreferrer" className="text-primary underline inline-flex items-center gap-1">
-                priminfo.admin.ch<ExternalLink className="h-3 w-3" />
-              </a>
-              {fr ? " (comparateur officiel de l'OFSP)." : " (official FOPH comparator)."}
-            </p>
-          )}
         </div>
-      </CardContent>
-      {letter && <CancellationLetterModal engagement={engagement} creditor={creditor} onClose={() => setLetter(false)} />}
-      {familyOpen && <HealthNoticesModal onClose={() => setFamilyOpen(false)} onSaved={() => void onSaved()} />}
-      {switching && (
-        <SwitchInsurerDialog
-          engagement={engagement} overview={overview} year={next} fr={fr} toast={toast}
-          onClose={() => setSwitching(false)}
-          onDone={(id) => { setSwitching(false); navigate(`/engagements/${id}?tab=health`) }}
-        />
-      )}
-    </Card>
-  )
-}
-
-/// "Je change de caisse", carried to the end: the new insurer, its premium
-/// and terms. The backend ends the old policy on 31 December, creates the new
-/// one on 1 January and keeps the link that makes the affiliation confirmation
-/// awaited.
-function SwitchInsurerDialog({ engagement, overview, year, fr, toast, onClose, onDone }: {
-  engagement: api.Engagement; overview: api.HealthOverview; year: number; fr: boolean; toast: Toast
-  onClose: () => void; onDone: (newId: string) => void
-}) {
-  const [creditors, setCreditors] = useState<api.Creditor[]>([])
-  const [creditorId, setCreditorId] = useState("")
-  const [policyNo, setPolicyNo] = useState("")
-  const [premium, setPremium] = useState("")
-  const [franchise, setFranchise] = useState(overview.notice_next_year?.franchise?.toString() ?? overview.policy?.franchise?.toString() ?? "")
-  const [model, setModel] = useState<api.HealthModel>((overview.notice_next_year?.model ?? overview.policy?.model ?? "standard") as api.HealthModel)
-  const [subsidy, setSubsidy] = useState(overview.notice_next_year?.subsidy_monthly?.toString() ?? overview.policy?.subsidy_monthly?.toString() ?? "")
-  const [moveLca, setMoveLca] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => { api.getCreditors().then((c) => setCreditors(c.filter((x) => x.id !== engagement.creditor_id))).catch(() => setCreditors([])) }, [engagement.creditor_id])
-
-  async function createInsurer(name: string): Promise<api.Creditor | null> {
-    try {
-      const c = await api.createCreditor({ name, creditor_type: "insurer" })
-      setCreditors((prev) => [...prev, c].sort((a, b) => a.name.localeCompare(b.name)))
-      return c
-    } catch (e) {
-      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
-      return null
-    }
-  }
-
-  const premiumValue = numOrNull(premium)
-  async function submit() {
-    if (premiumValue == null || premiumValue <= 0) return
-    setSaving(true)
-    try {
-      const id = await api.switchHealthInsurer({
-        engagement_id: engagement.id, year, creditor_id: creditorId || null, policy_number: policyNo.trim() || null,
-        monthly_premium: premiumValue, franchise: numOrNull(franchise), model,
-        accident_covered: overview.policy?.accident_covered ?? null, subsidy_monthly: numOrNull(subsidy),
-        move_supplementary: moveLca,
-      })
-      toast(fr ? `Nouvelle police créée au 1.1.${year}. Pensez à envoyer la lettre à l'ancienne caisse.` : `New policy created for 1 Jan ${year}.`, "success")
-      onDone(id)
-    } catch (e) {
-      toast(`${fr ? "Erreur" : "Error"}: ${e}`, "error")
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-lg rounded-lg border bg-card shadow-lg">
-        <div className="flex items-center justify-between border-b p-5">
-          <h2 className="text-lg font-semibold">{fr ? `Nouvelle caisse au 1.1.${year}` : `New insurer on 1 Jan ${year}`}</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
-        </div>
-        <div className="grid gap-3 p-5 sm:grid-cols-2">
-          <div className="space-y-1 sm:col-span-2">
-            <label className="text-xs font-medium">{fr ? "Nouvelle caisse" : "New insurer"}</label>
-            <InlineCreateSelect value={creditorId} onChange={setCreditorId} options={creditors} onCreate={createInsurer}
-              placeholder={fr ? "Nom (ex : Helsana)" : "Name"} createTitle={fr ? "Nouvelle caisse" : "New insurer"} fr={fr} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">{fr ? "Prime mensuelle (CHF)" : "Monthly premium (CHF)"} *</label>
-            <Input type="number" min="0" step="0.05" value={premium} onChange={(e) => setPremium(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">{fr ? "N° de police (si connu)" : "Policy no. (if known)"}</label>
-            <Input value={policyNo} onChange={(e) => setPolicyNo(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">Franchise</label>
-            <select className={fieldCls} value={franchise} onChange={(e) => setFranchise(e.target.value)}>
-              {overview.allowed_franchises.map((f) => <option key={f} value={f}>{f.toLocaleString("fr-CH")}</option>)}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">{fr ? "Modèle" : "Model"}</label>
-            <select className={fieldCls} value={model} onChange={(e) => setModel(e.target.value as api.HealthModel)}>
-              {HEALTH_MODELS.map((m) => <option key={m} value={m}>{healthModelLabel(m, fr)}</option>)}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium">{fr ? "Subside (CHF/mois)" : "Subsidy (CHF/month)"}</label>
-            <Input type="number" min="0" step="0.05" value={subsidy} onChange={(e) => setSubsidy(e.target.value)} />
-          </div>
-          <label className="flex items-end gap-2 pb-2 text-sm">
-            <input type="checkbox" checked={moveLca} onChange={(e) => setMoveLca(e.target.checked)} />
-            {fr ? "Rattacher les complémentaires à la nouvelle police" : "Attach supplementary covers to the new policy"}
-          </label>
-          <p className="sm:col-span-2 rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-            {fr
-              ? `L'ancienne police s'arrête au 31.12.${year - 1}. Inscrivez-vous chez la nouvelle caisse : sa confirmation d'affiliation sera réclamée dans la nouvelle fiche jusqu'à réception. Les complémentaires ne sont pas résiliées par ce geste.`
-              : `The old policy stops on 31 Dec ${year - 1}. Supplementary covers are not cancelled by this.`}
-          </p>
-        </div>
-        <div className="flex justify-end gap-2 border-t p-4">
-          <Button variant="ghost" onClick={onClose} disabled={saving}>{fr ? "Annuler" : "Cancel"}</Button>
-          <Button onClick={submit} disabled={saving || premiumValue == null || premiumValue <= 0}>
-            {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}{fr ? "Créer la nouvelle police" : "Create new policy"}
+        {overview.season_open && (
+          <Button onClick={() => navigate("/saison-primes")}>
+            {fr ? "Ouvrir la saison des primes" : "Open the premium season"}<ArrowRight className="ml-1 h-4 w-4" />
           </Button>
-        </div>
-      </div>
-    </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

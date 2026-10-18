@@ -93,6 +93,7 @@ Affichée dans l'onglet **Revenus**, au-dessus de la liste.
 - **Assistant guidé, une personne à la fois** : la personne assurée (membre du ménage ou non) et sa date de naissance — qui fixe la classe d'âge, donc les franchises permises —, la caisse, le modèle (standard, médecin de famille, HMO, Telmed), la franchise, la couverture accidents, la prime et la réduction de primes cantonale ; puis les complémentaires LCA, créées en sous-engagement avec leur propre délai de résiliation. Scan IA de la police (`ai_extract_health_insurance`). « Assurer une autre personne » enchaîne la famille sans ressaisir caisse ni paiement
 - **Barèmes LAMal versionnés par année** ([health/params.rs](src-tauri/src/health/params.rs)) : franchises adultes et enfants, quote-part 10 % plafonnée à 700 / 350 CHF, quote-part de 40 % sur les originaux, contribution hospitalière, classes d'âge, et les repères publiés chaque automne par l'OFSP (prime moyenne, hausse moyenne). Une année inconnue est marquée « estimée »
 - **Saison des primes** ([health/calendar.rs](src-tauri/src/health/calendar.rs)) : avis de prime dû au 31 octobre, résiliation **reçue** au 30 novembre (ramenée au dernier jour ouvrable quand elle tombe un week-end, avec date d'envoi conseillée du recommandé), franchise à la hausse jusqu'au 31 décembre, affiliation confirmée par la nouvelle caisse, et sortie au 30 juin réservée à la franchise ordinaire en modèle standard. Bandeau « Primes maladie » de mi-septembre à fin décembre sur la page Engagements
+- **Module « Saison des primes »** ([health-season.tsx](src/pages/health-season.tsx), `/saison-primes`) : une page à part, présente dans le menu uniquement de mi-septembre au 31 décembre (avec le nombre de décisions en attente). Personne par personne, la LAMal « année en cours → année suivante » (prime, subside, franchise, modèle, accidents, montant à payer, décision, nouvelle caisse, lettre) et chaque complémentaire LCA produit par produit (nouvelle prime, rabais, ajout ou retrait d'un produit) ; échéances de la saison en tête, scan de la lettre de la caisse, total du ménage avant/après. L'onglet Santé d'une police n'y renvoie que par un lien
 - **Avis de prime annuel** : saisi par police et par année — assurance de base comme complémentaires —, comparé à la prime en cours et à la hausse moyenne OFSP, avec la nouvelle réduction de primes cantonale et la décision prise (rester, changer de franchise, de modèle ou de caisse). Il crée une révision `applies_on_roll` : les échéances passent d'elles-mêmes à la nouvelle prime, nette du nouveau subside, le 1er janvier
 - **Complémentaires LCA nommées** ([health/supplementary.rs](src-tauri/src/health/supplementary.rs)) : une ligne par produit, avec le nom exact de la police (« Hospital Flex », « Myflex Silver »…), sa prime mensuelle et son rabais en % ou en CHF ; le total net devient le montant facturé de la LCA. Le scan de la police lit ces lignes, rabais compris
 - **Une facture, une échéance** : LAMal et complémentaires chez la même caisse se paient sur un seul bulletin. Le sous-engagement LCA est alors `billed_with_parent` : la LAMal porte une échéance du montant total (détail en note), la LCA n'en génère aucune tant que la LAMal court, et chacune garde sa prime et ses révisions. Réglable par police dans l'onglet Santé ; même case « Une seule facture loyer + place de parc » dans l'assistant loyer, et sur l'onglet Aperçu de tout sous-engagement existant
@@ -386,12 +387,12 @@ sont aussi lançables en mode debug (icône scarabée) pour poser des points d'a
 
 ## Roadmap / état du projet
 
-**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 39`) et le format de backup peuvent encore évoluer avant 1.0.
+**Statut actuel** : alpha (v0.1.0), utilisable au quotidien — le schéma DB (`CURRENT_SCHEMA_VERSION = 40`) et le format de backup peuvent encore évoluer avant 1.0.
 
 ### Stable & implémenté
 
 - Multi-coffres + switch à chaud + **rotation du mot de passe maître** (rekey base + pièces jointes, rejouable)
-- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v39`, refus des schémas plus récents)
+- **Migration de schéma versionnée** (`migrate_v1` → `migrate_v40`, refus des schémas plus récents)
 - Achats / engagements / abonnements / revenus / remboursements / garanties / créanciers / ménage
 - Banque : import CAMT.053 + OCR, QR-facture, rapprochement avec garde-fou anti-doublon
 - Impôts : rubriques déductibles, attribution par membre du ménage

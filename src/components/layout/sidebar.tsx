@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { NavLink, useLocation } from "react-router-dom"
 import {
   Home,
   Inbox,
@@ -15,11 +16,13 @@ import {
   HandCoins,
   Undo2,
   Car,
+  CalendarClock,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/hooks/use-theme"
 import { useI18n, type TranslationKeys } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
+import { getHealthSeason } from "@/lib/tauri"
 
 // Two-section navigation. The app deliberately exposes only the flows that are
 // fully built: the daily view + the three guided domains on top, the reference
@@ -54,9 +57,31 @@ interface SidebarProps {
   vaultName: string
 }
 
+/// The premium-season module only exists in the navigation while it is
+/// useful: from the publication of the premiums to 31 December, and only for
+/// a household with health insurance. Re-read on every navigation, so the
+/// "to decide" count follows what was just saved.
+function useHealthSeasonEntry(): { year: number; pending: number } | null {
+  const location = useLocation()
+  const [entry, setEntry] = useState<{ year: number; pending: number } | null>(null)
+  useEffect(() => {
+    let alive = true
+    getHealthSeason()
+      .then((s) => {
+        if (!alive) return
+        if (!s.open || s.policies.length === 0) { setEntry(null); return }
+        setEntry({ year: s.season_year + 1, pending: s.policies.filter((p) => !p.notice || p.notice.decision === "pending").length })
+      })
+      .catch(() => alive && setEntry(null))
+    return () => { alive = false }
+  }, [location.pathname])
+  return entry
+}
+
 export function Sidebar({ onLock, vaultName }: SidebarProps) {
   const { theme, setTheme } = useTheme()
   const { t, locale } = useI18n()
+  const season = useHealthSeasonEntry()
 
   const nextTheme = () => {
     const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"]
@@ -111,6 +136,25 @@ export function Sidebar({ onLock, vaultName }: SidebarProps) {
                 {t(labelKey)}
               </NavLink>
             ))}
+            {i === 0 && season && (
+              <NavLink
+                to="/saison-primes"
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-primary hover:bg-sidebar-accent",
+                  )
+                }
+              >
+                <CalendarClock className="h-4 w-4" />
+                {locale === "fr" ? `Primes ${season.year}` : `${season.year} premiums`}
+                {season.pending > 0 && (
+                  <span className="ml-auto rounded-full bg-amber-500/15 px-2 text-xs text-amber-700 dark:text-amber-400">{season.pending}</span>
+                )}
+              </NavLink>
+            )}
           </div>
         ))}
         <div className="space-y-1 pt-1">

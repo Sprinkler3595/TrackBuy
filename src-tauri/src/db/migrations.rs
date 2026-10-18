@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 39;
+pub const CURRENT_SCHEMA_VERSION: i64 = 40;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -147,6 +147,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 39 {
         migrate_v39(conn)?;
+    }
+    if current_version < 40 {
+        migrate_v40(conn)?;
     }
 
     Ok(())
@@ -2547,6 +2550,24 @@ fn migrate_v39(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (39);
         "
     ).map_err(|e| format!("Migration v39 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v40 — l'avis de prime d'une complémentaire, produit par produit.
+///
+/// `health_premium_notices.supplementary_lines_json` : les complémentaires
+/// de l'année annoncée, chacune avec sa nouvelle prime et son rabais. Leur
+/// total net devient la prime de l'avis ; au 1er janvier, ces lignes
+/// remplacent celles de la fiche.
+fn migrate_v40(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE health_premium_notices ADD COLUMN supplementary_lines_json TEXT;
+
+        INSERT INTO schema_version (version) VALUES (40);
+        "
+    ).map_err(|e| format!("Migration v40 failed: {}", e))?;
 
     Ok(())
 }

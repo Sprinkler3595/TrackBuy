@@ -1,8 +1,7 @@
 import { useContext, useEffect, useState } from "react"
-import { Link } from "react-router-dom"
-import { HeartPulse, Mail } from "lucide-react"
+import { Link, useNavigate } from "react-router-dom"
+import { CalendarClock, HeartPulse } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { HealthNoticesModal } from "@/components/features/health-notices-modal"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { I18nContext } from "@/lib/i18n"
@@ -18,7 +17,7 @@ export function HealthSeasonBanner() {
   const { locale } = useContext(I18nContext)
   const fr = locale === "fr"
   const [season, setSeason] = useState<api.HealthSeason | null>(null)
-  const [entering, setEntering] = useState(false)
+  const navigate = useNavigate()
 
   const load = () => api.getHealthSeason().then(setSeason).catch(() => setSeason(null))
   useEffect(() => { void load() }, [])
@@ -39,8 +38,8 @@ export function HealthSeasonBanner() {
         <HeartPulse className="h-5 w-5 text-primary" />
         <CardTitle className="text-base">{fr ? `Primes maladie ${next}` : `${next} health premiums`}</CardTitle>
         {pending > 0 && <Badge variant="warning" className="ml-auto">{pending} {fr ? "à décider" : "to decide"}</Badge>}
-        <Button size="sm" className={pending > 0 ? "ml-2" : "ml-auto"} onClick={() => setEntering(true)}>
-          <Mail className="mr-1 h-4 w-4" />{fr ? `Saisir les avis ${next}` : `Enter ${next} notices`}
+        <Button size="sm" className={pending > 0 ? "ml-2" : "ml-auto"} onClick={() => navigate("/saison-primes")}>
+          <CalendarClock className="mr-1 h-4 w-4" />{fr ? `Ouvrir la saison des primes` : `Open the premium season`}
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -61,7 +60,7 @@ export function HealthSeasonBanner() {
         </p>
         <div className="space-y-2">
           {basics.map((p) => (
-            <Link key={p.engagement_id} to={`/engagements/${p.engagement_id}?tab=health`}
+            <Link key={p.engagement_id} to="/saison-primes"
               className="flex items-center justify-between gap-3 rounded-md border bg-background p-3 hover:bg-accent/40">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{p.insured_label ?? p.name}</p>
@@ -77,7 +76,6 @@ export function HealthSeasonBanner() {
           ))}
         </div>
       </CardContent>
-      {entering && <HealthNoticesModal onClose={() => setEntering(false)} onSaved={() => void load()} />}
     </Card>
   )
 }
