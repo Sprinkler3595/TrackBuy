@@ -14,6 +14,7 @@ import { SwitchInsurerDialog } from "@/components/features/switch-insurer-dialog
 import { getCancellationInfo } from "@/lib/cancellation"
 import { getAiSettings } from "@/lib/ai-settings"
 import { documentToText } from "@/lib/document-scan"
+import { filedDocumentText, noticesToCarry } from "@/lib/health-docs"
 import { formatDate, formatPrice, daysUntil, cn } from "@/lib/utils"
 import {
   HEALTH_MODELS, ageClassLabel, healthModelLabel, lineDiscount, lineNet, linesTotal, parseLines, round2,
@@ -126,7 +127,7 @@ function initialDraft(d: Detail): Draft {
   }
 }
 
-export function HealthSeasonPage() {
+export function HealthSeasonPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { locale } = useContext(I18nContext)
   const fr = locale === "fr"
   const { toast } = useToast()
@@ -141,12 +142,17 @@ export function HealthSeasonPage() {
   const [scanReport, setScanReport] = useState<string | null>(null)
   const [switching, setSwitching] = useState<Detail | null>(null)
   const [letter, setLetter] = useState<{ engagement: api.Engagement; creditor: api.Creditor | null } | null>(null)
+  // Next season's notices already filed in the health documents and not yet
+  // carried here; those read in this session are marked done on save.
+  const [filedNotices, setFiledNotices] = useState<api.HealthDocument[]>([])
+  const [readDocs, setReadDocs] = useState<string[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const s = await api.getHealthSeason()
+      api.listHealthDocuments().then((docs) => setFiledNotices(noticesToCarry(docs, s.season_year + 1))).catch(() => setFiledNotices([]))
       const ds = await Promise.all(s.policies.map(async (p) => {
         const [overview, engagement] = await Promise.all([api.getHealthOverview(p.engagement_id), api.getEngagement(p.engagement_id)])
         return { policy: p, overview, engagement }
@@ -196,55 +202,77 @@ export function HealthSeasonPage() {
   }, [drafts])
   const totals = useMemo(() => sum(details), [sum, details])
 
-  async function scan(file: File) {
+  // A filed notice is still to carry while one of its policies has no new
+  // premium entered yet.
+  const toCarry = useMemo(() => filedNotices.filter((doc) => doc.engagement_ids.some((id) => {
+    const d = details.find((x) => x.policy.engagement_id === id)
+    return d && d.policy.notice?.monthly_premium == null
+  })), [filedNotices, details])
+
+  /// Reads one or more letters — a scan picked now, or the notices already
+  /// filed in the health documents — and fills the drafts of the people found.
+  async function readLetters(texts: () => Promise<string[]>) {
     const ai = getAiSettings()
     if (!ai.enabled) {
       toast(fr ? "Activez l'IA dans Réglages → IA pour lire la lettre." : "Enable AI in Settings → AI.", "error")
-      return
+      return false
     }
     setScanning(true)
     setScanReport(null)
     try {
-      const text = await documentToText(new Uint8Array(await file.arrayBuffer()), file.type, file.name)
-      if (!text.trim()) throw new Error(fr ? "texte introuvable dans le document" : "no text found")
-      const x = await api.aiExtractPremiumNotice(text, ai)
       const matched: string[] = []
       const unmatched: string[] = []
-      for (const person of x.persons) {
-        const name = person.insured_name ?? ""
-        const mine = details.filter((d) => samePerson(name, d.policy.insured_label))
-        if (mine.length === 0) { unmatched.push(name || "?"); continue }
-        const basic = mine.find((d) => !isLca(d))
-        if (basic) {
-          update(basic.policy.engagement_id, {
-            ...(person.basic_monthly_premium != null ? { premium: String(person.basic_monthly_premium) } : {}),
-            ...(person.franchise != null ? { franchise: String(person.franchise) } : {}),
-            ...(person.subsidy_monthly != null ? { subsidy: String(person.subsidy_monthly) } : {}),
-            ...(person.model ? { model: person.model } : {}),
-          })
-        }
-        const lca = mine.find((d) => isLca(d))
-        const lcaDraft = lca ? drafts[lca.policy.engagement_id] : null
-        if (lca && lcaDraft?.kind === "lca" && person.supplementary_monthly_premium != null && lcaDraft.lines.length === 1) {
-          // One product: the letter's total is its premium. Several: the
-          // letter's total cannot be split for you — it is shown instead.
-          update(lca.policy.engagement_id, { lines: [{ ...lcaDraft.lines[0], monthly_premium: person.supplementary_monthly_premium, discount_value: 0 }] })
-        } else if (lca && person.supplementary_monthly_premium != null) {
-          toast(fr ? `Complémentaires de ${name} : ${formatPrice(person.supplementary_monthly_premium)}/mois au total sur la lettre — reportez-les ligne par ligne.` : `Supplementary total for ${name}: ${formatPrice(person.supplementary_monthly_premium)}/month.`, "success")
-        }
-        matched.push(basic?.policy.insured_label ?? name)
-      }
-      if (x.year != null && season && x.year !== season.season_year + 1) {
-        toast(fr ? `Attention : la lettre porte sur ${x.year}.` : `Warning: the letter is for ${x.year}.`, "error")
+      for (const text of await texts()) {
+        if (!text.trim()) throw new Error(fr ? "texte introuvable dans le document" : "no text found")
+        fillFrom(await api.aiExtractPremiumNotice(text, ai), matched, unmatched)
       }
       setScanReport(
-        (matched.length ? `${fr ? "Rempli" : "Filled"} : ${matched.join(", ")}` : "") +
+        (matched.length ? `${fr ? "Rempli" : "Filled"} : ${[...new Set(matched)].join(", ")}` : "") +
         (unmatched.length ? ` · ${fr ? "non reconnu" : "not matched"} : ${unmatched.join(", ")}` : ""),
       )
+      return true
     } catch (e) {
-      toast(`${fr ? "Échec du scan" : "Scan failed"}: ${e}`, "error")
+      toast(`${fr ? "Échec de la lecture" : "Reading failed"}: ${e}`, "error")
+      return false
     } finally {
       setScanning(false)
+    }
+  }
+
+  const scan = (file: File) => readLetters(async () => [await documentToText(new Uint8Array(await file.arrayBuffer()), file.type, file.name)])
+
+  async function readFiled() {
+    const ok = await readLetters(() => Promise.all(toCarry.map((d) => filedDocumentText(d))))
+    if (ok) setReadDocs(toCarry.map((d) => d.attachment_id))
+  }
+
+  function fillFrom(x: api.ExtractedPremiumNotice, matched: string[], unmatched: string[]) {
+    for (const person of x.persons) {
+      const name = person.insured_name ?? ""
+      const mine = details.filter((d) => samePerson(name, d.policy.insured_label))
+      if (mine.length === 0) { unmatched.push(name || "?"); continue }
+      const basic = mine.find((d) => !isLca(d))
+      if (basic) {
+        update(basic.policy.engagement_id, {
+          ...(person.basic_monthly_premium != null ? { premium: String(person.basic_monthly_premium) } : {}),
+          ...(person.franchise != null ? { franchise: String(person.franchise) } : {}),
+          ...(person.subsidy_monthly != null ? { subsidy: String(person.subsidy_monthly) } : {}),
+          ...(person.model ? { model: person.model } : {}),
+        })
+      }
+      const lca = mine.find((d) => isLca(d))
+      const lcaDraft = lca ? drafts[lca.policy.engagement_id] : null
+      if (lca && lcaDraft?.kind === "lca" && person.supplementary_monthly_premium != null && lcaDraft.lines.length === 1) {
+        // One product: the letter's total is its premium. Several: the
+        // letter's total cannot be split for you — it is shown instead.
+        update(lca.policy.engagement_id, { lines: [{ ...lcaDraft.lines[0], monthly_premium: person.supplementary_monthly_premium, discount_value: 0 }] })
+      } else if (lca && person.supplementary_monthly_premium != null) {
+        toast(fr ? `Complémentaires de ${name} : ${formatPrice(person.supplementary_monthly_premium)}/mois au total sur la lettre — reportez-les ligne par ligne.` : `Supplementary total for ${name}: ${formatPrice(person.supplementary_monthly_premium)}/month.`, "success")
+      }
+      matched.push(basic?.policy.insured_label ?? name)
+    }
+    if (x.year != null && season && x.year !== season.season_year + 1) {
+      toast(fr ? `Attention : la lettre porte sur ${x.year}.` : `Warning: the letter is for ${x.year}.`, "error")
     }
   }
 
@@ -294,6 +322,10 @@ export function HealthSeasonPage() {
         }
         count += 1
       }
+      for (const id of readDocs) {
+        await api.markHealthDocumentProcessed(id, "premium_notice", season.season_year + 1)
+      }
+      setReadDocs([])
       toast(fr ? `${count} police(s) enregistrée(s). Les échéances suivront au 1.1.${season.season_year + 1}.` : `${count} policy(ies) saved.`, "success")
       await load()
     } catch (e) {
@@ -324,8 +356,8 @@ export function HealthSeasonPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="flex items-center gap-2 text-3xl font-bold tracking-tight">
-            <CalendarClock className="h-7 w-7 text-primary" />
+          <h2 className={cn("flex items-center gap-2 font-bold tracking-tight", embedded ? "text-xl" : "text-3xl")}>
+            <CalendarClock className={cn("text-primary", embedded ? "h-5 w-5" : "h-7 w-7")} />
             {fr ? `Saison des primes ${season.season_year} → ${next}` : `Premium season ${season.season_year} → ${next}`}
           </h2>
           <p className="text-muted-foreground">
@@ -340,13 +372,27 @@ export function HealthSeasonPage() {
             <label className="text-xs font-medium">{fr ? "Lettre reçue le" : "Letter received on"}</label>
             <Input type="date" className="h-9" value={receivedOn} onChange={(e) => { setReceivedOn(e.target.value); setDirty(new Set(details.map((d) => d.policy.engagement_id))) }} />
           </div>
-          <Link to="/documents-sante"><Button variant="outline"><FolderOpen className="mr-1 h-4 w-4" />Documents</Button></Link>
+          {!embedded && <Link to="/sante?tab=documents"><Button variant="outline"><FolderOpen className="mr-1 h-4 w-4" />Documents</Button></Link>}
           <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={scanning}>
             {scanning ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
             {fr ? "Scanner la lettre" : "Scan the letter"}
           </Button>
         </div>
       </div>
+      {toCarry.length > 0 && readDocs.length === 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
+          <p className="flex items-center gap-2 text-sm">
+            <FileText className="h-4 w-4 text-primary" />
+            {fr
+              ? `${toCarry.length} avis de prime ${next} déjà classé(s) dans vos documents (${[...new Set(toCarry.flatMap((d) => d.people))].join(", ") || "—"}).`
+              : `${toCarry.length} ${next} premium notice(s) already filed.`}
+          </p>
+          <Button size="sm" onClick={() => void readFiled()} disabled={scanning}>
+            {scanning ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
+            {fr ? "Pré-remplir depuis ces avis" : "Pre-fill from these notices"}
+          </Button>
+        </div>
+      )}
       {scanReport && <p className="flex items-center gap-1 text-sm text-green-700 dark:text-green-400"><Check className="h-4 w-4" />{scanReport}</p>}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

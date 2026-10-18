@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/components/ui/toast"
 import { I18nContext } from "@/lib/i18n"
 import { SupplementaryLinesEditor } from "@/components/features/supplementary-lines-editor"
+import { ClaimsReview } from "@/components/features/health-claims-review"
+import { draftsFromExtraction, emptyClaimDraft, saveClaimDrafts, type ClaimDraft } from "@/lib/health-claims"
 import { getAiSettings } from "@/lib/ai-settings"
 import { documentToText } from "@/lib/document-scan"
 import { formatDate, formatPrice, cn } from "@/lib/utils"
@@ -449,11 +451,11 @@ function SeasonLinkCard({ overview, fr }: { overview: api.HealthOverview; fr: bo
             </p>
           </div>
         </div>
-        <Button variant="outline" onClick={() => navigate("/documents-sante")}>
+        <Button variant="outline" onClick={() => navigate("/sante?tab=documents")}>
           <FolderOpen className="mr-1 h-4 w-4" />{fr ? "Documents" : "Documents"}
         </Button>
         {overview.season_open && (
-          <Button onClick={() => navigate("/saison-primes")}>
+          <Button onClick={() => navigate("/sante?tab=primes")}>
             {fr ? "Ouvrir la saison des primes" : "Open the premium season"}<ArrowRight className="ml-1 h-4 w-4" />
           </Button>
         )}
@@ -475,27 +477,13 @@ function Bar({ used, total }: { used: number; total: number }) {
   )
 }
 
-type ClaimDraft = {
-  treatment_date: string; statement_date: string; provider: string; invoiced: string; insurer_paid: string
-  franchise: string; quote_part: string; hospital: string; not_covered: string
-}
-const CLAIM_AMOUNTS: { key: keyof ClaimDraft; fr: string; en: string }[] = [
-  { key: "invoiced", fr: "Montant facturé", en: "Invoiced" },
-  { key: "insurer_paid", fr: "Pris en charge par la caisse", en: "Paid by insurer" },
-  { key: "franchise", fr: "Dont franchise", en: "Of which deductible" },
-  { key: "quote_part", fr: "Dont quote-part", en: "Of which co-payment" },
-  { key: "hospital", fr: "Contribution hospitalière", en: "Hospital contribution" },
-  { key: "not_covered", fr: "Non couvert", en: "Not covered" },
-]
-
-function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }: {
+export function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }: {
   engagement: api.Engagement; overview: api.HealthOverview; params: api.HealthParams | null
   fr: boolean; onSaved: () => Promise<void>; toast: Toast
 }) {
   const year = overview.year
   const s = overview.participation
   const [claims, setClaims] = useState<api.HealthClaim[]>([])
-  const empty = (): ClaimDraft => ({ treatment_date: "", statement_date: today(), provider: "", invoiced: "", insurer_paid: "", franchise: "", quote_part: "", hospital: "", not_covered: "" })
   // Lines being reviewed before saving: one when typed by hand, several when
   // a statement was scanned. Nothing is written until "Ajouter".
   const [drafts, setDrafts] = useState<ClaimDraft[] | null>(null)
@@ -522,12 +510,7 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
         toast(fr ? "Aucune ligne de traitement trouvée dans ce document." : "No treatment line found.", "error")
         return
       }
-      const str = (v: number) => (v > 0 ? String(v) : "")
-      setDrafts(x.lines.map((l) => ({
-        treatment_date: l.treatment_date ?? "", statement_date: x.statement_date ?? today(), provider: l.provider ?? "",
-        invoiced: str(l.invoiced), insurer_paid: str(l.insurer_paid), franchise: str(l.franchise),
-        quote_part: str(l.quote_part), hospital: str(l.hospital), not_covered: str(l.not_covered),
-      })))
+      setDrafts(draftsFromExtraction(x))
       setMode(x.billing_mode ?? "")
       if (x.insured_name && overview.insured_label && !x.insured_name.toLowerCase().includes(overview.insured_label.toLowerCase().split(" ")[0])) {
         toast(fr ? `Ce décompte semble concerner ${x.insured_name}, pas ${overview.insured_label}.` : `This statement seems to be for ${x.insured_name}.`, "error")
@@ -541,23 +524,9 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
 
   async function add() {
     if (!drafts) return
-    const n = (v: string) => numOrNull(v) ?? 0
     setSaving(true)
     try {
-      const saved = await api.addHealthClaims(drafts.map((d) => ({
-        engagement_id: engagement.id, year,
-        statement_date: d.statement_date || null, treatment_date: d.treatment_date || null,
-        provider: d.provider.trim() || null,
-        invoiced: n(d.invoiced), insurer_paid: n(d.insurer_paid), franchise: n(d.franchise),
-        quote_part: n(d.quote_part), hospital: n(d.hospital), not_covered: n(d.not_covered), notes: null,
-        billing_mode: mode || null,
-      })))
-      const refunds = saved.filter((c) => c.reimbursement_id)
-      const due = refunds.reduce((sum, c) => sum + c.insurer_paid, 0)
-      toast(refunds.length > 0
-        ? (fr ? `${saved.length} ligne(s) ajoutée(s). Remboursement attendu de ${formatPrice(due)} ajouté aux Remboursements.` : `${saved.length} line(s) added; ${formatPrice(due)} reimbursement expected.`)
-        : (fr ? `${saved.length} ligne(s) ajoutée(s).` : `${saved.length} line(s) added.`),
-        "success")
+      toast(await saveClaimDrafts(engagement.id, year, drafts, mode, fr), "success")
       setDrafts(null)
       setMode("")
       await loadClaims()
@@ -579,8 +548,6 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
     }
   }
 
-  const setDraft = (i: number, patch: Partial<ClaimDraft>) =>
-    setDrafts((ds) => ds && ds.map((d, j) => (j === i ? { ...d, ...patch } : d)))
   const toPay = claims.filter((c) => c.billing_mode === "tiers_payant").reduce((sum, c) => sum + c.franchise + c.quote_part + c.hospital + c.not_covered, 0)
 
   return (
@@ -593,7 +560,7 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
           <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={scanning}>
             {scanning ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}{fr ? "Scanner" : "Scan"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setDrafts((d) => (d ? null : [empty()]))}><Plus className="mr-1 h-4 w-4" />{fr ? "Décompte" : "Statement"}</Button>
+          <Button size="sm" variant="outline" onClick={() => setDrafts((d) => (d ? null : [emptyClaimDraft()]))}><Plus className="mr-1 h-4 w-4" />{fr ? "Décompte" : "Statement"}</Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -632,55 +599,8 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
         )}
 
         {drafts && (
-          <div className="space-y-3 rounded-md border p-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">{fr ? "Qui a payé le prestataire ?" : "Who paid the provider?"}</label>
-              <select className={fieldCls} value={mode} onChange={(e) => setMode(e.target.value as api.HealthBillingMode | "")}>
-                <option value="">—</option>
-                <option value="tiers_garant">{fr ? "Moi — la caisse me rembourse (tiers garant)" : "Me — the insurer reimburses (tiers garant)"}</option>
-                <option value="tiers_payant">{fr ? "La caisse — elle me facture ma part (tiers payant)" : "The insurer — it bills my share (tiers payant)"}</option>
-              </select>
-              {mode === "tiers_garant" && (
-                <p className="text-xs text-muted-foreground">{fr ? "Le montant pris en charge sera ajouté aux Remboursements en attente." : "The covered amount will be added to pending reimbursements."}</p>
-              )}
-            </div>
-            {drafts.map((d, i) => (
-              <div key={i} className="grid gap-2 rounded-md bg-muted/30 p-2 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">{fr ? "Date du traitement" : "Treatment date"}</label>
-                  <Input type="date" value={d.treatment_date} onChange={(e) => setDraft(i, { treatment_date: e.target.value })} />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">{fr ? "Date du décompte" : "Statement date"}</label>
-                  <Input type="date" value={d.statement_date} onChange={(e) => setDraft(i, { statement_date: e.target.value })} />
-                </div>
-                <div className="space-y-1 sm:col-span-2">
-                  <label className="text-xs font-medium">{fr ? "Prestataire" : "Provider"}</label>
-                  <div className="flex gap-2">
-                    <Input value={d.provider} onChange={(e) => setDraft(i, { provider: e.target.value })} placeholder={fr ? "Médecin, pharmacie, hôpital…" : "Doctor, pharmacy…"} />
-                    {drafts.length > 1 && (
-                      <Button variant="ghost" size="icon" onClick={() => setDrafts((ds) => ds && ds.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4 text-destructive" /></Button>
-                    )}
-                  </div>
-                </div>
-                {CLAIM_AMOUNTS.map((a) => (
-                  <div key={a.key} className="space-y-1">
-                    <label className="text-xs font-medium">{fr ? a.fr : a.en}</label>
-                    <Input type="number" min="0" step="0.05" value={d[a.key]} onChange={(e) => setDraft(i, { [a.key]: e.target.value })} />
-                  </div>
-                ))}
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <Button size="sm" onClick={add} disabled={saving}>
-                {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}{fr ? `Ajouter ${drafts.length > 1 ? `${drafts.length} lignes` : ""}` : "Add"}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setDrafts(null)}>{fr ? "Annuler" : "Cancel"}</Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {fr ? "Vérifiez chaque montant avec le décompte de la caisse avant d'ajouter." : "Check every amount against the statement."}
-            </p>
-          </div>
+          <ClaimsReview fr={fr} drafts={drafts} setDrafts={setDrafts} mode={mode} setMode={setMode}
+            saving={saving} onAdd={add} onCancel={() => setDrafts(null)} />
         )}
 
         {claims.length > 0 && (
@@ -715,7 +635,7 @@ function ParticipationCard({ engagement, overview, params, fr, onSaved, toast }:
 // Quelle franchise ?
 // ---------------------------------------------------------------------------
 
-function FranchiseComparator({ overview, fr }: { overview: api.HealthOverview; fr: boolean }) {
+export function FranchiseComparator({ overview, fr }: { overview: api.HealthOverview; fr: boolean }) {
   const policy = overview.policy
   const franchises = overview.allowed_franchises
   const [premiums, setPremiums] = useState<Record<number, string>>(() => {

@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import {
-  CheckCircle2, Circle, Download, Eye, FileText, FolderOpen, Loader2, Pencil, Sparkles, Trash2, Upload, X,
+  CalendarClock, CheckCircle2, Circle, Download, Eye, FileText, FolderOpen, Loader2, Pencil, Sparkles, Stethoscope, Trash2, Upload, X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -47,7 +47,7 @@ function bytesFromBase64(b64: string): Uint8Array {
   return out
 }
 
-export function HealthDocumentsPage() {
+export function HealthDocumentsPage({ embedded = false, seasonOpen = false }: { embedded?: boolean; seasonOpen?: boolean } = {}) {
   const { locale } = useContext(I18nContext)
   const fr = locale === "fr"
   const { toast } = useToast()
@@ -146,7 +146,10 @@ export function HealthDocumentsPage() {
         await api.fileHealthDocument({ attachment_id: att.id, kind: d.kind, year: d.year, engagement_ids: ids })
         ok += 1
       }
-      toast(fr ? `${ok} document(s) classé(s).` : `${ok} document(s) filed.`, "success")
+      const statements = drafts.filter((d) => d.kind === "benefit_statement").length
+      toast(fr
+        ? `${ok} document(s) classé(s).${statements ? ` ${statements} décompte(s) : « Saisir les frais » les reporte dans vos frais médicaux.` : ""}`
+        : `${ok} document(s) filed.`, "success")
       setDrafts(null)
       if (drafts[0]?.year) setYear(drafts[0].year)
       await load()
@@ -221,8 +224,8 @@ export function HealthDocumentsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="flex items-center gap-2 text-3xl font-bold tracking-tight">
-            <FolderOpen className="h-7 w-7 text-primary" />{fr ? "Documents santé" : "Health documents"}
+          <h2 className={cn("flex items-center gap-2 font-bold tracking-tight", embedded ? "text-xl" : "text-3xl")}>
+            <FolderOpen className={cn("text-primary", embedded ? "h-5 w-5" : "h-7 w-7")} />{fr ? "Documents santé" : "Health documents"}
           </h2>
           <p className="text-muted-foreground">
             {fr
@@ -268,11 +271,22 @@ export function HealthDocumentsPage() {
                     <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
                     <button className="min-w-0 flex-1 text-left" onClick={() => setViewing(asAttachment(d))}>
                       <p className="truncate text-sm font-medium">{d.display_name}</p>
-                      <p className="text-xs text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {d.people.join(", ") || "—"} · {fr ? "ajouté le" : "added"} {formatDate(d.created_at)}
                         {!d.filed && <Badge variant="outline" className="ml-2">{fr ? "à vérifier" : "to check"}</Badge>}
-                      </p>
+                        {d.processed_at && <Badge variant="secondary" className="ml-2">{d.kind === "benefit_statement" ? (fr ? "frais saisis" : "claims entered") : (fr ? "repris" : "carried over")}</Badge>}
+                      </div>
                     </button>
+                    {d.kind === "benefit_statement" && d.filed && !d.processed_at && (
+                      <Link to={`/sante?tab=frais&doc=${d.attachment_id}`}>
+                        <Button size="sm" variant="outline"><Stethoscope className="mr-1 h-4 w-4" />{fr ? "Saisir les frais" : "Enter claims"}</Button>
+                      </Link>
+                    )}
+                    {d.kind === "premium_notice" && seasonOpen && d.year === thisYear + 1 && !d.processed_at && (
+                      <Link to="/sante?tab=primes">
+                        <Button size="sm" variant="outline"><CalendarClock className="mr-1 h-4 w-4" />{fr ? `Reporter dans Primes ${d.year}` : `Carry to ${d.year} premiums`}</Button>
+                      </Link>
+                    )}
                     <Button variant="ghost" size="icon" title={fr ? "Aperçu" : "Preview"} onClick={() => setViewing(asAttachment(d))}><Eye className="h-4 w-4" /></Button>
                     <Button variant="ghost" size="icon" title={fr ? "Reclasser" : "Reclassify"} onClick={() => setEditing(d)}><Pencil className="h-4 w-4" /></Button>
                     <Button variant="ghost" size="icon" title={fr ? "Exporter" : "Export"} onClick={() => void exportDoc(d)}><Download className="h-4 w-4" /></Button>

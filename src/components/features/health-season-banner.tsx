@@ -38,7 +38,7 @@ export function HealthSeasonBanner() {
         <HeartPulse className="h-5 w-5 text-primary" />
         <CardTitle className="text-base">{fr ? `Primes maladie ${next}` : `${next} health premiums`}</CardTitle>
         {pending > 0 && <Badge variant="warning" className="ml-auto">{pending} {fr ? "à décider" : "to decide"}</Badge>}
-        <Button size="sm" className={pending > 0 ? "ml-2" : "ml-auto"} onClick={() => navigate("/saison-primes")}>
+        <Button size="sm" className={pending > 0 ? "ml-2" : "ml-auto"} onClick={() => navigate("/sante?tab=primes")}>
           <CalendarClock className="mr-1 h-4 w-4" />{fr ? `Ouvrir la saison des primes` : `Open the premium season`}
         </Button>
       </CardHeader>
@@ -60,7 +60,7 @@ export function HealthSeasonBanner() {
         </p>
         <div className="space-y-2">
           {basics.map((p) => (
-            <Link key={p.engagement_id} to="/saison-primes"
+            <Link key={p.engagement_id} to="/sante?tab=primes"
               className="flex items-center justify-between gap-3 rounded-md border bg-background p-3 hover:bg-accent/40">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{p.insured_label ?? p.name}</p>

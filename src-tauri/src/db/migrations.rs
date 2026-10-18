@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 /// Highest schema version this build of TrackBuy knows how to read.
 /// Bump in lockstep with the last `migrate_vN` function declared below.
-pub const CURRENT_SCHEMA_VERSION: i64 = 41;
+pub const CURRENT_SCHEMA_VERSION: i64 = 42;
 
 pub fn run(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -153,6 +153,9 @@ pub fn run(conn: &Connection) -> Result<(), String> {
     }
     if current_version < 41 {
         migrate_v41(conn)?;
+    }
+    if current_version < 42 {
+        migrate_v42(conn)?;
     }
 
     Ok(())
@@ -2612,6 +2615,20 @@ fn migrate_v41(conn: &Connection) -> Result<(), String> {
         INSERT INTO schema_version (version) VALUES (41);
         "
     ).map_err(|e| format!("Migration v41 failed: {}", e))?;
+
+    Ok(())
+}
+
+/// v42 — un document santé « traité » : le décompte dont les frais ont été
+/// saisis, l'avis de prime reporté dans la saison. L'écran ne le propose
+/// plus à la saisie.
+fn migrate_v42(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "
+        ALTER TABLE health_documents ADD COLUMN processed_at TEXT;
+        INSERT INTO schema_version (version) VALUES (42);
+        "
+    ).map_err(|e| format!("Migration v42 failed: {}", e))?;
 
     Ok(())
 }

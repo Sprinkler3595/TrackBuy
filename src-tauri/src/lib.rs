@@ -209,6 +209,7 @@ pub fn run() {
             commands::health::classify_health_document,
             commands::health::file_health_document,
             commands::health::list_health_documents,
+            commands::health::mark_health_document_processed,
             commands::engagements::plan_next_engagement_charge,
             commands::engagements::set_billed_with_parent,
             commands::health::add_health_claims,

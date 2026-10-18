@@ -3119,8 +3119,16 @@ export interface HealthDocument {
   summary: string | null
   /// false = attached before classification; kind/year are inferred.
   filed: boolean
+  /// When its content was taken over (claims entered, notice carried into
+  /// the premium season); null while still to do.
+  processed_at: string | null
   engagement_ids: string[]
   people: string[]
 }
 
 export const listHealthDocuments = () => invoke<HealthDocument[]>("list_health_documents")
+
+/// Mark a filed document as taken over (or back to do). `kind` and `year`
+/// file a pre-classification attachment on the way.
+export const markHealthDocumentProcessed = (attachmentId: string, kind: HealthDocKind, year: number, processed = true) =>
+  invoke<void>("mark_health_document_processed", { attachmentId, kind, year, processed })

@@ -1164,6 +1164,8 @@ pub struct HealthDocument {
     pub summary: Option<String>,
     /// `true` quand la sorte et l'année ont été confirmées (fichier rangé).
     pub filed: bool,
+    /// Date à laquelle son contenu a été repris (frais saisis, avis reporté).
+    pub processed_at: Option<String>,
     pub engagement_ids: Vec<String>,
     pub people: Vec<String>,
 }
@@ -1173,7 +1175,7 @@ pub fn list_documents_inner(conn: &Connection) -> Result<Vec<HealthDocument>, St
     let mut stmt = conn
         .prepare(
             "SELECT a.id, a.display_name, a.mime_type, a.size_bytes, a.created_at, a.attachment_type,
-                    a.engagement_id, hd.kind, hd.year, hd.summary
+                    a.engagement_id, hd.kind, hd.year, hd.summary, hd.processed_at
              FROM attachments a
              JOIN engagements e ON e.id = a.engagement_id
              LEFT JOIN health_documents hd ON hd.attachment_id = a.id
@@ -1181,16 +1183,16 @@ pub fn list_documents_inner(conn: &Connection) -> Result<Vec<HealthDocument>, St
              ORDER BY COALESCE(hd.year, CAST(substr(a.created_at, 1, 4) AS INTEGER)) DESC, a.created_at DESC",
         )
         .map_err(|e| e.to_string())?;
-    type Row = (String, String, String, i64, String, String, String, Option<String>, Option<i32>, Option<String>);
+    type Row = (String, String, String, i64, String, String, String, Option<String>, Option<i32>, Option<String>, Option<String>);
     let rows: Vec<Row> = stmt
         .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(rows.len());
-    for (id, display_name, mime_type, size_bytes, created_at, att_type, eng_id, kind, year, summary) in rows {
+    for (id, display_name, mime_type, size_bytes, created_at, att_type, eng_id, kind, year, summary, processed_at) in rows {
         let mut ids: Vec<String> = conn
             .prepare("SELECT engagement_id FROM health_document_policies WHERE attachment_id = ?1")
             .map_err(|e| e.to_string())?
@@ -1217,9 +1219,29 @@ pub fn list_documents_inner(conn: &Connection) -> Result<Vec<HealthDocument>, St
             _ => "other",
         }.to_string());
         let year = year.unwrap_or_else(|| created_at.get(0..4).and_then(|y| y.parse().ok()).unwrap_or(0));
-        out.push(HealthDocument { attachment_id: id, display_name, mime_type, size_bytes, created_at, kind, year, summary, filed, engagement_ids: ids, people });
+        out.push(HealthDocument { attachment_id: id, display_name, mime_type, size_bytes, created_at, kind, year, summary, filed, processed_at, engagement_ids: ids, people });
     }
     Ok(out)
+}
+
+/// Marque un document comme repris — ou le rend à nouveau à traiter. Un
+/// fichier joint avant v41 est rangé au passage avec la sorte et l'année
+/// que l'écran lui donne.
+pub fn mark_document_processed_inner(conn: &Connection, attachment_id: &str, kind: &str, year: i32, processed: bool) -> Result<(), String> {
+    let kind = if DOCUMENT_KINDS.contains(&kind) { kind } else { "other" };
+    let stamp = processed.then(|| today().to_string());
+    conn.execute(
+        "INSERT INTO health_documents (attachment_id, kind, year, processed_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(attachment_id) DO UPDATE SET processed_at = excluded.processed_at",
+        rusqlite::params![attachment_id, kind, year, stamp],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mark_health_document_processed(state: State<'_, AppState>, attachment_id: String, kind: String, year: i32, processed: bool) -> Result<(), String> {
+    with_conn!(state, conn, mark_document_processed_inner(&conn, &attachment_id, &kind, year, processed))
 }
 
 #[tauri::command]
@@ -1774,9 +1796,25 @@ mod tests {
         // Fichier joint avant le classement : déduit de son type générique.
         let f2 = docs.iter().find(|d| d.attachment_id == "f2").unwrap();
         assert_eq!((f2.kind.as_str(), f2.year, f2.filed), ("policy", 2025, false));
+        assert!(f1.processed_at.is_none());
+        // Repris : marqué, et le reclasser ne l'efface pas. Un ancien fichier
+        // est rangé au passage.
+        mark_document_processed_inner(&conn, "f1", "premium_notice", 2027, true).unwrap();
+        mark_document_processed_inner(&conn, "f2", "benefit_statement", 2025, true).unwrap();
+        file_document_inner(&conn, &FileHealthDocument {
+            attachment_id: "f1".into(), kind: "premium_notice".into(), year: Some(2027),
+            engagement_ids: vec!["a".into()], ..Default::default()
+        }).unwrap();
+        let docs = list_documents_inner(&conn).unwrap();
+        assert!(docs.iter().all(|d| d.processed_at.is_some()));
+        let f2 = docs.iter().find(|d| d.attachment_id == "f2").unwrap();
+        assert_eq!((f2.kind.as_str(), f2.filed), ("benefit_statement", true));
+        mark_document_processed_inner(&conn, "f2", "benefit_statement", 2025, false).unwrap();
+        let docs = list_documents_inner(&conn).unwrap();
+        assert!(docs.iter().find(|d| d.attachment_id == "f2").unwrap().processed_at.is_none());
         // Supprimer la pièce jointe emporte le classement.
         conn.execute("DELETE FROM attachments WHERE id = 'f1'", []).unwrap();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM health_documents", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM health_documents WHERE attachment_id = 'f1'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
     }
 }

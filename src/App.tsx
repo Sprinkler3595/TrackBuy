@@ -10,8 +10,7 @@ import { TicketsPage } from "@/pages/tickets"
 import { WarrantiesPage } from "@/pages/warranties"
 import { VaultsPage } from "@/pages/vaults"
 import { EngagementsPage } from "@/pages/engagements"
-import { HealthSeasonPage } from "@/pages/health-season"
-import { HealthDocumentsPage } from "@/pages/health-documents"
+import { HealthPage } from "@/pages/health"
 import { EngagementDetailPage } from "@/pages/engagement-detail"
 import { VehiclesPage } from "@/pages/vehicles"
 import { VehicleDetailPage } from "@/pages/vehicle-detail"
@@ -192,8 +191,9 @@ function AppContent() {
           <Route path="/tickets" element={<ErrorBoundary><TicketsPage /></ErrorBoundary>} />
           <Route path="/engagements" element={<ErrorBoundary><EngagementsPage /></ErrorBoundary>} />
           <Route path="/engagements/:id" element={<ErrorBoundary><EngagementDetailPage /></ErrorBoundary>} />
-          <Route path="/saison-primes" element={<ErrorBoundary><HealthSeasonPage /></ErrorBoundary>} />
-          <Route path="/documents-sante" element={<ErrorBoundary><HealthDocumentsPage /></ErrorBoundary>} />
+          <Route path="/sante" element={<ErrorBoundary><HealthPage /></ErrorBoundary>} />
+          <Route path="/saison-primes" element={<Navigate to="/sante?tab=primes" replace />} />
+          <Route path="/documents-sante" element={<Navigate to="/sante?tab=documents" replace />} />
           <Route path="/vehicules" element={<ErrorBoundary><VehiclesPage /></ErrorBoundary>} />
           <Route path="/vehicules/:id" element={<ErrorBoundary><VehicleDetailPage /></ErrorBoundary>} />
           <Route path="/incomes" element={<ErrorBoundary><IncomesPage /></ErrorBoundary>} />
